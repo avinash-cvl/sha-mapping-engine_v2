@@ -206,6 +206,21 @@ SQL_SERVER_DSN = os.environ.get(
 LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "azure")
 LLM_MODEL = os.environ.get("LLM_MODEL")  # None -> per-provider default in llm_client.py
 
+# Sampling temperature for every provider. None (the default) means the
+# parameter is not sent at all, which is what this pipeline did before the
+# setting existed -- so the default changes nothing.
+#
+# Set LLM_TEMPERATURE=0 for reproducible judging: classification gains
+# nothing from sampling variety, and a non-zero temperature makes runs
+# irreproducible, which undermines the audit trail. It is opt-in rather than
+# hardcoded because reasoning-family models (o*, some gpt-5 deployments)
+# reject any non-default temperature with a 400, and the deployment in use
+# here is env-driven -- verify your deployment accepts it before enabling.
+_LLM_TEMPERATURE_RAW = os.environ.get("LLM_TEMPERATURE")
+LLM_TEMPERATURE = (
+    float(_LLM_TEMPERATURE_RAW) if _LLM_TEMPERATURE_RAW not in (None, "") else None
+)
+
 AZURE_OPENAI_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT", "")
 AZURE_OPENAI_API_KEY = os.environ.get("AZURE_OPENAI_API_KEY", "")
 AZURE_OPENAI_API_VERSION = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
