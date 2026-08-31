@@ -1,0 +1,68 @@
+[project]
+name = "sha-pipelines"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "prefect>=3.0",
+    "pandas",
+    "openpyxl",
+    "pyodbc",
+    "sqlalchemy>=2.0",
+    "rank-bm25",
+    "numpy",
+    "langchain-core",
+    "langchain-anthropic",
+    "langchain-openai",
+    "python-dotenv",
+    "httpx",
+    "fastapi",
+    "uvicorn[standard]",
+    "asyncpg",
+    "psycopg2-binary",
+    "alembic",
+    "greenlet",
+    "pydantic",
+    "pydantic-settings",
+    "python-multipart",
+    "email-validator",
+    "redis",
+    "websockets",
+    "sse-starlette",
+    "apscheduler",
+    "tzdata",
+    "deepeval>=1.4.0",
+    "PyJWT",
+    "argon2-cffi",
+]
+
+[tool.setuptools]
+py-modules = [
+    "checkpoint",
+    "config",
+    "models",
+    "db",
+    "db_models",
+    "embedder",
+    "stage_ingest",
+    "stage_deterministic",
+    "stage_lexicon",
+    "stage_attributes",
+    "stage_candidates",
+    "stage_scoring",
+    "stage_disposition",
+    "stage_recovery",
+    "stage_relate",
+    "flow",
+    "flow_without_prefect",
+]
+packages = ["agents", "observability_sdk", "observability_sdk.decorators", "observability_sdk.exporters", "observability_sdk.tracing", "observability_sdk.utils"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.mypy]
+strict = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

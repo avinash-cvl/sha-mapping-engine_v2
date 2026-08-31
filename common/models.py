@@ -1,0 +1,79 @@
+"""Typed data shapes shared by every stage. Frozen dataclasses only -- these
+hold data, not behavior. No stage mutates one of these in place; a stage
+that needs to change a field returns a new instance via
+`dataclasses.replace(...)`.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class SourceProduct:
+    sku: str
+    source: str            # "1ds" | "nielsen"
+    channel: str | None
+    brand: str
+    title: str
+    clean_title: str
+    category: str
+    subcategory: str
+    pack_value: float | None
+    pack_unit: str | None
+    benefit: str | None
+    ingredient: str | None
+    domain: str             # "baby" | "face" | "other"
+    match_type: str          # "Catalog Match" | "Competitive Substitute"
+    sub_brand: str | None = None
+    variant: str | None = None
+    # channel_key/source_row_id are populated by stage_ingest.py once a row
+    # has been written to raw.oneds_products + resolved against
+    # config.channels -- "" / 0 (unset) for rows that predate that (e.g.
+    # unit tests constructing a SourceProduct directly, or a source with no
+    # channel concept like Nielsen).
+    channel_key: str = ""
+    source_row_id: int = 0
+
+
+@dataclass(frozen=True)
+class MasterProduct:
+    product_code: str
+    product_name: str
+    division: str
+    category: str
+    subcategory: str
+    sap_status: str
+    blocked_in_sap: bool
+    pack_value: float | None
+    pack_unit: str | None
+    text: str               # concatenated searchable text (name + long name + sales text)
+    source_row_id: int = 0  # raw.himalaya_products.id this came from; 0 = unset
+
+
+@dataclass(frozen=True)
+class ScoreBreakdown:
+    semantic: float
+    lexical: float
+    category: float
+    type_align: float
+    pack: float
+    overlap: float
+    ensemble: float
+    penalty_applied: str | None = None
+    clean_title_score: float | None = None
+    clean_title_ing_score: float | None = None
+    clean_title_benefit_score: float | None = None
+    all_score: float | None = None
+
+
+@dataclass(frozen=True)
+class MatchResult:
+    source: SourceProduct
+    candidate: MasterProduct | None
+    rank: int
+    scores: ScoreBreakdown | None
+    confidence_tier: str
+    resolution_method: str
+    llm_pick: str | None = None
+    llm_confidence: float = float("nan")
+    llm_reason: str | None = None
