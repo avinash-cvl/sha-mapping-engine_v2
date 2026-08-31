@@ -200,7 +200,30 @@ def _none_if_nan(value: float | None) -> float | None:
     return None if value != value else value  # NaN is the only float that != itself
 
 
-def _mapping_row(batch_id: str, source_row_id: int, r: MatchResult) -> dict[str, Any]:
+def _category_tag(r: MatchResult) -> str | None:
+    """Human- and grep-readable summary of the V2 category decision, e.g.
+    '[hgml:FACE WASH/FACE WASH conf=0.94]' or '[category:UNCLASSIFIED]'.
+
+    Prefixed onto llm_reasoning so the decision is visible to a steward on
+    every channel today, whether or not the dedicated columns from
+    sql/007_category_resolution_columns.sql have been applied yet."""
+    if r.hgml_category:
+        tag = f"[hgml:{r.hgml_category}/{r.hgml_subcategory}"
+        if r.category_confidence is not None:
+            tag += f" conf={r.category_confidence:.2f}"
+        return tag + "]"
+    if r.resolution_method in ("category_no_equivalent", "category_unclassified"):
+        terminal = r.resolution_method.removeprefix("category_")
+        return f"[category:{terminal}]"
+    return None
+
+
+def _mapping_row(
+    batch_id: str,
+    source_row_id: int,
+    r: MatchResult,
+    mapping_table: sa.Table | None = None,
+) -> dict[str, Any]:
     scores = r.scores
 
     final_score = _none_if_nan(r.llm_confidence)
@@ -212,8 +235,16 @@ def _mapping_row(batch_id: str, source_row_id: int, r: MatchResult) -> dict[str,
     elif ensemble_score is not None and ensemble_score > final_score:
         final_score = ensemble_score
 
+    # The category decision rides in llm_reasoning so it is visible without a
+    # schema change; the structured columns below are written as well, but
+    # only once they exist.
+    llm_reasoning = r.llm_reason
+    tag = _category_tag(r)
+    if tag:
+        detail = r.llm_reason or r.category_evidence or ""
+        llm_reasoning = f"{tag} {detail}".strip()
 
-    return {
+    row = {
         "batch_id": batch_id,
         "match_rank": r.rank,
         "source_sku": r.source.sku,
@@ -227,9 +258,27 @@ def _mapping_row(batch_id: str, source_row_id: int, r: MatchResult) -> dict[str,
         "form_factor_score": _none_if_nan(scores.type_align) if scores else None,
         "ensemble_score": _none_if_nan(scores.ensemble) if scores else None,
         "confidence_level": r.confidence_tier,
-        "llm_reasoning": r.llm_reason,
+        "llm_reasoning": llm_reasoning,
         "final_score": final_score,
     }
+
+    # Structured category columns, written only where the channel's mapping
+    # table actually has them -- an in-memory check against the reflected
+    # metadata, no per-row round trip. DDL is applied out of band (see
+    # sql/007_category_resolution_columns.sql); this repo never issues it.
+    # Note reflect_metadata() memoizes per process, so a table altered while
+    # a run is in flight stays invisible until the next run.
+    if mapping_table is not None:
+        for column, value in (
+            ("hgml_category", r.hgml_category),
+            ("hgml_subcategory", r.hgml_subcategory),
+            ("category_confidence", _none_if_nan(r.category_confidence)),
+            ("category_evidence", r.category_evidence),
+        ):
+            if value is not None and column in mapping_table.c:
+                row[column] = value
+
+    return row
 
 
 def write_staging_mapping(
@@ -287,7 +336,9 @@ def persist_sku_disposition(
             )
         )
         for result in results:
-            row = _mapping_row(batch_id, product_id, result)
+            row = _mapping_row(
+                batch_id, product_id, result, mapping_table=channel_tables.mapping
+            )
             row[product_id_column] = product_id
             conn.execute(channel_tables.mapping.insert().values(**row))
 

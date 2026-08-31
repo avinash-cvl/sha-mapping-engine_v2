@@ -34,6 +34,10 @@ from oneds_master.stages import stage_scoring
 from agents import attribute_fallback, mcda_judge, synonyms
 from common.models import MasterProduct, MatchResult, ScoreBreakdown, SourceProduct
 
+# Kept in step with batch_flow_steps._CATEGORY_TERMINAL_DISPOSITION; declared
+# here rather than imported so flow.py doesn't pull in the batch module.
+_CATEGORY_TERMINAL_METHODS = {"category_no_equivalent", "category_unclassified"}
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("sha_pipelines")
 
@@ -316,6 +320,15 @@ def run_persist(
 
 def _mapping_status(result: MatchResult) -> str:
     """Preserve the existing rank-1 mapping-status thresholds."""
+    # A category-level finding routes to a steward, not to an auto-match.
+    # This path already fell through to "StewardReview" for a scoreless
+    # result; stating it explicitly keeps it from depending on that, and
+    # keeps this in step with determine_mapping_status() in
+    # batch_flow_steps.py. Purely additive -- no pre-existing
+    # resolution_method is in this set.
+    if result.resolution_method in _CATEGORY_TERMINAL_METHODS:
+        return "StewardReview"
+
     final_score = _none_if_nan(result.llm_confidence)
     ensemble_score = _none_if_nan(result.scores.ensemble) if result.scores else None
 

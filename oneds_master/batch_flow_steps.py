@@ -19,6 +19,9 @@ from oneds_master.stages import stage_lexicon
 from oneds_master.stages import stage_scoring
 from oneds_master.stages  import stage_disposition
 from agents import attribute_fallback, mcda_judge, synonyms
+from oneds_master.category.core import NO_EQ, UNCLS
+from oneds_master.category.resolve import pack_targets, resolve
+from oneds_master.category.rules import PACKS
 from common.models import MatchResult
 import sqlalchemy as sa
 import common.config as C
@@ -772,6 +775,50 @@ def step_5_build_eligible_master_groups(
                     master.product_code
                 ] = master
 
+        # ----------------------------------------------------
+        # Widen the pool with every target the V2 category pack
+        # for this 1DS category can emit.
+        #
+        # The BM25 index (step 7) and the vector search (step 10)
+        # both operate over eligible_master, so a target the V2
+        # resolver can pick but config.oneds_master_category_mapping
+        # does not list would never be retrievable -- and the
+        # row-level gate in process_one_sku would then find nothing
+        # and fall back to ungated.
+        #
+        # Keyed into the same dict by product_code, so this is
+        # idempotent and can only ever WIDEN the pool, never
+        # narrow it. Recall cannot go down here.
+        # ----------------------------------------------------
+
+        pack = PACKS.get(oneds_category)
+
+        if pack is not None:
+
+            before_widening = len(eligible_by_code)
+
+            for cat, sub in pack_targets(pack):
+
+                for master in master_lookup.get(
+                    (
+                        cat.strip().lower(),
+                        sub.strip().lower(),
+                    ),
+                    [],
+                ):
+
+                    eligible_by_code[
+                        master.product_code
+                    ] = master
+
+            logger.info(
+                "V2 pack widening: %r | %d -> %d (+%d)",
+                oneds_category,
+                before_widening,
+                len(eligible_by_code),
+                len(eligible_by_code) - before_widening,
+            )
+
         eligible_master = list(
             eligible_by_code.values()
         )
@@ -975,6 +1022,107 @@ def step_6b_apply_crosswalk_shortcircuit(
     )
 
     logger.info("STEP 6B COMPLETED")
+
+    return resolved, remaining
+
+
+# ============================================================
+# STEP 6C - CATEGORY TERMINAL SHORT-CIRCUIT
+# ============================================================
+# Rows the V2 resolver confidently classifies as terminal should not be
+# embedded, retrieved, scored, or sent to the LLM judge. Mirrors step 6B:
+# it runs inside the per-group loop, before step 7B, and hands back
+# (resolved, remaining).
+
+# Terminal -> (confidence_tier, resolution_method). UNRESOLVED is
+# deliberately absent: it means "the rules could not decide", not "there is
+# nothing here", so those rows MUST keep flowing through the normal
+# pipeline. Short-circuiting them would silently lose recall.
+_CATEGORY_TERMINAL_DISPOSITION = {
+    NO_EQ: ("No Himalaya Equivalent", "category_no_equivalent"),
+    UNCLS: ("No Himalaya Equivalent", "category_unclassified"),
+}
+
+# The resolution_methods above, for determine_mapping_status().
+_CATEGORY_TERMINAL_METHODS = {
+    method for _tier, method in _CATEGORY_TERMINAL_DISPOSITION.values()
+}
+
+
+def step_6c_apply_category_shortcircuit(
+    source_table: str,
+    batch,
+    source_products: dict | None = None,
+):
+    """Splits `batch` into (resolved, remaining):
+      - resolved: {source_id: MatchResult} for rows the V2 category
+        resolver closed as NO HGML EQUIVALENT or UNCLASSIFIED -- these skip
+        retrieval, scoring, and the LLM judge entirely. candidate/scores are
+        None; the resolver's evidence rides along so a steward can see why a
+        row was closed without a candidate.
+      - remaining: raw rows for SKUs still needing the full pipeline,
+        including every UNRESOLVED row.
+    Caller persists `resolved` through step_15_add_mapping_data, the same
+    path as everything else."""
+    logger.info("==========================================")
+    logger.info("BATCH FLOW - STEP 6C")
+    logger.info("==========================================")
+
+    if not batch:
+        return {}, []
+
+    resolved: dict = {}
+    remaining = []
+
+    for row in batch:
+
+        source_id = getattr(row, "id", None)
+
+        source_product = (source_products or {}).get(source_id)
+        if source_product is None:
+            source_product = build_source_product(row, source_table)
+
+        decision = resolve(source_product)
+
+        disposition = (
+            _CATEGORY_TERMINAL_DISPOSITION.get(decision.terminal)
+            if decision.terminal
+            else None
+        )
+
+        if disposition is None:
+            remaining.append(row)
+            continue
+
+        confidence_tier, resolution_method = disposition
+
+        resolved[source_id] = MatchResult(
+            source=source_product,
+            candidate=None,
+            rank=1,
+            scores=None,
+            confidence_tier=confidence_tier,
+            resolution_method=resolution_method,
+            llm_confidence=float("nan"),
+            category_evidence=decision.evidence,
+            category_confidence=decision.confidence,
+        )
+
+        logger.debug(
+            "Category short-circuit | SKU=%r | %s | evidence=%r",
+            getattr(row, "sku", None),
+            decision.terminal,
+            decision.evidence,
+        )
+
+    logger.info(
+        "Category short-circuit: %d / %d rows closed | %d remaining",
+        len(resolved),
+        len(batch),
+        len(remaining),
+    )
+
+    logger.info("STEP 6C COMPLETED")
 
     return resolved, remaining
 
@@ -2554,6 +2702,15 @@ def determine_mapping_status(match_results):
         return "NoHimalayaEquivalent"
 
     rank_one = match_results[0]
+
+    # A category-level finding is not a product-level verdict, so it routes to
+    # a steward rather than closing the row on score alone. Without this
+    # branch a scoreless short-circuit result would fall through to
+    # "NoHimalayaEquivalent" below, which reads as a pipeline conclusion.
+    # Purely additive: no pre-existing resolution_method is in this set, so
+    # every other row takes exactly the path it did before.
+    if getattr(rank_one, "resolution_method", None) in _CATEGORY_TERMINAL_METHODS:
+        return "StewardReview"
 
     final_score = getattr(rank_one, "llm_confidence", None)
     if final_score is not None and final_score != final_score:  # NaN
