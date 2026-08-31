@@ -1,0 +1,23 @@
+# secrets -- live SQL Server DSN + Azure OpenAI key
+.env
+.env.*
+!.env.example
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# environments
+.venv/
+venv/
+
+# runtime output
+logs/
+*.log
+out/
+
+# data -- master/1DS workbooks and pickle caches are large and not source
+*.pkl
+*.xlsx
