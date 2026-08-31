@@ -1005,27 +1005,29 @@ def main() -> None:
 
                 if category_resolved:
 
-                    # Persisted through the same step 15 path as every
-                    # other row, rather than a bare status flip: the
-                    # resolver's evidence is the whole point, and a
-                    # steward needs to see why a row was closed with no
-                    # candidate.
-                    step_15_add_mapping_data(
+                    # Status flip only -- no mapping rows. These rows have
+                    # no candidate, and staging.*_product_mapping declares
+                    # product_code NOT NULL, so a candidate-less mapping
+                    # row cannot be written at all. That is also the
+                    # existing convention for every other no-candidate
+                    # path here (the empty-eligible-group branch above and
+                    # the crosswalk short-circuit), so this follows it
+                    # rather than inventing a second one.
+                    #
+                    # The trade-off: the resolver's evidence is logged (at
+                    # DEBUG, per SKU, in step 6C) but is not visible to a
+                    # steward in the mapping table. Giving it a home there
+                    # needs either a nullable product_code or a separate
+                    # findings table -- a schema decision, out of scope
+                    # for this change.
+                    closed_count = step_16_mark_completed(
                         conn=conn,
-                        run_id=run_id,
-                        final_results={
-                            sid: {
-                                "source": result.source,
-                                "match_results": [result],
-                                "audit_entry": None,
-                                "pre_audit_entries": [],
-                            }
-                            for sid, result in category_resolved.items()
-                        },
                         source_table=args.source_table,
+                        batch=[r.source for r in category_resolved.values()],
+                        status="NoHimalayaEquivalent",
                     )
 
-                    total_processed += len(category_resolved)
+                    total_processed += closed_count
 
                     logger.info(
                         "STEP 6C COMPLETED | category_closed=%d | "
