@@ -74,6 +74,24 @@ TIER_NOEQ = 0.45     # competitor SKUs below this -> No Himalaya Equivalent
 LLM_PROMOTE_SCORE_FLOOR = 0.60
 LLM_PROMOTE_CONFIDENCE = 0.75
 
+# ---------------------------------------------------------------------------
+# CATEGORY GATE (oneds_master/category)
+# ---------------------------------------------------------------------------
+# Minimum V2 category-resolver confidence at which the resolved HGML
+# category/sub-category is trusted enough to gate the candidate pool.
+# Below this, the row falls back to the config.oneds_master_category_mapping
+# table so recall is never reduced by a weak category decision.
+#
+# Deliberately NOT TIER_HIGH/TIER_REVIEW: those are product-match thresholds
+# and mean something different. The V2 numbers behind this are hand-assigned
+# routing constants, not calibrated probabilities -- they gate the candidate
+# pool and never enter the ensemble arithmetic.
+#
+# Set to 1.1 to disable the gate entirely (nothing ever resolves), which is
+# the regression lever: a run at 1.1 and a run at the default must agree on
+# rank-1 for every row the gate did not fire on.
+CATEGORY_GATE_MIN_CONF = float(os.environ.get("CATEGORY_GATE_MIN_CONF", "0.80"))
+
 # Paused for now -- when False, flow.py/flow_without_prefect.py's run_persist()
 # never writes to app.*_crosswalk on its own, no matter the confidence tier.
 # Every result (including Matched-tier, rank=1 "best match" rows) lands only
