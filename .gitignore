@@ -21,3 +21,6 @@ out/
 # data -- master/1DS workbooks and pickle caches are large and not source
 *.pkl
 *.xlsx
+
+.claude/*
+cache

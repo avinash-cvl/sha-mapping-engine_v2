@@ -1058,12 +1058,15 @@ def step_6c_apply_category_shortcircuit(
       - resolved: {source_id: MatchResult} for rows the V2 category
         resolver closed as NO HGML EQUIVALENT or UNCLASSIFIED -- these skip
         retrieval, scoring, and the LLM judge entirely. candidate/scores are
-        None; the resolver's evidence rides along so a steward can see why a
-        row was closed without a candidate.
+        None, and the resolver's evidence rides along on the MatchResult.
       - remaining: raw rows for SKUs still needing the full pipeline,
         including every UNRESOLVED row.
-    Caller persists `resolved` through step_15_add_mapping_data, the same
-    path as everything else."""
+
+    Caller marks `resolved` completed via step_16_mark_completed rather
+    than writing mapping rows: these rows have no candidate, and
+    staging.*_product_mapping declares product_code NOT NULL. That matches
+    what every other no-candidate path here already does (empty eligible
+    group, crosswalk short-circuit)."""
     logger.info("==========================================")
     logger.info("BATCH FLOW - STEP 6C")
     logger.info("==========================================")

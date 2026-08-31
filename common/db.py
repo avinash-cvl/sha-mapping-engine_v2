@@ -202,11 +202,17 @@ def _none_if_nan(value: float | None) -> float | None:
 
 def _category_tag(r: MatchResult) -> str | None:
     """Human- and grep-readable summary of the V2 category decision, e.g.
-    '[hgml:FACE WASH/FACE WASH conf=0.94]' or '[category:UNCLASSIFIED]'.
+    '[hgml:FACE WASH/FACE WASH conf=0.94]'.
 
     Prefixed onto llm_reasoning so the decision is visible to a steward on
     every channel today, whether or not the dedicated columns from
-    sql/007_category_resolution_columns.sql have been applied yet."""
+    sql/007_category_resolution_columns.sql have been applied yet.
+
+    In practice only the gated branch is reached from oneds_master: rows
+    the resolver closes as terminal have no candidate, and product_code is
+    NOT NULL, so they never produce a mapping row (see
+    step_6c_apply_category_shortcircuit). The terminal branch is kept for
+    any caller that does persist such a row."""
     if r.hgml_category:
         tag = f"[hgml:{r.hgml_category}/{r.hgml_subcategory}"
         if r.category_confidence is not None:
