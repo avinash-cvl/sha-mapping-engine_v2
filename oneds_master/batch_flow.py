@@ -8,9 +8,12 @@ from concurrent.futures import (
     ThreadPoolExecutor,
     as_completed,
 )
+from dataclasses import replace
 
 from common import db
 from oneds_master.stages import stage_disposition
+from oneds_master.category.resolve import pack_targets, resolve_batch
+from oneds_master.category.rules import PACKS
 
 from oneds_master.batch_flow_steps import (
     determine_mapping_status,
@@ -21,6 +24,7 @@ from oneds_master.batch_flow_steps import (
     step_5_build_eligible_master_groups,
     step_6_get_source_batch,
     step_6b_apply_crosswalk_shortcircuit,
+    step_6c_apply_category_shortcircuit,
     step_7_build_bm25_index,
     step_7b_prepare_source_products,
     step_8_search_bm25,
@@ -109,6 +113,7 @@ def process_one_sku(
     synonym_terms: dict | None = None,
     source_products: dict | None = None,
     pre_audit_entries: list | None = None,
+    category_decisions: dict | None = None,
 ):
     """
     Process one source SKU.
@@ -254,6 +259,83 @@ def process_one_sku(
         )
 
         # ====================================================
+        # STEP 11B - CATEGORY GATE
+        # ====================================================
+        # eligible_master is group-level, so a face-care row and a
+        # men's-face-wash row in the same group otherwise see the same
+        # candidate pool. Narrow this row's merged candidates to the
+        # master products in its resolved HGML category/sub-category.
+        #
+        # This only ever REMOVES candidates before scoring -- step 12
+        # runs on the result with V1's scoring completely unchanged, and
+        # the resolver's confidence never enters the arithmetic.
+        # ====================================================
+
+        decision = (category_decisions or {}).get(source_id)
+        merged_entry = merged_candidates.get(source_id)
+
+        if (
+            decision is not None
+            and decision.resolved
+            and merged_entry
+            and merged_entry.get("candidates")
+        ):
+
+            target = (
+                decision.hgml_category.strip().lower(),
+                decision.hgml_subcategory.strip().lower(),
+            )
+
+            ungated = merged_entry["candidates"]
+
+            gated = {
+                code: scores
+                for code, scores in ungated.items()
+                # master_by_code drops empty product codes; step 11 does
+                # not, so look before leaping.
+                if code in master_by_code
+                and (
+                    (master_by_code[code].category or "").strip().lower(),
+                    (master_by_code[code].subcategory or "").strip().lower(),
+                )
+                == target
+            }
+
+            if gated:
+
+                # Rebuild rather than mutate -- the caller's dict is
+                # shared with nothing here, but step 12 reads it back by
+                # source_id and a copy of one entry is free.
+                merged_candidates = {
+                    **merged_candidates,
+                    source_id: {**merged_entry, "candidates": gated},
+                }
+
+                logger.debug(
+                    "WORKER | SKU=%r | category gate %d -> %d | target=%r",
+                    sku,
+                    len(ungated),
+                    len(gated),
+                    target,
+                )
+
+            else:
+
+                # Never gate a row down to nothing -- a category decision
+                # that eliminates every retrieved candidate is more likely
+                # a bad rule than a genuinely empty target, so fall back
+                # to the ungated pool. A high rate here means the pool
+                # widening in step 5 is incomplete.
+                logger.warning(
+                    "SKU=%r category gate eliminated all %d candidates "
+                    "(target=%r, evidence=%r) -- falling back to ungated",
+                    sku,
+                    len(ungated),
+                    target,
+                    decision.evidence,
+                )
+
+        # ====================================================
         # STEP 12 - SCORE
         # ====================================================
 
@@ -321,6 +403,25 @@ def process_one_sku(
         combined_pre_audit = list(pre_audit_entries or []) + list(attribute_audit or [])
         if combined_pre_audit and source_id in final_results:
             final_results[source_id]["pre_audit_entries"] = combined_pre_audit
+
+        # Stamp the category decision onto the persisted rows so the gate is
+        # visible to a steward and traceable when a mapping is disputed.
+        # Record-keeping only -- scoring and disposition are already done.
+        if (
+            decision is not None
+            and decision.resolved
+            and source_id in final_results
+        ):
+            final_results[source_id]["match_results"] = [
+                replace(
+                    match_result,
+                    hgml_category=decision.hgml_category,
+                    hgml_subcategory=decision.hgml_subcategory,
+                    category_confidence=decision.confidence,
+                    category_evidence=decision.evidence,
+                )
+                for match_result in final_results[source_id].get("match_results", [])
+            ]
 
         # ====================================================
         # STEP 15 - ADD MAPPING DATA (atomic per SKU; writes rank
@@ -465,6 +566,16 @@ def main() -> None:
         "--no-llm",
         action="store_true",
         help="Skip attribute_fallback/synonyms/mcda_judge LLM calls (same meaning as flow.py's --no-llm)",
+    )
+
+    match_parser.add_argument(
+        "--strict-categories",
+        action="store_true",
+        help=(
+            "Abort if any V2 category target is missing from the master. "
+            "Off by default: the mismatch is always logged as an error, but "
+            "one stale rule should not block a production run."
+        ),
     )
 
     match_parser.add_argument(
@@ -626,6 +737,54 @@ def main() -> None:
                 "STEP 3 COMPLETED | master_lookup=%d",
                 len(master_by_code),
             )
+
+            # =================================================
+            # STARTUP VALIDATION
+            # Every target every V2 pack can emit must exist in
+            # the master. This is the check that catches a stale
+            # rule after a master refresh.
+            #
+            # Logged loudly but NOT fatal by default: a single
+            # stale rule must not be able to block a production
+            # run. --strict-categories makes it fatal.
+            # =================================================
+
+            allowed = set(master_lookup)   # already (lower, lower) tuples
+
+            missing = sorted(
+                {
+                    (
+                        cat.strip().lower(),
+                        sub.strip().lower(),
+                    )
+                    for pack in PACKS.values()
+                    for cat, sub in pack_targets(pack)
+                    if (
+                        cat.strip().lower(),
+                        sub.strip().lower(),
+                    ) not in allowed
+                }
+            )
+
+            if missing:
+
+                logger.error(
+                    "V2 targets not present in master: %s",
+                    missing,
+                )
+
+                if args.strict_categories:
+                    raise SystemExit(
+                        f"{len(missing)} V2 category target(s) missing from "
+                        f"the master; re-run without --strict-categories to "
+                        f"continue anyway"
+                    )
+
+            else:
+
+                logger.info(
+                    "All V2 category targets validate against the master"
+                )
 
             # NOTE: master-row embedding backfill is NOT done here.
             # It runs as its own separate upstream job before this flow
@@ -826,6 +985,66 @@ def main() -> None:
                     continue
 
                 # =================================================
+                # STEP 6C
+                # Category terminal short-circuit -- rows the V2
+                # resolver confidently closes (NO HGML EQUIVALENT /
+                # UNCLASSIFIED) never get embedded, retrieved, scored
+                # or judged. Sits here, alongside 6B, for the same
+                # reason: before any per-SKU work is spawned.
+                #
+                # UNRESOLVED rows are NOT closed here -- that state
+                # means "the rules could not decide", not "there is
+                # nothing here", and dropping them would silently lose
+                # recall. They flow on through the normal pipeline.
+                # =================================================
+
+                category_resolved, batch = step_6c_apply_category_shortcircuit(
+                    source_table=args.source_table,
+                    batch=batch,
+                )
+
+                if category_resolved:
+
+                    # Persisted through the same step 15 path as every
+                    # other row, rather than a bare status flip: the
+                    # resolver's evidence is the whole point, and a
+                    # steward needs to see why a row was closed with no
+                    # candidate.
+                    step_15_add_mapping_data(
+                        conn=conn,
+                        run_id=run_id,
+                        final_results={
+                            sid: {
+                                "source": result.source,
+                                "match_results": [result],
+                                "audit_entry": None,
+                                "pre_audit_entries": [],
+                            }
+                            for sid, result in category_resolved.items()
+                        },
+                        source_table=args.source_table,
+                    )
+
+                    total_processed += len(category_resolved)
+
+                    logger.info(
+                        "STEP 6C COMPLETED | category_closed=%d | "
+                        "remaining=%d",
+                        len(category_resolved),
+                        len(batch),
+                    )
+
+                if not batch:
+
+                    logger.info(
+                        "All source records in group=%s closed by the "
+                        "category short-circuit",
+                        group_key,
+                    )
+
+                    continue
+
+                # =================================================
                 # STEP 7B
                 # Lexicon expansion + attribute extraction + synonym
                 # expansion -- run once for the whole group's
@@ -856,6 +1075,30 @@ def main() -> None:
                     "audit_entries=%d",
                     len(source_products),
                     len(pre_audit_entries),
+                )
+
+                # =================================================
+                # STEP 7C
+                # Resolve each row's HGML category once for the whole
+                # group, following the same pattern as source_products
+                # and synonym_terms: computed here, looked up per SKU
+                # inside the worker.
+                # =================================================
+
+                category_decisions = resolve_batch(
+                    batch=batch,
+                    source_products=source_products,
+                )
+
+                resolved_count = sum(
+                    1 for d in category_decisions.values() if d.resolved
+                )
+
+                logger.info(
+                    "STEP 7C COMPLETED | category_decisions=%d | "
+                    "gate-eligible=%d",
+                    len(category_decisions),
+                    resolved_count,
                 )
 
                 # =================================================
@@ -932,6 +1175,11 @@ def main() -> None:
                             pre_audit_by_sku.get(
                                 getattr(source, "sku", None), []
                             ),
+                            # Positional, and appended LAST -- every
+                            # argument above is positional too, so
+                            # inserting anywhere else silently shifts
+                            # pre_audit_entries into the wrong parameter.
+                            category_decisions,
                         ): source
                         for source in batch
                     }
