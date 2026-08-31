@@ -21,13 +21,22 @@ from langchain_core.language_models.chat_models import BaseChatModel
 
 
 def get_chat_model() -> BaseChatModel:
+    # Temperature is passed only when LLM_TEMPERATURE is explicitly set, so
+    # the default is byte-identical to the previous behaviour (no temperature
+    # sent at all). Classification gains nothing from sampling variety and a
+    # non-zero temperature makes runs irreproducible, which undermines the
+    # audit trail -- but reasoning-family models reject any non-default
+    # temperature outright, and the provider/deployment here is env-driven.
+    # So this is opt-in (LLM_TEMPERATURE=0) rather than hardcoded.
+    kwargs = {} if C.LLM_TEMPERATURE is None else {"temperature": C.LLM_TEMPERATURE}
+
     provider = C.LLM_PROVIDER
     if provider == "anthropic":
         from langchain_anthropic import ChatAnthropic
-        return ChatAnthropic(model=C.LLM_MODEL or "claude-sonnet-5")
+        return ChatAnthropic(model=C.LLM_MODEL or "claude-sonnet-5", **kwargs)
     if provider == "openai":
         from langchain_openai import ChatOpenAI
-        return ChatOpenAI(model=C.LLM_MODEL or "gpt-5")
+        return ChatOpenAI(model=C.LLM_MODEL or "gpt-5", **kwargs)
     if provider == "azure":
         from langchain_openai import AzureChatOpenAI
         return AzureChatOpenAI(
@@ -35,6 +44,7 @@ def get_chat_model() -> BaseChatModel:
             api_key=C.AZURE_OPENAI_API_KEY,
             api_version=C.AZURE_OPENAI_API_VERSION,
             azure_deployment=C.LLM_MODEL or C.AZURE_LLM_DEPLOYMENT,
+            **kwargs,
         )
     raise ValueError(f"unknown LLM_PROVIDER: {provider!r} (expected 'anthropic', 'openai', or 'azure')")
 

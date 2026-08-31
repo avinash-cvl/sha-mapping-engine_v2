@@ -14,10 +14,15 @@ deterministic ensemble weighs, not a blind guess from titles alone.
 """
 from __future__ import annotations
 
+import functools
 import json
+import pathlib
+import re
 
 from agents.llm_client import get_chat_model, invoke_and_audit
 from common.models import MasterProduct, ScoreBreakdown, SourceProduct
+
+_PROMPT_DIR = pathlib.Path(__file__).parent / "prompts"
 
     # _SYSTEM_PROMPT = (
     #     "You are checking a proposed product match using multi-criteria "
@@ -35,7 +40,7 @@ from common.models import MasterProduct, ScoreBreakdown, SourceProduct
     #     "Respond with strict JSON only: "
     #     '{"pick": int|null, "confidence": float, "reason": string}.'
     # )
-_SYSTEM_PROMPT = """You are validating whether a source product is the same product as one of up
+_GENERIC_SYSTEM_PROMPT = """You are validating whether a source product is the same product as one of up
     to 3 ranked Himalaya master-catalogue candidates.    
     Your task is PRODUCT IDENTITY MATCHING.    
     You must compare ALL candidates against the source product using the following
@@ -99,13 +104,90 @@ _SYSTEM_PROMPT = """You are validating whether a source product is the same prod
     - Refer to candidates only by product_code.
     - Never assign a candidate product_code to the source product.
     
-    Respond with strict JSON only:    
+    Respond with strict JSON only:
     {
     "pick": int|null,
     "confidence": float,
     "reason": string
     }
     """
+
+
+# V1's output contract, appended to every per-category prompt in place of the
+# V2 "## Output" section those files ship with.
+#
+# This is the critical adaptation. The V2 prompts were written for a
+# CLASSIFICATION task and specify `row, evidence, hgml_category,
+# hgml_subcategory, confidence`. V1's judge is a CANDIDATE-SELECTION task and
+# parses {"pick", "confidence", "reason"}. Letting the file's own contract
+# reach the model would make every judged row fail json.loads and return NaN.
+# The opening paragraph matters as much as the shape: without it the model
+# still has an allowed-target list in context and tries to classify into it.
+_V1_OUTPUT_CONTRACT = """## Output
+
+You are NOT classifying into the category list above -- that list is context
+for judging product identity. Your task is to decide which candidate, if any,
+is the SAME product as the source.
+
+Respond with strict JSON only:
+{
+"pick": int|null,
+"confidence": float,
+"reason": string
+}
+
+- `pick` is the 0-based index of the chosen candidate, or null if no candidate
+  is the same product.
+- `confidence` is the product-match strength of the strongest candidate, not
+  your confidence in the decision to accept or reject.
+- In `reason`, refer to candidates only by product_code (e.g. '7002677'),
+  never as 'Candidate 0'. Never assign a candidate's product_code to the
+  source product."""
+
+
+def _slug(category: str) -> str:
+    """1DS category name -> prompt filename stem.
+
+    The prompt files simply drop '&' rather than spelling it out:
+    'coffee & tea' -> coffee_tea.md, 'drinks & beverages' ->
+    drinks_beverages.md. Mapping ' & ' to '_and_' silently misses six of the
+    25 categories, so collapse every run of non-alphanumerics instead.
+    """
+    return re.sub(r"[^a-z0-9]+", "_", (category or "").strip().lower()).strip("_")
+
+
+@functools.lru_cache(maxsize=None)
+def _system_prompt_for(category: str) -> str:
+    """Per-category judge prompt, falling back to the generic one.
+
+    Each file is a markdown document, not a raw prompt: a '# Prompt -- ...'
+    heading and explanatory prose, then '---', then the system prompt itself.
+    Only the four hand-audited categories carry a SECOND '---' and a trailing
+    '**Note.**' paragraph -- the other 21 files have just the one fence, so
+    requiring three parts would silently fall back to the generic prompt for
+    21 of 25 categories. Take everything after the FIRST fence, then cut at
+    the next fence if there is one.
+
+    Finally, V2's '## Output' section is replaced with V1's contract; see
+    _V1_OUTPUT_CONTRACT. Everything above it is kept -- the allowed-target
+    list, decision order, hard rules and calibration table are the whole
+    point of using these prompts.
+    """
+    path = _PROMPT_DIR / f"{_slug(category)}.md"
+    if not path.exists():
+        return _GENERIC_SYSTEM_PROMPT
+
+    parts = path.read_text(encoding="utf-8").split("\n---\n")
+    if len(parts) < 2:
+        return _GENERIC_SYSTEM_PROMPT
+
+    body = parts[1].split("\n---\n")[0]
+    head = body.split("\n## Output")[0].strip()
+    if not head:
+        return _GENERIC_SYSTEM_PROMPT
+
+    return f"{head}\n\n{_V1_OUTPUT_CONTRACT}"
+
 
 def _criteria_line(scores: ScoreBreakdown) -> str:
     line = (
@@ -136,7 +218,7 @@ def judge(
     model = get_chat_model()
     response_text, audit_entry = invoke_and_audit(
         model,
-        [("system", _SYSTEM_PROMPT), ("human", prompt)],
+        [("system", _system_prompt_for(source.category)), ("human", prompt)],
         call_type="mcda_judge",
     )
     try:
