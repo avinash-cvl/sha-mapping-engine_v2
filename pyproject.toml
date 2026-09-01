@@ -3,7 +3,6 @@ name = "sha-pipelines"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
-    "prefect>=3.0",
     "pandas",
     "openpyxl",
     "pyodbc",
@@ -30,32 +29,23 @@ dependencies = [
     "sse-starlette",
     "apscheduler",
     "tzdata",
-    "deepeval>=1.4.0",
     "PyJWT",
     "argon2-cffi",
 ]
 
+# The previous [tool.setuptools] block described an older FLAT layout: 17
+# top-level modules (config.py, db.py, stage_*.py, flow.py ...) that now live
+# under common/ and oneds_master/stages/, plus an observability_sdk package
+# that is not in this repo at all. setuptools failed on every one of them, so
+# `uv sync` could not build the project and the venv was left empty.
+#
+# The code is run as modules from the repo root (python -m
+# oneds_master.batch_flow) using implicit namespace packages, so there is
+# nothing here that needs installing. Declaring no packages keeps the
+# dependency list usable via `uv sync` without asking setuptools to build a
+# distribution the layout does not support.
 [tool.setuptools]
-py-modules = [
-    "checkpoint",
-    "config",
-    "models",
-    "db",
-    "db_models",
-    "embedder",
-    "stage_ingest",
-    "stage_deterministic",
-    "stage_lexicon",
-    "stage_attributes",
-    "stage_candidates",
-    "stage_scoring",
-    "stage_disposition",
-    "stage_recovery",
-    "stage_relate",
-    "flow",
-    "flow_without_prefect",
-]
-packages = ["agents", "observability_sdk", "observability_sdk.decorators", "observability_sdk.exporters", "observability_sdk.tracing", "observability_sdk.utils"]
+packages = []
 
 [build-system]
 requires = ["setuptools>=68"]
