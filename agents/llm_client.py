@@ -13,9 +13,29 @@ from __future__ import annotations
 import time
 
 import common.config as C
+import os
 import sys
 from pathlib import Path
-sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
+
+# sha_observability_sdk lives outside this repo and is not pip-installable
+# (no pyproject of its own), so it has to be found on the filesystem. The
+# original single append assumed it sat directly beside the repo's parent;
+# it actually lives one level deeper, in the accelerator checkout, so an
+# ordinary `uv run` failed with ModuleNotFoundError unless the caller
+# happened to set PYTHONPATH by hand. Try the known locations, and let
+# SHA_OBSERVABILITY_SDK_PATH override for a checkout somewhere else.
+_repo_root = Path(__file__).resolve().parent.parent
+_sdk_candidates = [
+    os.environ.get("SHA_OBSERVABILITY_SDK_PATH"),
+    _repo_root.parent,                                  # d:/Himalaya
+    _repo_root.parent / "SKUHarmonizationAccelerator",  # where it actually is
+]
+for _candidate in _sdk_candidates:
+    if _candidate and (Path(_candidate) / "sha_observability_sdk").is_dir():
+        if str(_candidate) not in sys.path:
+            sys.path.append(str(_candidate))
+        break
+
 from sha_observability_sdk import observe as sh_observe, capture_generation_response
 from langchain_core.language_models.chat_models import BaseChatModel
 
