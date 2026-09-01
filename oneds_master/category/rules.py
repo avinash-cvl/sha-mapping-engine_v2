@@ -288,8 +288,16 @@ PACKS["beard care"] = CategoryPack(
              title=r"\bshav\w*\b|\brazor\b|\baftershave\b"),
         Rule("beard oil", MENS, "BEARD OIL", 0.88,
              title=r"\bbeard oil\b|\bbeard serum\b|\bgrowth oil\b"),
-        Rule("beard wash / other grooming", NO_EQ, NO_EQ, 0.78,
-             title=r"\bbeard wash\b|\bbeard shampoo\b|\bbeard wax\b|\bbeard comb\b"),
+        # V2 sent all four of these to NO HGML EQUIVALENT. Two of them are
+        # wrong against this master: "beard wash" and "beard comb" both hit
+        # MEN FACE & BEARD WASH (7004729, 7004568, and 10 more kit SKUs),
+        # filed under MENS CARE / FACE WASH. Only beard shampoo and beard
+        # wax are genuinely absent. Since NO_EQ is terminal, the combined
+        # rule closed beard-wash rows before retrieval could find them.
+        Rule("beard wash", MENS, "FACE WASH", 0.78,
+             title=r"\bbeard wash\b|\bbeard comb\b"),
+        Rule("beard shampoo / wax — not in the Himalaya range", NO_EQ, NO_EQ, 0.78,
+             title=r"\bbeard shampoo\b|\bbeard wax\b"),
     ],
     default=(MENS, "BEARD OIL", 0.62, "beard care, specific form not stated"),
 )
@@ -333,9 +341,23 @@ PACKS["health supplements"] = CategoryPack(
 )
 
 PACKS["women hygiene"] = CategoryPack(
-    name="women hygiene", rules=[
-        # Himalaya has no intimate wash in the master.
-        Rule("intimate wash — not in the Himalaya range", NO_EQ, NO_EQ, 0.88,
+    name="women hygiene",
+    rules=[
+        # V2 shipped this as NO HGML EQUIVALENT, commented "Himalaya has no
+        # intimate wash in the master". That is false against this master,
+        # which carries six of them under PERSONAL HYGIENE / MOTHER CARE
+        # (7002990 INTIMATE WASH 100ML, 7002991 200ML, 7003571 50ML,
+        # 7004299 50ML 10N, 7003611 200ML+WIPES, plus INTIMATE WIPES
+        # 7003016/7003017).
+        #
+        # Because NO_EQ is terminal, the old rule closed every intimate-wash
+        # row before retrieval ran -- Himalaya Intima (B0DXL74J7Y) had
+        # previously mapped to 7002990 and regressed to NoHimalayaEquivalent.
+        # Confidence is deliberately below CATEGORY_GATE_MIN_CONF (0.80): the
+        # 1DS sub-category tells us this is an intimate wash, but MOTHER CARE
+        # also holds wipes and other lines, so this narrows nothing safely --
+        # let V1's scoring pick the SKU.
+        Rule("intimate wash", PERS, "MOTHER CARE", 0.75,
              subcats=("intimate washes",)),
     ],
     default=(UNRES, UNRES, 0.40, "not identified"),
