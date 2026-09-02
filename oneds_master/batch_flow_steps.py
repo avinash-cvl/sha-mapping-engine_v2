@@ -344,6 +344,7 @@ def step_2_load_master(
             master.c.normalized_subcategory,
             master.c.search_text,
             master.c.normalized_uom,
+            master.c.normalized_pack_size,
         )
         .where(
             master.c.product_code.is_not(None),
@@ -402,7 +403,27 @@ def step_3_build_master_lookup(
 
     master_products: list[MasterProduct] = []
 
+    unsized = 0
+
     for row in master_rows:
+
+        # Fold the master's own size columns into the same grams/millilitres
+        # convention extract_attributes() applies to the source side.
+        #
+        # pack_value used to be hardcoded None here while normalized_pack_size
+        # sat populated on every master row. pack_score() returns a neutral
+        # 0.5 whenever either side is missing, so W_PACK contributed the same
+        # constant to every candidate and could never separate, say, a 4.5g
+        # chapstick from a 10g tube. Passing the raw column through instead
+        # would be worse than the status quo: pack_score() treats a unit
+        # mismatch as a hard 0.0, and the master says 'GM' where the source
+        # says 'g'. Hence normalize_pack() on both halves.
+        pack = stage_attributes.normalize_pack(
+            getattr(row, "normalized_pack_size", None),
+            getattr(row, "normalized_uom", None),
+        )
+        if pack is None:
+            unsized += 1
 
         product = MasterProduct(
             product_code=row.product_code,
@@ -412,8 +433,8 @@ def step_3_build_master_lookup(
             subcategory=row.normalized_subcategory or "",
             sap_status="",
             blocked_in_sap=False,
-            pack_value=None,
-            pack_unit=row.normalized_uom,
+            pack_value=pack[0] if pack else None,
+            pack_unit=pack[1] if pack else row.normalized_uom,
             text=(
                 row.search_text
                 or row.normalized_title
@@ -427,6 +448,13 @@ def step_3_build_master_lookup(
     logger.info(
         "MasterProduct objects created: %d",
         len(master_products),
+    )
+
+    logger.info(
+        "Master pack sizes parsed: %d / %d (%d unsized -> neutral pack_score)",
+        len(master_products) - unsized,
+        len(master_products),
+        unsized,
     )
 
     # --------------------------------------------------------
