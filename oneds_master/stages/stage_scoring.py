@@ -8,9 +8,31 @@ B.13 invariant 7).
 """
 from __future__ import annotations
 
+import re
+
 import common.config as C
 from oneds_master.stages import stage_attributes
 from common.models import MasterProduct, ScoreBreakdown, SourceProduct
+
+# Form/measure words carry no identifying power inside a product group, so
+# they are dropped before the token-subset test in product_group_match().
+# Without this a group of "LIP BALM" would match every lip balm listing and
+# hand out the bonus indiscriminately -- the bonus is only meaningful for the
+# distinctive part of the name ("strawberry shine").
+_GROUP_STOPWORDS = frozenset({
+    "lip", "balm", "care", "cream", "creams", "wash", "face", "body", "hair",
+    "oil", "gel", "soap", "powder", "lotion", "shampoo", "serum", "mask",
+    "scrub", "toner", "kit", "pack", "wipes", "baby", "men", "mens",
+    "the", "and", "&", "with", "of", "for", "-",
+})
+
+# Explicit multipack cues in a listing title. Mirrors the notation
+# category/core.py's pack_count() reads, kept local so stage_scoring does not
+# depend on the vendored category package.
+_MULTIPACK_CUE = re.compile(
+    r"\bpack of \d|\bset of \d|\bcombo\b|\d\s*[x*]\s*\d|\b\d+\s*n\b|"
+    r"\b\d+\s*pcs?\b|\btwin pack\b|\bmulti ?pack\b"
+)
 
 
 def _type_cluster(text: str) -> str | None:
@@ -66,6 +88,52 @@ def text_overlap_score(source_text: str, master_text: str) -> float:
 def overlap_score(source: SourceProduct, master: MasterProduct) -> float:
     """Shared-keyword bonus for source clean_title."""
     return text_overlap_score(source.clean_title, master.text)
+
+
+def product_group_match(source_text: str, master: MasterProduct) -> bool:
+    """True when the source title names the master's own product group.
+
+    MasterProduct.product_group is the marketing line every size and pack of
+    a product shares -- "STRAWBERRY SHINE LIP BALM" covers the 4.5g single,
+    the pack of 2 and the pack of 3. Where several candidates are the same
+    form and size, the group name in the title is often the only thing that
+    separates them (strawberry vs litchi vs peach), and none of the six
+    blended signals can see it: the group is not in the master's title text
+    verbatim, and token overlap treats "strawberry" as one word among many.
+
+    Matching is token-subset, not substring: every distinctive word of the
+    group must appear in the source text. Generic form words are dropped
+    first, so a bare "LIP BALM" group cannot claim every lip balm listing --
+    a group that reduces to nothing after that is not matchable at all.
+    """
+    if not master.product_group:
+        return False
+    tokens = {
+        word
+        for word in master.product_group.lower().split()
+        if word not in _GROUP_STOPWORDS
+    }
+    if not tokens:
+        return False
+    return tokens <= set(source_text.lower().split())
+
+
+def pack_type_mismatch(source_text: str, master: MasterProduct) -> bool:
+    """True when the master is a multipack/kit but the source reads as a
+    single unit.
+
+    A twin pack usually carries the SAME PackSize as the single, so
+    pack_score() cannot separate them -- this is the only signal that can.
+    Deliberately one-directional: a listing that says nothing about count is
+    treated as a single, so this fires only when the master is explicitly a
+    multi/kit and the title shows no multipack cue. The reverse (source is a
+    multipack, master is single) is left alone, since a seller listing a
+    bundle of singles is a real and correct mapping.
+    """
+    pack_type = (master.pack_type or "").upper()
+    if not any(marker in pack_type for marker in ("MULTI", "KIT")):
+        return False
+    return not _MULTIPACK_CUE.search(source_text.lower())
 
 
 def _domain_mismatch(source_domain: str, master: MasterProduct) -> bool:
@@ -134,6 +202,22 @@ def score_candidate(
     if hard_incompat:
         ensemble *= C.TYPE_HARD_INCOMPAT_PENALTY
         penalty_applied = "type_hard_incompatible"
+
+    # Master-side signals the six blended weights cannot see. Applied after
+    # the blend, like the penalties above, so the AHP weight vector stays
+    # intact. Both are capped into [0, 1] below.
+    if product_group_match(source.clean_title, master):
+        ensemble *= C.PRODUCT_GROUP_MATCH_BONUS
+        penalty_applied = penalty_applied or "product_group_match"
+    if pack_type_mismatch(source.clean_title, master):
+        ensemble *= C.PACK_TYPE_MISMATCH_PENALTY
+        penalty_applied = penalty_applied or "pack_type_mismatch"
+
+    # The group bonus is the only multiplier above 1.0, so clamp -- every
+    # downstream threshold (TIER_HIGH, determine_mapping_status) assumes a
+    # 0-1 ensemble, and an unclamped 1.08x would let a strong match cross
+    # TIER_HIGH on the bonus alone.
+    ensemble = min(1.0, max(0.0, ensemble))
 
     return ScoreBreakdown(
         semantic=score_semantic, lexical=score_lexical, category=category,
