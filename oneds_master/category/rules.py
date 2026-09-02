@@ -27,6 +27,25 @@ Himalaya does not currently play in.
 """
 from oneds_master.category.core import NO_EQ, UNRES, CategoryPack, Rule
 
+# Himalaya product lookups are GENERATED from the Material Master, never typed.
+# The earlier V2 bundle hand-wrote these dicts, and a bare "purifying neem" key
+# mapped every Purifying Neem FACE WASH to FACE MASKS -- 113 misclassified
+# listings upstream, and 50 of 62 rank-1 changes when measured here on one
+# amazon face-wash group. Generated keys carry the form ("purifying neem face
+# wash" vs "purifying neem mask rinse off"), so they cannot contradict the
+# master.
+#
+# Each pack takes a SCOPED slice: only the phrases whose master_category is one
+# this 1DS category can legitimately reach, so a pure-herb key cannot claim an
+# oral-care listing.
+from oneds_master.category.him_lookup import HIM_LOOKUP as _GEN
+
+
+def _scoped(*master_categories):
+    cats = set(master_categories)
+    return {k: v for k, v in _GEN.items() if v[0] in cats}
+
+
 # master_category constants (config.oneds_master_category_mapping vocabulary)
 BABY_OTH = "BABY CARE - OTHERS"
 BABY_DIA = "BABY DIAPERS"
@@ -60,8 +79,7 @@ PACKS = {}
 # ---------------------------------------------------------------- face care
 PACKS["face care"] = CategoryPack(
     name="face care",
-    him_lookup={"clarina": (PH_F, "CLARINA"), "bleminor": (PH_F, "BLEMINOR"),
-                "purifying neem": (FACE_CLN, "FACE MASKS")},
+    him_lookup=_scoped(FACE_WSH, FACE_CLN, FACE_MOI, FACE_SER, FACE_OTH, MENS, PH_F),
     rules=[
         # Clarina and Bleminor ship as creams and washes only, so the
         # therapeutic route is restricted to those forms. Applying it to every
@@ -104,7 +122,7 @@ PACKS["face care"] = CategoryPack(
 # ---------------------------------------------------------------- skin care
 PACKS["skin care"] = CategoryPack(
     name="skin care",
-    him_lookup={"purely neem": (PERS, "BAR SOAPS")},
+    him_lookup=_scoped(PERS, BODY_MOI, SUN, OTX_O, FACE_CLN),
     rules=[
         # Himalaya sells bar soap and hand wash, but no shower gel / body wash.
         Rule("body wash / shower gel", NO_EQ, NO_EQ, 0.90,
@@ -132,7 +150,7 @@ PACKS["skin care"] = CategoryPack(
 # ---------------------------------------------------------------- hair care
 PACKS["hair care"] = CategoryPack(
     name="hair care",
-    him_lookup={"anti-hair fall": (HAIR, "SHAMPOOS"), "hair zone": (PH_F, "HAIR ZONE")},
+    him_lookup=_scoped(HAIR, MENS, PH_F),
     rules=[
         Rule("regrowth serum line", PH_F, "HAIR ZONE", 0.88,
              subcats=("hair regrowth treatments", "hair lotions")),
@@ -154,7 +172,7 @@ PACKS["hair care"] = CategoryPack(
 # ---------------------------------------------------------------- baby care
 PACKS["baby care"] = CategoryPack(
     name="baby care",
-    him_lookup={"baby rub": (BABY_TOI, "BABY RUB")},
+    him_lookup=_scoped(BABY_TOI, BABY_WIP, BABY_OTH),
     rules=[
         Rule("botanique baby line", BABY_TOI, "BOTANIQUE BABY SOAPS", 0.86,
              subcats=("baby soaps",), title=r"\bbotanique\b|" + ORGANIC),
@@ -191,8 +209,7 @@ _HERB = {
 }
 PACKS["herbal supplements"] = CategoryPack(
     name="herbal supplements",
-    him_lookup={"gasex": (OTX_F, "GASEX"), "himcocid": (OTX_F, "HIMCOCID"),
-                "liv.52": (PH_F, "LIV.52"), "septilin": (PH_F, "SEPTILIN")},
+    him_lookup=_scoped(OTX_PO, OTX_PORG, PH_PH, OTX_F, PH_F),
     rules=[
         Rule("organic ashwagandha", OTX_PORG, "ASHWAGANDHA", 0.88,
              subcats=("ashwagandha",), title=ORGANIC),
@@ -304,7 +321,7 @@ PACKS["beard care"] = CategoryPack(
 
 PACKS["health & wellness"] = CategoryPack(
     name="health & wellness",
-    him_lookup={"rumalaya": (OTX_F, "RUMALAYA"), "partysmart": (OTX_PS, "PARTYSMART")},
+    him_lookup=_scoped(OTX_F, OTX_O, OTX_PS),
     rules=[
         Rule("anti-hangover", OTX_PS, "PARTYSMART", 0.88, subcats=("anti hangover",)),
         Rule("balm format", OTX_O, "BALMS", 0.84, title=r"\bbalm\b"),
@@ -318,7 +335,7 @@ PACKS["health & wellness"] = CategoryPack(
 
 PACKS["medication & remedies"] = CategoryPack(
     name="medication & remedies",
-    him_lookup={"koflet": (OTX_F, "KOFLET"), "bresol": (PH_F, "BRESOL")},
+    him_lookup=_scoped(OTX_F, PH_F),
     rules=[
         Rule("cough formulation", OTX_F, "KOFLET", 0.80, subcats=("cough & cold",)),
         # 'syrups' names a dosage form and nothing else. Ten unrelated Himalaya
@@ -331,8 +348,7 @@ PACKS["medication & remedies"] = CategoryPack(
 
 PACKS["health supplements"] = CategoryPack(
     name="health supplements",
-    him_lookup={"tentex royal": (OTX_F, "TENTEX ROYAL"),
-                "tentex forte": (PH_F, "TENTEX FORTE"), "confido": (PH_F, "CONFIDO")},
+    him_lookup=_scoped(OTX_F, PH_F),
     rules=[
         Rule("male vitality segment", OTX_F, "TENTEX ROYAL", 0.76,
              subcats=("testosterone boosters",)),
