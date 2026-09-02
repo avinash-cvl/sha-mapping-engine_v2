@@ -47,7 +47,16 @@ class MasterProduct:
     pack_value: float | None
     pack_unit: str | None
     text: str               # concatenated searchable text (name + long name + sales text)
-    source_row_id: int = 0  # raw.himalaya_products.id this came from; 0 = unset
+    source_row_id: int = 0
+    # The master's own marketing grouping (raw.himalaya_products.product_group,
+    # projected to staging.normalized_product_group) -- e.g. every size and
+    # pack of "STRAWBERRY SHINE LIP BALM" shares one product_group. It is the
+    # signal that separates flavour/variant lines whose titles differ by a
+    # single word. Defaulted so existing construction sites are unaffected.
+    product_group: str = ""
+    # raw.himalaya_products.pack_type: REGULAR SALES PACK / OFFER SALES
+    # PK-MULTI / OFFER SALES PK-SINGL / GIFT SALES PACK(KIT).
+    pack_type: str = ""  # raw.himalaya_products.id this came from; 0 = unset
 
 
 @dataclass(frozen=True)
