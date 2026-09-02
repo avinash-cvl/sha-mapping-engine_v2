@@ -335,13 +335,16 @@ def step_2_load_master(
     # 2. Load ALL master records
     # --------------------------------------------------------
 
-    # sap_status / pack_type live only on the raw landing table -- the
-    # staging projection never carried them, so MasterProduct.sap_status and
-    # .blocked_in_sap were hardcoded "" / False for every row. 46% of this
-    # master is Blocked_in_SAP, and those SKUs were ranking level with live
-    # ones. Joined here (bronze_product_id -> raw.id, 1:1 for all rows) via
-    # an OUTER join so a staging row with no raw parent still loads, just
-    # without the SAP fields.
+    # pack_type and division_name live only on the raw landing table -- the
+    # staging projection never carried them. Joined here (bronze_product_id
+    # -> raw.id, 1:1 for all rows) via an OUTER join so a staging row with no
+    # raw parent still loads, just without those fields.
+    #
+    # sap_status is deliberately NOT read: availability is a commercial
+    # state, not evidence about whether two products are the same, and a
+    # discontinued SKU is still the correct answer for a listing that sells
+    # it. MasterProduct.sap_status/.blocked_in_sap therefore stay at their
+    # defaults on this path.
     # Aliased: raw.himalaya_products and staging.himalaya_products share an
     # exposed name, which SQL Server rejects in one FROM clause.
     raw_master = db_models.get_table(
@@ -361,7 +364,6 @@ def step_2_load_master(
             master.c.normalized_uom,
             master.c.normalized_pack_size,
             master.c.normalized_product_group,
-            raw_master.c.sap_status,
             raw_master.c.pack_type,
             raw_master.c.division_name,
         )
@@ -450,8 +452,6 @@ def step_3_build_master_lookup(
         if pack is None:
             unsized += 1
 
-        sap_status = getattr(row, "sap_status", None) or ""
-
         product = MasterProduct(
             product_code=row.product_code,
             product_name=row.normalized_title or "",
@@ -463,11 +463,10 @@ def step_3_build_master_lookup(
             division=getattr(row, "division_name", None) or "",
             category=row.normalized_category or "",
             subcategory=row.normalized_subcategory or "",
-            sap_status=sap_status,
-            # raw.sap_status is 'Active' | 'Blocked_in_SAP'. 46% of this
-            # master is blocked; those SKUs were previously indistinguishable
-            # from live ones because this was hardcoded False.
-            blocked_in_sap=sap_status.strip().lower() == "blocked_in_sap",
+            # Availability is not identity evidence -- see the note on the
+            # raw join above.
+            sap_status="",
+            blocked_in_sap=False,
             pack_value=pack[0] if pack else None,
             pack_unit=pack[1] if pack else row.normalized_uom,
             product_group=getattr(row, "normalized_product_group", None) or "",
