@@ -1056,7 +1056,7 @@ def step_6c_apply_category_shortcircuit(
 ):
     """Splits `batch` into (resolved, remaining):
       - resolved: {source_id: MatchResult} for rows the V2 category
-        resolver closed as NO HGML EQUIVALENT or UNCLASSIFIED -- these skip
+        resolver closed as NO MASTER EQUIVALENT or UNCLASSIFIED -- these skip
         retrieval, scoring, and the LLM judge entirely. candidate/scores are
         None, and the resolver's evidence rides along on the MatchResult.
       - remaining: raw rows for SKUs still needing the full pipeline,

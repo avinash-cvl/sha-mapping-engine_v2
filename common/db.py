@@ -202,7 +202,7 @@ def _none_if_nan(value: float | None) -> float | None:
 
 def _category_tag(r: MatchResult) -> str | None:
     """Human- and grep-readable summary of the V2 category decision, e.g.
-    '[hgml:FACE WASH/FACE WASH conf=0.94]'.
+    '[master:FACE WASH/FACE WASH conf=0.94]'.
 
     Prefixed onto llm_reasoning so the decision is visible to a steward on
     every channel today, whether or not the dedicated columns from
@@ -213,8 +213,8 @@ def _category_tag(r: MatchResult) -> str | None:
     NOT NULL, so they never produce a mapping row (see
     step_6c_apply_category_shortcircuit). The terminal branch is kept for
     any caller that does persist such a row."""
-    if r.hgml_category:
-        tag = f"[hgml:{r.hgml_category}/{r.hgml_subcategory}"
+    if r.master_category:
+        tag = f"[master:{r.master_category}/{r.master_subcategory}"
         if r.category_confidence is not None:
             tag += f" conf={r.category_confidence:.2f}"
         return tag + "]"
@@ -276,8 +276,8 @@ def _mapping_row(
     # a run is in flight stays invisible until the next run.
     if mapping_table is not None:
         for column, value in (
-            ("hgml_category", r.hgml_category),
-            ("hgml_subcategory", r.hgml_subcategory),
+            ("master_category", r.master_category),
+            ("master_subcategory", r.master_subcategory),
             ("category_confidence", _none_if_nan(r.category_confidence)),
             ("category_evidence", r.category_evidence),
         ):

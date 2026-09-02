@@ -20,14 +20,14 @@ Material Master, and batch_flow.main() asserts at startup that every one
 exists (see resolve.pack_targets).
 
 Where a 1DS sub-category has no Himalaya counterpart the pack says so
-explicitly with NO HGML EQUIVALENT rather than forcing a near-miss. Those rows
+explicitly with NO MASTER EQUIVALENT rather than forcing a near-miss. Those rows
 are the portfolio white space and are the most commercially useful output here
 — body wash gels, electrolytes and coconut water are all sizeable segments
 Himalaya does not currently play in.
 """
 from oneds_master.category.core import NO_EQ, UNRES, CategoryPack, Rule
 
-# HGML category constants
+# master_category constants (config.oneds_master_category_mapping vocabulary)
 BABY_OTH = "BABY CARE - OTHERS"
 BABY_DIA = "BABY DIAPERS"
 BABY_TOI = "BABY TOILETRIES"
@@ -288,7 +288,7 @@ PACKS["beard care"] = CategoryPack(
              title=r"\bshav\w*\b|\brazor\b|\baftershave\b"),
         Rule("beard oil", MENS, "BEARD OIL", 0.88,
              title=r"\bbeard oil\b|\bbeard serum\b|\bgrowth oil\b"),
-        # V2 sent all four of these to NO HGML EQUIVALENT. Two of them are
+        # V2 sent all four of these to NO MASTER EQUIVALENT. Two of them are
         # wrong against this master: "beard wash" and "beard comb" both hit
         # MEN FACE & BEARD WASH (7004729, 7004568, and 10 more kit SKUs),
         # filed under MENS CARE / FACE WASH. Only beard shampoo and beard
@@ -343,7 +343,7 @@ PACKS["health supplements"] = CategoryPack(
 PACKS["women hygiene"] = CategoryPack(
     name="women hygiene",
     rules=[
-        # V2 shipped this as NO HGML EQUIVALENT, commented "Himalaya has no
+        # V2 shipped this as NO MASTER EQUIVALENT, commented "Himalaya has no
         # intimate wash in the master". That is false against this master,
         # which carries six of them under PERSONAL HYGIENE / MOTHER CARE
         # (7002990 INTIMATE WASH 100ML, 7002991 200ML, 7003571 50ML,
