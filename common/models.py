@@ -77,12 +77,16 @@ class MatchResult:
     llm_pick: str | None = None
     llm_confidence: float = float("nan")
     llm_reason: str | None = None
-    # The V2 category resolver's decision for this row (oneds_master/category).
+    # The category resolver's decision for this row (oneds_master/category).
+    # These are master_category/master_subcategory in the vocabulary of
+    # config.oneds_master_category_mapping -- the same values held by
+    # staging.himalaya_products.normalized_category/_subcategory.
+    #
     # Recorded for traceability only -- these never enter the ensemble
     # arithmetic; they gate which candidates were scored, and close terminal
     # rows. All default to None so every existing construction site (including
     # oneds_competitor, which never sets them) is unaffected.
-    hgml_category: str | None = None
-    hgml_subcategory: str | None = None
+    master_category: str | None = None
+    master_subcategory: str | None = None
     category_confidence: float | None = None
     category_evidence: str | None = None

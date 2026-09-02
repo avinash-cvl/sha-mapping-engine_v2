@@ -77,7 +77,7 @@ LLM_PROMOTE_CONFIDENCE = 0.75
 # ---------------------------------------------------------------------------
 # CATEGORY GATE (oneds_master/category)
 # ---------------------------------------------------------------------------
-# Minimum V2 category-resolver confidence at which the resolved HGML
+# Minimum category-resolver confidence at which the resolved master
 # category/sub-category is trusted enough to gate the candidate pool.
 # Below this, the row falls back to the config.oneds_master_category_mapping
 # table so recall is never reduced by a weak category decision.

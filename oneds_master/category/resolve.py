@@ -1,11 +1,17 @@
-"""Row-level HGML category resolution, used to gate the candidate pool.
+"""Row-level master category resolution, used to gate the candidate pool.
 
 Returns a decision per SourceProduct. This never scores a product match --
 it only narrows which master products a row is allowed to be scored against,
 and short-circuits rows that are confidently not mappable at all. Every
 candidate that survives the gate is scored by V1's existing code, unchanged.
 
-Case convention: core.classify() emits HGML names in the master's own casing
+The resolved target is a (master_category, master_subcategory) pair in the
+vocabulary of config.oneds_master_category_mapping -- the same values held by
+staging.himalaya_products.normalized_category/_subcategory. V2 called these
+"HGML category / sub-category"; they are the same nodes in the same Material
+Master, named differently only because the codebases were written separately.
+
+Case convention: core.classify() emits those names in the master's own casing
 ("FACE WASH"), while V1's master_lookup (step_3_build_master_lookup) is keyed
 on .strip().lower(). Normalise at every lookup site.
 """
@@ -21,16 +27,16 @@ from oneds_master.category.rules import PACKS
 
 @dataclass(frozen=True)
 class CategoryDecision:
-    resolved: bool          # True -> hgml_category/hgml_subcategory are usable as a gate
-    terminal: str | None    # NO HGML EQUIVALENT | UNRESOLVED | UNCLASSIFIED, else None
-    hgml_category: str
-    hgml_subcategory: str
+    resolved: bool          # True -> master_category/master_subcategory usable as a gate
+    terminal: str | None    # NO MASTER EQUIVALENT | UNRESOLVED | UNCLASSIFIED, else None
+    master_category: str
+    master_subcategory: str
     confidence: float
     evidence: str
 
 
 def resolve(source: SourceProduct) -> CategoryDecision:
-    """Resolve one source row to an HGML category/sub-category.
+    """Resolve one source row to a master category/sub-category.
 
     A row with no V2 pack for its 1DS category, or whose confidence is below
     CATEGORY_GATE_MIN_CONF, comes back resolved=False and is left to V1's
@@ -58,8 +64,8 @@ def resolve(source: SourceProduct) -> CategoryDecision:
     return CategoryDecision(
         resolved=resolved,
         terminal=None if resolved else UNRES,
-        hgml_category=cat,
-        hgml_subcategory=sub,
+        master_category=cat,
+        master_subcategory=sub,
         confidence=conf,
         evidence=str(d["sub_evidence"]),
     )

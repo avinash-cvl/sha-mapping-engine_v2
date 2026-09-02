@@ -1,15 +1,17 @@
 """
-core.py -- shared engine for 1DS -> HGML category mapping.
+core.py -- shared engine for 1DS -> master category mapping.
 
-Vendored from V2's `mapping_code/mapping_core.py`. "HGML category /
-sub-category" is the same thing V1 calls master category / sub-category:
-V2's HGML_CATEGORY_NAME / HGML_SUB_CATEGORY_NAME are the master_category /
-master_subcategory columns of config.oneds_master_category_mapping, and the
+Vendored from V2's `mapping_code/mapping_core.py`, renamed throughout to V1's
+vocabulary. What V2 called "HGML category / sub-category" is exactly
+master_category / master_subcategory: the columns of
+config.oneds_master_category_mapping, the values in
+staging.himalaya_products.normalized_category / _subcategory, and the
 (category, subcategory) key of the master_lookup dict built in
-step_3_build_master_lookup. The names differ only because the codebases were
-written separately. The one practical difference is casing: this module emits
-the master's own casing ("FACE WASH"), while V1 lowercases at every lookup --
-so callers normalise with .strip().lower().
+step_3_build_master_lookup. Same nodes in the same Material Master -- the
+names differed only because the codebases were written separately, so the
+HGML spelling is gone from this port. The one practical difference is casing:
+this module emits the master's own casing ("FACE WASH"), while V1 lowercases
+at every lookup -- so callers normalise with .strip().lower().
 
 Changes made when vendoring (see v2_integration_prompt.md Part 1):
   - Dropped `import pandas as pd` and the pandas-only helpers run_category(),
@@ -47,8 +49,8 @@ Design rules, each earned from a specific audit failure
 
 5. FOUR TERMINAL STATES, not two. Conflating them hid the most commercially
    interesting output. (vitamins & supplements)
-       <node>              mapped to a real HGML node
-       NO HGML EQUIVALENT  confident finding: Himalaya sells nothing here
+       <node>              mapped to a real master node
+       NO MASTER EQUIVALENT  confident finding: Himalaya sells nothing here
        UNRESOLVED          genuine uncertainty -> review queue
        UNCLASSIFIED        not a product of this kind at all (devices, plants)
 
@@ -60,7 +62,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-NO_EQ = "NO HGML EQUIVALENT"
+NO_EQ = "NO MASTER EQUIVALENT"
 UNRES = "UNRESOLVED"
 UNCLS = "UNCLASSIFIED"
 TERMINALS = {NO_EQ, UNRES, UNCLS}

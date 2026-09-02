@@ -264,7 +264,7 @@ def process_one_sku(
         # eligible_master is group-level, so a face-care row and a
         # men's-face-wash row in the same group otherwise see the same
         # candidate pool. Narrow this row's merged candidates to the
-        # master products in its resolved HGML category/sub-category.
+        # master products in its resolved master category/sub-category.
         #
         # This only ever REMOVES candidates before scoring -- step 12
         # runs on the result with V1's scoring completely unchanged, and
@@ -282,8 +282,8 @@ def process_one_sku(
         ):
 
             target = (
-                decision.hgml_category.strip().lower(),
-                decision.hgml_subcategory.strip().lower(),
+                decision.master_category.strip().lower(),
+                decision.master_subcategory.strip().lower(),
             )
 
             ungated = merged_entry["candidates"]
@@ -415,8 +415,8 @@ def process_one_sku(
             final_results[source_id]["match_results"] = [
                 replace(
                     match_result,
-                    hgml_category=decision.hgml_category,
-                    hgml_subcategory=decision.hgml_subcategory,
+                    master_category=decision.master_category,
+                    master_subcategory=decision.master_subcategory,
                     category_confidence=decision.confidence,
                     category_evidence=decision.evidence,
                 )
@@ -987,7 +987,7 @@ def main() -> None:
                 # =================================================
                 # STEP 6C
                 # Category terminal short-circuit -- rows the V2
-                # resolver confidently closes (NO HGML EQUIVALENT /
+                # resolver confidently closes (NO MASTER EQUIVALENT /
                 # UNCLASSIFIED) never get embedded, retrieved, scored
                 # or judged. Sits here, alongside 6B, for the same
                 # reason: before any per-SKU work is spawned.
@@ -1081,7 +1081,7 @@ def main() -> None:
 
                 # =================================================
                 # STEP 7C
-                # Resolve each row's HGML category once for the whole
+                # Resolve each row's master category once for the whole
                 # group, following the same pattern as source_products
                 # and synonym_terms: computed here, looked up per SKU
                 # inside the worker.
