@@ -75,6 +75,29 @@ LLM_PROMOTE_SCORE_FLOOR = 0.60
 LLM_PROMOTE_CONFIDENCE = 0.75
 
 # ---------------------------------------------------------------------------
+# PRODUCT GROUP / PACK TYPE (Stage 5, applied after the weighted blend)
+# ---------------------------------------------------------------------------
+# The master's own marketing grouping (MasterProduct.product_group) and pack
+# type are applied as multiplicative adjustments rather than as new W_*
+# weights, deliberately: the W_* vector is the AHP reference from
+# founding_doc.md section B.12 and must keep summing to 1.0, so adding a
+# seventh weight would mean re-deriving all six. These sit alongside
+# DOMAIN_MISMATCH_PENALTY / TYPE_HARD_INCOMPAT_PENALTY instead, which is the
+# established pattern for a signal that adjusts rather than averages.
+#
+# PRODUCT_GROUP_MATCH_BONUS rewards a candidate whose product_group is named
+# in the source title -- "Strawberry Shine" separating STRAWBERRY SHINE LIP
+# BALM from LITCHI SHINE LIP BALM when both are 4.5g chapsticks and the
+# ensemble cannot otherwise tell them apart. A bonus (not a penalty for the
+# others) so a listing that names no product group is never pushed down.
+#
+# PACK_TYPE_MISMATCH_PENALTY is mild by design: pack type is weak evidence
+# (a listing rarely states "OFFER SALES PK-MULTI"), so it should only break
+# near-ties, never override the blend.
+PRODUCT_GROUP_MATCH_BONUS = float(os.environ.get("PRODUCT_GROUP_MATCH_BONUS", "1.08"))
+PACK_TYPE_MISMATCH_PENALTY = float(os.environ.get("PACK_TYPE_MISMATCH_PENALTY", "0.97"))
+
+# ---------------------------------------------------------------------------
 # CATEGORY GATE (oneds_master/category)
 # ---------------------------------------------------------------------------
 # Minimum category-resolver confidence at which the resolved master
