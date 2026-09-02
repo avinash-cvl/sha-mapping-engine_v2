@@ -20,8 +20,15 @@ from common.models import SourceProduct
 # Build that as new, tested code -- do not extend this regex to "handle" it.
 _PACK_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(kg|gm|g|ml|l)\b", re.IGNORECASE)
 
-_UNIT_NORMALIZE = {"gm": "g", "g": "g", "kg": "g", "ml": "ml", "l": "ml"}
-_UNIT_MULTIPLIER = {"gm": 1.0, "g": 1.0, "kg": 1000.0, "ml": 1.0, "l": 1000.0}
+# "ltr"/"gms" appear only in the structured master/source columns, never in
+# the free-text titles _PACK_RE reads, so they are listed here for
+# normalize_pack() rather than added to that regex. Unit counts ("NOS",
+# "TAB", "CAP") are deliberately absent: a count is not a net measure, so it
+# must fall through to a neutral score instead of being compared to grams.
+_UNIT_NORMALIZE = {"gm": "g", "gms": "g", "g": "g", "kg": "g",
+                   "ml": "ml", "l": "ml", "ltr": "ml"}
+_UNIT_MULTIPLIER = {"gm": 1.0, "gms": 1.0, "g": 1.0, "kg": 1000.0,
+                    "ml": 1.0, "l": 1000.0, "ltr": 1000.0}
 
 
 def parse_pack(text: str) -> tuple[float, str] | None:
@@ -33,6 +40,38 @@ def parse_pack(text: str) -> tuple[float, str] | None:
     raw_value, raw_unit = match.groups()
     unit = raw_unit.lower()
     return float(raw_value) * _UNIT_MULTIPLIER[unit], _UNIT_NORMALIZE[unit]
+
+
+def normalize_pack(
+    value: float | str | None,
+    unit: str | None,
+) -> tuple[float, str] | None:
+    """Normalises an already-structured (value, unit) pair to the same
+    grams/millilitres convention parse_pack() produces, so both sides of
+    pack_score() speak one vocabulary.
+
+    parse_pack() only reads sizes out of free text. Rows that already carry
+    a numeric size in a column (staging.himalaya_products.normalized_pack_size
+    / normalized_uom) need the same unit folding applied, or a master 'GM'
+    meets a source 'g' and pack_score() -- which treats a unit mismatch as a
+    hard 0.0 -- scores every candidate zero.
+
+    Returns None when either half is missing or the unit is not a
+    weight/volume we can compare. 'NOS' (unit counts) and the literal string
+    'NULL' both land here on purpose: a count is not a net measure, and
+    scoring it against grams would be worse than the neutral 0.5 that a
+    None yields.
+    """
+    if value is None or unit is None:
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    key = str(unit).strip().lower()
+    if key not in _UNIT_NORMALIZE:
+        return None
+    return numeric * _UNIT_MULTIPLIER[key], _UNIT_NORMALIZE[key]
 
 
 def pack_score(
@@ -55,6 +94,14 @@ def extract_attributes(source: SourceProduct) -> SourceProduct:
     None here -- flow.py calls agents.attribute_fallback.extract() for rows
     where they're still missing after this."""
     parsed = parse_pack(source.title)
+    if parsed is None:
+        # No size in the title, but the row may already carry one from its
+        # staging columns (build_source_product copies pack_size/uom through
+        # verbatim). Fold that to the same grams/millilitres convention the
+        # title path produces -- otherwise a raw 'GM' meets the master's
+        # normalised 'g' and pack_score() scores an exact 10g/10g match 0.0,
+        # because it treats a unit mismatch as a hard zero.
+        parsed = normalize_pack(source.pack_value, source.pack_unit)
     if parsed is None:
         return source
     value, unit = parsed
