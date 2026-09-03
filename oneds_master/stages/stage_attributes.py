@@ -30,6 +30,40 @@ _UNIT_NORMALIZE = {"gm": "g", "gms": "g", "g": "g", "kg": "g",
 _UNIT_MULTIPLIER = {"gm": 1.0, "gms": 1.0, "g": 1.0, "kg": 1000.0,
                     "ml": 1.0, "l": 1000.0, "ltr": 1000.0}
 
+# Plausibility bounds on a normalised size, in grams/millilitres.
+#
+# Sizes arrive from two places and both can lie. The staging pack_size/uom
+# columns are populated upstream and carry real errors -- "Himalaya Since
+# 1930 ... Lip Balm" is stored as 1930 L, a year read as a pack size, which
+# made pack_score meaningless for that row and put a "Pack Of 1" listing on
+# a 6-unit blister. 146 amazon rows carry a year-like size, and the columns
+# reach 84,935,374 at the extreme. Free-text titles have the same failure
+# mode (percentages, SPF numbers, years).
+#
+# Bounds are per RAW unit, not on the normalised gram value, because one
+# global ceiling cannot do both jobs: it must clear 30 LTR (30000 ml, real
+# bulk in this master) while rejecting "1930" read off "Since 1930". Those
+# are the same normalised magnitude. Judging the number in the unit it was
+# written in separates them -- 30 is a plausible LTR, 1930 is not.
+#
+# Ceilings come from the master, the only catalogue a row can map to: its
+# largest entries are 1500 ML, 900 GM, 25 KG and 30 LTR. Each bound leaves
+# headroom for a larger competitor pack without admitting a year.
+_MAX_BY_UNIT = {"g": 5000.0, "gm": 5000.0, "gms": 5000.0,
+                "ml": 5000.0, "kg": 100.0, "l": 100.0, "ltr": 100.0}
+_MIN_PACK_VALUE = 0.1
+
+
+def _plausible(raw_value: float, unit_key: str) -> bool:
+    """Is this a believable pack size, judged in the unit as written?
+
+    Out-of-range means "unknown", not "mismatch": pack_score() returns a
+    neutral 0.5 for a missing size, which is the right treatment for a value
+    we cannot trust. Never silently clamp -- a clamped value would read as a
+    real measurement and score against real candidates.
+    """
+    return _MIN_PACK_VALUE <= raw_value <= _MAX_BY_UNIT.get(unit_key, 5000.0)
+
 
 def parse_pack(text: str) -> tuple[float, str] | None:
     """Returns (normalized_value, normalized_unit) or None if no single-value
@@ -39,6 +73,8 @@ def parse_pack(text: str) -> tuple[float, str] | None:
         return None
     raw_value, raw_unit = match.groups()
     unit = raw_unit.lower()
+    if not _plausible(float(raw_value), unit):
+        return None
     return float(raw_value) * _UNIT_MULTIPLIER[unit], _UNIT_NORMALIZE[unit]
 
 
@@ -146,6 +182,8 @@ def normalize_pack(
     key = str(unit).strip().lower()
     if key not in _UNIT_NORMALIZE:
         return None
+    if not _plausible(numeric, key):
+        return None
     return numeric * _UNIT_MULTIPLIER[key], _UNIT_NORMALIZE[key]
 
 
@@ -177,7 +215,29 @@ def extract_attributes(source: SourceProduct) -> SourceProduct:
         # normalised 'g' and pack_score() scores an exact 10g/10g match 0.0,
         # because it treats a unit mismatch as a hard zero.
         parsed = normalize_pack(source.pack_value, source.pack_unit)
+    if parsed is None and source.pack_unit is None:
+        # A size with no unit at all. The staging uom column is NULL on a
+        # large share of rows, and dropping those would throw away a real
+        # measurement -- "Himalaya Shine Lip Care" carries 4.5 with no unit,
+        # and 4.5 is exactly the chapstick size. Assume grams, the unit
+        # _UNIT_NORMALIZE folds weights to, and let the plausibility bound
+        # still apply.
+        #
+        # This is strictly better than what came before: an unnormalised
+        # (4.5, None) reached pack_score() and scored a hard 0.0 against a
+        # (4.5, 'g') master row, because a unit mismatch is treated as a
+        # mismatch outright. Inferring the unit turns that into the 1.0 it
+        # should always have been.
+        parsed = normalize_pack(source.pack_value, "g")
     if parsed is None:
-        return source
+        # Nothing usable. Clear the field rather than returning the row
+        # untouched: pack_value may still hold the raw, rejected staging
+        # value (an implausible 1930 L, or a unit like NOS that is a count
+        # not a measure), and leaving it there would send it straight into
+        # pack_score(). A None scores a neutral 0.5, which is the honest
+        # answer for a size we could not trust.
+        if source.pack_value is None and source.pack_unit is None:
+            return source
+        return replace(source, pack_value=None, pack_unit=None)
     value, unit = parsed
     return replace(source, pack_value=value, pack_unit=unit)
