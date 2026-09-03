@@ -229,43 +229,35 @@ def score_candidate(
         ensemble *= C.PACK_TYPE_MISMATCH_PENALTY
         penalty_applied = penalty_applied or "pack_type_mismatch"
 
-    # Unit count. Only bites when BOTH sides state one and they disagree --
-    # pack_count_score returns a neutral 0.5 on silence, which is the common
-    # case. Scaled by agreement so a 2-vs-3 is nudged while a 2-vs-24 is
-    # pushed hard: full penalty at total disagreement, none at a match.
+    # Unit count.
+    #
+    # Silence means ONE, on BOTH sides. A listing that states no count is not
+    # making "no claim" -- it is offering a single unit, which is how anyone
+    # reads a bare "Himalaya Lip Balm". Treating source silence as unknown
+    # and skipping the penalty let bare listings match wholesale cartons:
+    # measured, "Himalaya Lip Balm" (no size, no count) on blinkit, swiggy
+    # and zepto mapped to LIP BALM 12 X 10 g and LIP BALM 48x10g, three of
+    # them at AutoMatch. Those rows have no size either, so pack_score is a
+    # flat 0.5 for every candidate and count is the only signal left that
+    # can separate a single from a 12-pack.
     #
     # Suppressed when the product group matches. Count is a packaging fact;
     # the group is product identity, and identity has to win. Measured
     # without this guard, a Strawberry Shine "Pack of 2" listing left the
     # correct STRAWBERRY (Pack of 3) row for a CHERRY (Pack of 2) one --
-    # trading the right product for the right carton. The same flip put
-    # several "(Pack of 3)" listings onto singles of the right line, which
-    # is the lesser error but still the wrong row.
-    # Only when the SOURCE states a count: a listing that says nothing about
-    # count makes no claim, so no candidate should be judged on it.
-    if source.pack_count is not None and not group_matched:
-        if master.pack_count is None:
-            # The master row states no count, so it reads as a single. Score
-            # it as such rather than exempting it: an exemption lets silence
-            # outrank being close, and a "Pack of 3" listing then picks a
-            # single over a Pack of 2 -- measured, before this branch.
-            #
-            # Scoring it against 1 (not against source_count + 1) matters
-            # for larger packs: a distance-scaled proxy leaves a 4-vs-silent
-            # at 0.97, which still beats a genuine 4-vs-2 at 0.925, so the
-            # single keeps winning. Treating silence as "a single" is both
-            # truer to the data and correctly ordered.
-            count_agreement = stage_attributes.pack_count_score(
-                source.pack_count, 1
-            )
-        elif master.pack_count != source.pack_count:
-            count_agreement = stage_attributes.pack_count_score(
-                source.pack_count, master.pack_count
-            )
-        else:
-            count_agreement = 1.0
+    # trading the right product for the right carton.
+    if not group_matched:
+        source_count = source.pack_count if source.pack_count is not None else 1
+        master_count = master.pack_count if master.pack_count is not None else 1
 
-        if count_agreement < 1.0:
+        if source_count != master_count:
+            # Scaled by agreement, so 2-vs-3 is nudged and 1-vs-48 is pushed
+            # hard. Scoring silence as 1 rather than as "one out" matters for
+            # larger packs: a distance-scaled proxy leaves 4-vs-silent at
+            # 0.97, which still beats a genuine 4-vs-2 at 0.925.
+            count_agreement = stage_attributes.pack_count_score(
+                source_count, master_count
+            )
             ensemble *= 1.0 - (1.0 - C.PACK_COUNT_MISMATCH_PENALTY) * (
                 1.0 - count_agreement
             )
