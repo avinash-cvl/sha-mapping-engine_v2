@@ -29,8 +29,8 @@
 -- at most one space between. "200ml" and "100 g" still parse; "1930 Ultra"
 -- and "200 Lozenges" no longer do.
 --
--- SCOPE -- ONLY the pack_size and uom expressions change. clean_title,
--- pack_no, ingredient, combo_flag, price_band, product_benefit,
+-- SCOPE -- the pack_size, uom and pack_no expressions change. clean_title,
+-- ingredient, combo_flag, price_band, product_benefit,
 -- pack_size_band, the WHERE clause, the sync_status update and the
 -- transaction handling are all byte-identical to the current procedure.
 --
@@ -110,8 +110,19 @@ BEGIN
             p.subcategory,
 
             -------------------------------------------------------------------
-            -- PACK NO  (unchanged)
+            -- PACK NO  (CHANGED - trailing count keywords added)
             -------------------------------------------------------------------
+            -- "PACK OF n" / "SET OF n" / "COMBO OF n" keep priority: they state
+            -- a multiplier explicitly. Falling back to a trailing count keyword
+            -- ("54 Count", "42 Pcs", "112 Pieces", "54'S") picks up the forms
+            -- the original expression missed entirely -- 4642 amazon diaper
+            -- listings state a count in the title but stored pack_no = NULL,
+            -- and the master files diapers as 54 NOS, so the count is the only
+            -- thing that can separate a 20-pack from a 54-pack.
+            --
+            -- TABLETS/CAPSULES are deliberately NOT counted here: "60 Tablets"
+            -- is a dosage form already carried by uom = TAB/CAP, not a pack
+            -- multiplier, and treating it as one would double-count.
             CASE
             WHEN PATINDEX('%PACK OF [0-9]%', t.TitleUpper) > 0
             THEN
@@ -134,6 +145,42 @@ BEGIN
                                 )
                             ) + 'X'
                         ) - 1
+                    ) AS INT
+                )
+
+            WHEN PATINDEX('%SET OF [0-9]%', t.TitleUpper) > 0
+            THEN
+                TRY_CAST(
+                    LEFT(
+                        LTRIM(SUBSTRING(t.TitleUpper,
+                              PATINDEX('%SET OF [0-9]%', t.TitleUpper) + LEN('SET OF '), 10)),
+                        PATINDEX('%[^0-9]%',
+                              LTRIM(SUBSTRING(t.TitleUpper,
+                              PATINDEX('%SET OF [0-9]%', t.TitleUpper) + LEN('SET OF '), 10)) + 'X') - 1
+                    ) AS INT
+                )
+
+            WHEN PATINDEX('%COMBO OF [0-9]%', t.TitleUpper) > 0
+            THEN
+                TRY_CAST(
+                    LEFT(
+                        LTRIM(SUBSTRING(t.TitleUpper,
+                              PATINDEX('%COMBO OF [0-9]%', t.TitleUpper) + LEN('COMBO OF '), 10)),
+                        PATINDEX('%[^0-9]%',
+                              LTRIM(SUBSTRING(t.TitleUpper,
+                              PATINDEX('%COMBO OF [0-9]%', t.TitleUpper) + LEN('COMBO OF '), 10)) + 'X') - 1
+                    ) AS INT
+                )
+
+            -- Trailing count keyword: read the digits immediately BEFORE it.
+            WHEN cw.KwPos IS NOT NULL
+            THEN
+                TRY_CAST(
+                    REVERSE(
+                        LEFT(
+                            REVERSE(LEFT(t.TitleUpper, cw.KwPos)),
+                            PATINDEX('%[^0-9]%', REVERSE(LEFT(t.TitleUpper, cw.KwPos)) + 'X') - 1
+                        )
                     ) AS INT
                 )
 
@@ -198,6 +245,22 @@ BEGIN
         (
             SELECT PATINDEX('%[0-9]%', p.title) AS NumPos
         ) pos
+
+        -- Position of the first trailing count keyword, if any. Kept as its own
+        -- OUTER APPLY so the pack_no CASE stays readable; NULL when the title
+        -- states no count.
+        OUTER APPLY
+        (
+            SELECT TOP 1 PATINDEX(kw.pat, t.TitleUpper) AS KwPos
+            FROM (VALUES ('%[0-9] COUNT%'), ('%[0-9]COUNT%'),
+                         ('%[0-9] PCS%'),   ('%[0-9]PCS%'),
+                         ('%[0-9] PIECES%'),('%[0-9] PIECE%'),
+                         ('%[0-9] UNITS%'), ('%[0-9] SHEETS%'),
+                         ('%[0-9] WIPES%'), ('%[0-9] SACHETS%'),
+                         ('%[0-9]''S%')) kw(pat)
+            WHERE PATINDEX(kw.pat, t.TitleUpper) > 0
+            ORDER BY PATINDEX(kw.pat, t.TitleUpper)
+        ) cw
 
         -- The 6 characters that directly follow the first number -- 6 so the
         -- spelled-out units (GRAMS, LITRE) fit. Everything
