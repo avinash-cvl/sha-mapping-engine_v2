@@ -97,6 +97,14 @@ LLM_PROMOTE_CONFIDENCE = 0.75
 PRODUCT_GROUP_MATCH_BONUS = float(os.environ.get("PRODUCT_GROUP_MATCH_BONUS", "1.08"))
 PACK_TYPE_MISMATCH_PENALTY = float(os.environ.get("PACK_TYPE_MISMATCH_PENALTY", "0.97"))
 
+# Applied when BOTH sides state a unit count and the counts disagree -- a
+# Pack-of-2 listing against a Pack-of-3 master row. Scaled by how far apart
+# they are (see stage_scoring), so 2-vs-3 is nudged and 2-vs-24 is pushed
+# hard. Silence on either side is neutral and never penalised: most rows
+# state no count at all, and a multipack often carries the SAME PackSize as
+# the single, so this is the only signal that can separate them.
+PACK_COUNT_MISMATCH_PENALTY = float(os.environ.get("PACK_COUNT_MISMATCH_PENALTY", "0.85"))
+
 # ---------------------------------------------------------------------------
 # CATEGORY GATE (oneds_master/category)
 # ---------------------------------------------------------------------------

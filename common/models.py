@@ -26,6 +26,10 @@ class SourceProduct:
     match_type: str          # "Catalog Match" | "Competitive Substitute"
     sub_brand: str | None = None
     variant: str | None = None
+    # Units in the pack ("Pack of 2"), from the staging pack_no column or
+    # parsed out of the title. None means the listing says nothing, which is
+    # deliberately distinct from 1 -- see stage_attributes.pack_count_score.
+    pack_count: int | None = None
     # channel_key/source_row_id are populated by stage_ingest.py once a row
     # has been written to raw.oneds_products + resolved against
     # config.channels -- "" / 0 (unset) for rows that predate that (e.g.
@@ -56,7 +60,11 @@ class MasterProduct:
     product_group: str = ""
     # raw.himalaya_products.pack_type: REGULAR SALES PACK / OFFER SALES
     # PK-MULTI / OFFER SALES PK-SINGL / GIFT SALES PACK(KIT).
-    pack_type: str = ""  # raw.himalaya_products.id this came from; 0 = unset
+    pack_type: str = ""
+    # Units in the pack, parsed from the master title -- the master states
+    # this nowhere else. "(PACK OF 3)", "24x10g", "6N(5N+FREE 1N)" and
+    # "54'S" are all real notations here. None = the title says nothing.
+    pack_count: int | None = None  # raw.himalaya_products.id this came from; 0 = unset
 
 
 @dataclass(frozen=True)
