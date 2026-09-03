@@ -63,6 +63,18 @@ def build_source_product(source, source_table: str) -> SourceProduct:
     if pack_unit is None:
         pack_unit = getattr(source, "pack_unit", None)
 
+    # Structured field first -- pack_no is a real product attribute, while
+    # the title is seller copy (V2's design rule 2). Falls back to parsing
+    # the title, which is where most listings actually state it: pack_no is
+    # populated on roughly a fifth of rows.
+    pack_count = getattr(source, "pack_no", None)
+    try:
+        pack_count = int(pack_count) if pack_count is not None else None
+    except (TypeError, ValueError):
+        pack_count = None
+    if pack_count is None or pack_count < 2:
+        pack_count = stage_attributes.parse_pack_count(title)
+
     benefit = getattr(source, "product_benefit", None)
     if benefit is None:
         benefit = getattr(source, "benefit", None)
@@ -83,6 +95,7 @@ def build_source_product(source, source_table: str) -> SourceProduct:
         subcategory=subcategory,
         pack_value=pack_value,
         pack_unit=pack_unit,
+        pack_count=pack_count,
         benefit=benefit,
         ingredient=ingredient,
         domain=domain,
@@ -471,6 +484,9 @@ def step_3_build_master_lookup(
             pack_unit=pack[1] if pack else row.normalized_uom,
             product_group=getattr(row, "normalized_product_group", None) or "",
             pack_type=getattr(row, "pack_type", None) or "",
+            # The master carries no count column -- "(PACK OF 3)", "24x10g",
+            # "6N(5N+FREE 1N)" and "54'S" all live in the title only.
+            pack_count=stage_attributes.parse_pack_count(row.normalized_title),
             text=(
                 row.search_text
                 or row.normalized_title

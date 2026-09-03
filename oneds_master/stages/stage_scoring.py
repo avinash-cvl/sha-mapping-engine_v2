@@ -19,12 +19,22 @@ from common.models import MasterProduct, ScoreBreakdown, SourceProduct
 # Without this a group of "LIP BALM" would match every lip balm listing and
 # hand out the bonus indiscriminately -- the bonus is only meaningful for the
 # distinctive part of the name ("strawberry shine").
+# Kept deliberately short. A word only belongs here if it names a FORM that
+# many different products share -- "butter" looks like one but is product
+# identity ("COCOA BUTTER LIP BALM"), and dropping it made a Rich Cocoa
+# Butter listing fail to match its own group.
 _GROUP_STOPWORDS = frozenset({
     "lip", "balm", "care", "cream", "creams", "wash", "face", "body", "hair",
     "oil", "gel", "soap", "powder", "lotion", "shampoo", "serum", "mask",
     "scrub", "toner", "kit", "pack", "wipes", "baby", "men", "mens",
     "the", "and", "&", "with", "of", "for", "-",
 })
+
+# Words a listing may drop or add without changing which product line it is.
+# "Rich Cocoa Butter" and "Cocoa Butter" are the same line; so are
+# "Himalaya Purifying Neem" and "Purifying Neem". Stripped from BOTH sides
+# before the subset test so the comparison is symmetric.
+_GROUP_FILLER = frozenset({"rich", "natural", "herbals", "herbal", "himalaya", "new"})
 
 # Explicit multipack cues in a listing title. Mirrors the notation
 # category/core.py's pack_count() reads, kept local so stage_scoring does not
@@ -111,11 +121,16 @@ def product_group_match(source_text: str, master: MasterProduct) -> bool:
     tokens = {
         word
         for word in master.product_group.lower().split()
-        if word not in _GROUP_STOPWORDS
+        if word not in _GROUP_STOPWORDS and word not in _GROUP_FILLER
     }
     if not tokens:
         return False
-    return tokens <= set(source_text.lower().split())
+    source_tokens = {
+        word.strip(",.|()")
+        for word in source_text.lower().split()
+        if word not in _GROUP_FILLER
+    }
+    return tokens <= source_tokens
 
 
 def pack_type_mismatch(source_text: str, master: MasterProduct) -> bool:
@@ -206,12 +221,55 @@ def score_candidate(
     # Master-side signals the six blended weights cannot see. Applied after
     # the blend, like the penalties above, so the AHP weight vector stays
     # intact. Both are capped into [0, 1] below.
-    if product_group_match(source.clean_title, master):
+    group_matched = product_group_match(source.clean_title, master)
+    if group_matched:
         ensemble *= C.PRODUCT_GROUP_MATCH_BONUS
         penalty_applied = penalty_applied or "product_group_match"
     if pack_type_mismatch(source.clean_title, master):
         ensemble *= C.PACK_TYPE_MISMATCH_PENALTY
         penalty_applied = penalty_applied or "pack_type_mismatch"
+
+    # Unit count. Only bites when BOTH sides state one and they disagree --
+    # pack_count_score returns a neutral 0.5 on silence, which is the common
+    # case. Scaled by agreement so a 2-vs-3 is nudged while a 2-vs-24 is
+    # pushed hard: full penalty at total disagreement, none at a match.
+    #
+    # Suppressed when the product group matches. Count is a packaging fact;
+    # the group is product identity, and identity has to win. Measured
+    # without this guard, a Strawberry Shine "Pack of 2" listing left the
+    # correct STRAWBERRY (Pack of 3) row for a CHERRY (Pack of 2) one --
+    # trading the right product for the right carton. The same flip put
+    # several "(Pack of 3)" listings onto singles of the right line, which
+    # is the lesser error but still the wrong row.
+    # Only when the SOURCE states a count: a listing that says nothing about
+    # count makes no claim, so no candidate should be judged on it.
+    if source.pack_count is not None and not group_matched:
+        if master.pack_count is None:
+            # The master row states no count, so it reads as a single. Score
+            # it as such rather than exempting it: an exemption lets silence
+            # outrank being close, and a "Pack of 3" listing then picks a
+            # single over a Pack of 2 -- measured, before this branch.
+            #
+            # Scoring it against 1 (not against source_count + 1) matters
+            # for larger packs: a distance-scaled proxy leaves a 4-vs-silent
+            # at 0.97, which still beats a genuine 4-vs-2 at 0.925, so the
+            # single keeps winning. Treating silence as "a single" is both
+            # truer to the data and correctly ordered.
+            count_agreement = stage_attributes.pack_count_score(
+                source.pack_count, 1
+            )
+        elif master.pack_count != source.pack_count:
+            count_agreement = stage_attributes.pack_count_score(
+                source.pack_count, master.pack_count
+            )
+        else:
+            count_agreement = 1.0
+
+        if count_agreement < 1.0:
+            ensemble *= 1.0 - (1.0 - C.PACK_COUNT_MISMATCH_PENALTY) * (
+                1.0 - count_agreement
+            )
+            penalty_applied = penalty_applied or "pack_count_mismatch"
 
     # The group bonus is the only multiplier above 1.0, so clamp -- every
     # downstream threshold (TIER_HIGH, determine_mapping_status) assumes a
