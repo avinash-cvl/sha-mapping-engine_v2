@@ -74,29 +74,39 @@ _GENERIC_SYSTEM_PROMPT = """You are validating whether a source product is the s
     If the strongest candidate is only similar in category, type, or function,
     but differs materially in product identity, formulation, key ingredients,
     or primary benefit, return null.    
-    CONFIDENCE DEFINITION:    
-    The confidence value represents the PRODUCT MATCH STRENGTH of the best
-    available candidate.    
-    It is NOT confidence in the decision to reject or accept.    
-    Therefore, if pick is null, confidence must represent how similar the
-    strongest candidate is to the source product as a potential exact match.    
-    Examples:    
+    CONFIDENCE DEFINITION:
+    The confidence value represents how strongly the best candidate is the
+    SAME SELLABLE UNIT as the source -- the same product line AND the same
+    pack size/count.
+    It is NOT confidence in the decision to reject or accept.
+    Being the same product line in a DIFFERENT pack size or count is not a
+    high-confidence match. Each candidate is given with its pack facts
+    ("pack: size=... count=..."); compare them against the source pack.
+    - If the pack facts disagree (e.g. source count=60 against a candidate
+    count=500), cap confidence at 0.50 however well the product line matches,
+    and state the disagreement in the reason.
+    - If pack facts are unstated on either side, do not read that as
+    agreement -- cap confidence at 0.75.
+    Examples:
     - All candidates are clearly unrelated:
     pick = null, confidence = 0.00–0.20
-    
+
     - One candidate has similar type/category but different identity,
     ingredients, or benefit:
     pick = null, confidence = 0.20–0.49
-    
+
+    - Same product line but a different pack size/count:
+    pick = null, confidence = 0.30–0.50
+
     - One candidate has strong identity similarity but important ambiguity:
     pick = null, confidence = 0.50–0.74
-    
-    - Strong likely exact match:
+
+    - Strong likely exact match, pack facts agree or are unstated:
     pick = candidate index, confidence = 0.75–0.89
-    
-    - Extremely strong exact match:
+
+    - Extremely strong exact match with pack size/count confirmed equal:
     pick = candidate index, confidence = 0.90–1.00
-    
+
     When explaining the decision:    
     - First identify the strongest candidate by product_code.
     - Compare it directly with the source across the decisive criteria.
@@ -138,8 +148,13 @@ Respond with strict JSON only:
 
 - `pick` is the 0-based index of the chosen candidate, or null if no candidate
   is the same product.
-- `confidence` is the product-match strength of the strongest candidate, not
-  your confidence in the decision to accept or reject.
+- `confidence` is how strongly the chosen candidate is the SAME SELLABLE UNIT
+  as the source -- same product line AND same pack size/count. Being the same
+  product line in a different pack size is NOT a high-confidence match. If the
+  pack facts disagree (e.g. source count=60 against a candidate count=500), cap
+  confidence at 0.50 no matter how well the product line matches, and say so in
+  `reason`. If pack facts are unstated on either side, do not treat that as
+  agreement -- cap confidence at 0.75.
 - In `reason`, refer to candidates only by product_code (e.g. '7002677'),
   never as 'Candidate 0'. Never assign a candidate's product_code to the
   source product."""
@@ -201,6 +216,27 @@ def _criteria_line(scores: ScoreBreakdown) -> str:
     return line
 
 
+def _pack_text(pack_value: float | None, pack_unit: str | None,
+               pack_count: int | None) -> str:
+    """Human-readable pack facts, or "unstated" when the row carries none.
+
+    Sent alongside the derived pack= score because that score alone is not
+    decidable evidence: the judge saw pack=0.50 for a 60-count listing against
+    a 500-count master (a neutral "unknown", since the master count did not
+    parse) and could not tell that from a genuine agreement. It picked the
+    500's at 0.94 confidence and said so in its own reason -- "pack size
+    differs only in count wording". Stating the raw numbers lets it weigh what
+    it was previously being asked to take on trust.
+    """
+    parts: list[str] = []
+    if pack_value is not None and pack_unit:
+        value = f"{pack_value:g}"
+        parts.append(f"size={value}{pack_unit}")
+    if pack_count is not None:
+        parts.append(f"count={pack_count}")
+    return " ".join(parts) if parts else "unstated"
+
+
 def judge(
     source: SourceProduct,
     ranked: list[tuple[MasterProduct, ScoreBreakdown]],
@@ -210,10 +246,18 @@ def judge(
     suitable candidate -- stage_disposition.py treats that as a distinct
     signal from "the judge wasn't called at all" (confidence stays NaN)."""
     candidates_text = "\n".join(
-        f"{i}. {master.product_code} -- {master.product_name} [{_criteria_line(scores)}]"
+        f"{i}. {master.product_code} -- {master.product_name} "
+        f"[pack: {_pack_text(master.pack_value, master.pack_unit, master.pack_count)}] "
+        f"[{_criteria_line(scores)}]"
         for i, (master, scores) in enumerate(ranked)
     )
-    prompt = f"source title: {source.clean_title}\nbrand: {source.brand}\n\ncandidates:\n{candidates_text}"
+    source_pack = _pack_text(source.pack_value, source.pack_unit, source.pack_count)
+    prompt = (
+        f"source title: {source.clean_title}\n"
+        f"brand: {source.brand}\n"
+        f"source pack: {source_pack}\n\n"
+        f"candidates:\n{candidates_text}"
+    )
 
     model = get_chat_model()
     response_text, audit_entry = invoke_and_audit(
