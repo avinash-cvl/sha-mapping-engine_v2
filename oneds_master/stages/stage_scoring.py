@@ -190,12 +190,18 @@ def score_candidate(
     all_text = f"{source.clean_title} {source.benefit or ''} {source.ingredient or ''}".strip() if (source.ingredient or source.benefit) else None
     all_ov = text_overlap_score(all_text, master.text) if all_text else None
 
-    # Base blend calculation per representation
+    # Base blend calculation per representation.
+    #
+    # category_score() is deliberately NOT in the blend -- see the W_CATEGORY
+    # note in config.py. It was a placeholder substring test between two
+    # different taxonomies; its weight now sits on W_SEMANTIC. The category
+    # signal is applied upstream instead, by scoping the candidate pool.
+    # `category` is still computed and reported in the ScoreBreakdown below
+    # so it stays visible to a steward and in the judge's criteria line.
     def _blend(ov: float) -> float:
         return (
             C.W_SEMANTIC * score_semantic
             + C.W_LEXICAL * score_lexical
-            + C.W_CATEGORY * category
             + C.W_TYPE * type_align
             + C.W_PACK * pack
             + C.W_OVERLAP * ov

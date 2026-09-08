@@ -2821,13 +2821,33 @@ def determine_mapping_status(match_results):
     # ensemble still lowers the tier via the max() being skipped, because a
     # confident "this is not the same product" is worth trusting downward.
     # False negatives cost a steward review; false positives ship a wrong map.
+    # The judge's verdict is authoritative when it ran.
+    #
+    # This used to be effectively max(llm_confidence, ensemble_score), which
+    # meant a confident REJECTION could not lower the tier: a judge returning
+    # "not the same product, confidence 0.20" against an ensemble of 0.88
+    # still produced AutoMatch, because the ensemble simply won the max().
+    # That is a false-positive generator, and false positives are what a
+    # client sees as bad mapping quality -- a wrong map ships, whereas a
+    # missed map only costs a steward review.
+    #
+    # The asymmetry that remains is deliberate and unchanged in spirit:
+    # LLM confidence may only PROMOTE a row the ensemble already scored
+    # respectably (>= LLM_PROMOTE_SCORE_FLOOR), because the judge's
+    # confidence is its certainty in its own conclusion, graded from the same
+    # candidate list the ensemble ranked -- not independent evidence. But it
+    # may always DEMOTE, because a confident "these are different products"
+    # is exactly the signal worth trusting downward.
     if final_score is None:
         final_score = ensemble_score
     elif ensemble_score is not None:
-        if ensemble_score > final_score:
+        if ensemble_score < C.LLM_PROMOTE_SCORE_FLOOR:
+            # Ensemble too weak for the judge's confidence to carry it.
             final_score = ensemble_score
-        elif ensemble_score < C.LLM_PROMOTE_SCORE_FLOOR:
-            final_score = ensemble_score
+        # else: the ensemble is respectable, so the judge's confidence
+        # stands as the final score in BOTH directions -- promotion when it
+        # is higher, demotion when it is lower. final_score is already
+        # llm_confidence here, so there is nothing to do.
 
     if final_score is None:
         return "NoHimalayaEquivalent"
