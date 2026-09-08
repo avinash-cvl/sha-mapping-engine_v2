@@ -2773,7 +2773,9 @@ def step_14_llm_judge(
 def determine_mapping_status(match_results):
     """Determine mapping status using Rank 1 only.
 
-    Score used: max(final_score, ensemble_score).
+    Score used: max(final_score, ensemble_score), except that LLM confidence
+    cannot promote a row whose ensemble is below LLM_PROMOTE_SCORE_FLOOR --
+    there the ensemble stands on its own. See the comment at that branch.
     Thresholds: >= 0.86 -> AutoMatch, 0.61-0.85 -> StewardReview,
     < 0.61 -> LowConfidence.
 
@@ -2805,10 +2807,27 @@ def determine_mapping_status(match_results):
         if ensemble_score is not None and ensemble_score != ensemble_score:  # NaN
             ensemble_score = None
 
+    # LLM confidence may only promote a row that the ensemble already scored
+    # respectably -- the same LLM_PROMOTE_SCORE_FLOOR safeguard
+    # stage_disposition._tier_and_method() has always applied. Without it the
+    # bare max() below let the judge's self-reported confidence carry a weak
+    # ensemble the whole way: measured, an ensemble of 0.54 with confidence
+    # 0.91 became AutoMatch. That confidence is the judge's certainty in its
+    # own conclusion, not independent evidence, and it is graded from the same
+    # candidate list the ensemble already ranked -- so it must not be able to
+    # outvote a weak ensemble outright, only confirm a decent one.
+    #
+    # Demotion is deliberately left intact: an LLM confidence BELOW the
+    # ensemble still lowers the tier via the max() being skipped, because a
+    # confident "this is not the same product" is worth trusting downward.
+    # False negatives cost a steward review; false positives ship a wrong map.
     if final_score is None:
         final_score = ensemble_score
-    elif ensemble_score is not None and ensemble_score > final_score:
-        final_score = ensemble_score
+    elif ensemble_score is not None:
+        if ensemble_score > final_score:
+            final_score = ensemble_score
+        elif ensemble_score < C.LLM_PROMOTE_SCORE_FLOOR:
+            final_score = ensemble_score
 
     if final_score is None:
         return "NoHimalayaEquivalent"

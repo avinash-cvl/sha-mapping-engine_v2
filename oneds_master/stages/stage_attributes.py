@@ -101,15 +101,36 @@ _COUNT_PATTERNS = (
     re.compile(r"(?<![\w.])\d{1,4}\s*[x*]\s*(\d{1,4})\s*[nN]\b", re.IGNORECASE),
     re.compile(r"(?<![\w.])(\d{1,4})\s*[nN]\s*\(", re.IGNORECASE),
     re.compile(r"(?<![\w.])(\d{1,4})\s*[x*]\s*\d", re.IGNORECASE),
-    re.compile(r"(?<![\w.])(\d{1,4})\s*(?:pcs?|nos?|units?|count)\b", re.IGNORECASE),
+    # "60 Count", "60 Pieces", "30 Tablets", "10 Sachets". Tablet/capsule
+    # counts matter here in a way they do not for toiletries: the master
+    # states them as the ONLY size a supplement row carries ("NEEM TABLETS
+    # 60'S"), so a listing's "60 Tablets" is the sole comparable attribute.
+    # Without "pieces"/"tablets", "Skin Wellness Tablets - Neem, 60 Pieces
+    # Box" parsed to no count at all and every candidate scored a flat 0.5.
+    re.compile(
+        r"(?<![\w.])(\d{1,4})\s*"
+        r"(?:pcs?|pieces?|nos?|units?|count|tablets?|tabs?|capsules?|caps?|"
+        r"sachets?|wipes?|sheets?)\b",
+        re.IGNORECASE,
+    ),
     re.compile(r"(?<![\w.])(\d{1,4})\s*['’ʼ]\s*s\b", re.IGNORECASE),
 )
 
 # Above this, a number is a weight/volume or a marketing figure, not a unit
 # count -- "LIP BALM 5G JAR (1X20N)" is a 20-pack, "SAVE RS.8" is not an
-# 8-pack. Matches the 2..24 band V2's pack_count() settled on, widened to 99
-# because this master really does carry 24x and 26x cases.
-_MAX_PACK_COUNT = 99
+# 8-pack.
+#
+# 999, not 99: supplements are counted in hundreds and the master really
+# does carry "NEEM TABLETS 500'S". At the old 99 ceiling that row parsed to
+# None, so a 60-count listing scored a NEUTRAL 0.5 against it -- "unknown"
+# rather than "wrong" -- and the 500's outranked the correct 60's. A 500-vs-60
+# disagreement is a real mismatch and has to score like one.
+#
+# The ceiling still earns its keep at 999: it rejects years ("Since 1930"),
+# rupee figures and SPF/percentage numbers, which is what it was for. Sizes
+# in grams/millilitres are not at risk either way -- they are read by
+# parse_pack(), which requires an explicit unit.
+_MAX_PACK_COUNT = 999
 
 
 def parse_pack_count(text: str | None) -> int | None:
