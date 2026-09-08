@@ -41,8 +41,18 @@ CACHE_DIR = os.environ.get("EMBED_CACHE_DIR", "cache")
 # ---------------------------------------------------------------------------
 # CANDIDATE GENERATION (Stage 4)
 # ---------------------------------------------------------------------------
-SEMANTIC_TOPK = 150
-LEXICAL_TOPK = 150
+# Retrieval depth per representation, per SKU. batch_flow.py reads these --
+# it used to hardcode 20 in two places, so these constants looked live and
+# were dead for that flow.
+#
+# Cost note for a full 180k run: these control how many candidates are
+# SCORED per SKU (CPU only), not how many reach the LLM -- that is
+# TOP_N_OUTPUT, which the prompt size follows. Raising these does not raise
+# LLM spend. 40 keeps the merged pool near the behaviour the current
+# thresholds were tuned against while still being tunable per run:
+#     SEMANTIC_TOPK=150 LEXICAL_TOPK=150 python -m oneds_master.batch_flow ...
+SEMANTIC_TOPK = int(os.environ.get("SEMANTIC_TOPK", "40"))
+LEXICAL_TOPK = int(os.environ.get("LEXICAL_TOPK", "40"))
 
 # How many ranked candidates survive scoring -- this is both what the LLM
 # judge gets to choose from and what is persisted for a steward.
