@@ -236,9 +236,31 @@ def _mapping_row(
 
     ensemble_score = _none_if_nan(scores.ensemble) if scores else None
 
+    # final_score is what the review portal SHOWS as the confidence number, so
+    # it has to agree with the tier the row is filed under.
+    #
+    # This used to be max(llm_confidence, ensemble_score), which produced rows
+    # that contradicted themselves on screen: a "Pack of 5" listing with no
+    # pack-of-5 in the master was correctly rejected by the judge
+    # (pick=null, confidence=0.0) and filed as "No Himalaya Equivalent" /
+    # LowConfidence -- but the rejected candidate's ensemble of 0.9569 won the
+    # max() and was displayed as 96%. A steward then sees a 96% score sitting
+    # in the "Low Match, Confidence < 61%" band and cannot tell which number
+    # to believe.
+    #
+    # Same asymmetry as determine_mapping_status(): the judge's verdict is
+    # authoritative when it ran, in both directions. The ensemble only fills
+    # in when the judge did not run at all (confidence is NaN).
     if final_score is None:
         final_score = ensemble_score
-    elif ensemble_score is not None and ensemble_score > final_score:
+    elif (
+        ensemble_score is not None
+        and ensemble_score > final_score
+        and ensemble_score < C.LLM_PROMOTE_SCORE_FLOOR
+    ):
+        # Ensemble too weak for the judge's confidence to have been a
+        # promotion in the first place -- report the ensemble, matching
+        # determine_mapping_status()'s floor rule.
         final_score = ensemble_score
 
     # The category decision rides in llm_reasoning so it is visible without a
