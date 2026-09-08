@@ -115,6 +115,46 @@ def main() -> None:
     out["V3 Current ensemble"] = merged["ensemble_score"]
     out["V3 Current final"] = merged["final_score"]
 
+    # Head-to-head verdict: V3 Current against the V3 Engine baseline.
+    # This is the column a reviewer actually needs -- "did this branch make
+    # this row better, worse, or leave it alone?" -- rather than two
+    # independent OK columns they have to compare by eye.
+    def verdict(row) -> str:
+        base, now = str(row["V3 (sheet) pick"]), str(row["V3 Current pick"])
+        truth = str(row["truth_code"])
+        if not truth:
+            return "NOT VALIDATED"
+        base_ok, now_ok = base == truth, now == truth
+        if base_ok and now_ok:
+            return "BOTH CORRECT"
+        if now_ok and not base_ok:
+            return "IMPROVED - V3 Current correct"
+        if base_ok and not now_ok:
+            return "REGRESSED - V3 Engine was correct"
+        if base == now:
+            return "BOTH WRONG - same pick"
+        return "BOTH WRONG - different picks"
+
+    out["Comment V3 current vs V3 engine: Correct mapping"] = out.apply(verdict, axis=1)
+
+    # Status of the row in this branch's terms, so a reviewer can see at a
+    # glance whether a wrong answer was shipped confidently (AutoMatch) or
+    # correctly flagged for a human.
+    def review_status(row) -> str:
+        v = row["Comment V3 current vs V3 engine: Correct mapping"]
+        status = str(row["V3 Current status"])
+        if v.startswith("IMPROVED"):
+            return "FIXED"
+        if v.startswith("REGRESSED"):
+            return f"REGRESSION ({status})"
+        if v == "BOTH CORRECT":
+            return "OK"
+        if v == "NOT VALIDATED":
+            return "NEEDS REVIEW"
+        return f"STILL WRONG ({status})"
+
+    out["Status"] = out.apply(review_status, axis=1)
+
     scoreable = out[out["truth_code"] != ""].copy()
 
     rows = []
@@ -143,6 +183,11 @@ def main() -> None:
          "Value": int(len(out) - len(scoreable))},
     ])
 
+    verdict_counts = (
+        out["Comment V3 current vs V3 engine: Correct mapping"]
+        .value_counts().rename_axis("Verdict").reset_index(name="Rows")
+    )
+
     changed = out[out["V3 (sheet) pick"].astype(str) != out["V3 Current pick"].astype(str)]
     still_wrong = scoreable[scoreable["V3 Current OK"] == "no"]
 
@@ -162,6 +207,10 @@ def main() -> None:
         summary.to_excel(writer, sheet_name="Summary", index=False, startrow=0)
         summary_notes.to_excel(writer, sheet_name="Summary", index=False,
                                startrow=len(summary) + 3)
+        verdict_counts.to_excel(
+            writer, sheet_name="Summary", index=False,
+            startrow=len(summary) + len(summary_notes) + 6,
+        )
         out.to_excel(writer, sheet_name="Comparison", index=False)
         changed.to_excel(writer, sheet_name="Changed", index=False)
         still_wrong.to_excel(writer, sheet_name="Still Wrong", index=False)
