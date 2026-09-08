@@ -236,31 +236,36 @@ def _mapping_row(
 
     ensemble_score = _none_if_nan(scores.ensemble) if scores else None
 
-    # final_score is what the review portal SHOWS as the confidence number, so
-    # it has to agree with the tier the row is filed under.
+    # final_score is the SIMILARITY of this candidate -- how close it is to
+    # the listing. It is deliberately NOT forced to agree with the tier.
     #
-    # This used to be max(llm_confidence, ensemble_score), which produced rows
-    # that contradicted themselves on screen: a "Pack of 5" listing with no
-    # pack-of-5 in the master was correctly rejected by the judge
-    # (pick=null, confidence=0.0) and filed as "No Himalaya Equivalent" /
-    # LowConfidence -- but the rejected candidate's ensemble of 0.9569 won the
-    # max() and was displayed as 96%. A steward then sees a 96% score sitting
-    # in the "Low Match, Confidence < 61%" band and cannot tell which number
-    # to believe.
+    # The two are different questions and both matter to a steward:
     #
-    # Same asymmetry as determine_mapping_status(): the judge's verdict is
-    # authoritative when it ran, in both directions. The ensemble only fills
-    # in when the judge did not run at all (confidence is NaN).
-    if final_score is None:
-        final_score = ensemble_score
-    elif (
-        ensemble_score is not None
-        and ensemble_score > final_score
-        and ensemble_score < C.LLM_PROMOTE_SCORE_FLOOR
-    ):
-        # Ensemble too weak for the judge's confidence to have been a
-        # promotion in the first place -- report the ensemble, matching
-        # determine_mapping_status()'s floor rule.
+    #   ensemble/final : "how close is this candidate?"   0.96 -- same product
+    #                    line, same 4.5g size, wrong pack count
+    #   confidence_level: "did we conclude it IS the product?"  No
+    #
+    # A "Pack of 5" listing with no pack-of-5 in the master is correctly
+    # rejected, but 7005170 (LITCHI SHINE LIP CARE 4.5G PACK OF 2) is still a
+    # very near miss and a steward may well approve it. Zeroing the score
+    # there would say "nothing like this exists", which is false and strictly
+    # less useful than the truth: "we found something very close, but it is
+    # not the same sellable unit."
+    #
+    # So the score keeps its meaning, and the tier carries the verdict. What
+    # must NOT happen is the portal reading the similarity number as
+    # confidence -- see the note in the commit and the review_status column.
+    #
+    # The max() that used to sit here is still wrong for a different reason:
+    # it let a REJECTED candidate's ensemble overwrite a judge confidence that
+    # was deliberately lower, so a demoted row reported a higher number than
+    # the judge assigned. Keep the ensemble as the reported similarity, but
+    # never let it masquerade as the judge's confidence.
+    # Rejections (judge returned pick=null, confidence 0.0) report the
+    # candidate's own similarity rather than the judge's 0.0 -- the 0.0 is a
+    # verdict about the MATCH, not a measurement of the CANDIDATE, and the
+    # tier already carries the verdict.
+    if final_score is None or (r.llm_pick == "" and ensemble_score is not None):
         final_score = ensemble_score
 
     # The category decision rides in llm_reasoning so it is visible without a

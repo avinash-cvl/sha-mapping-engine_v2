@@ -95,9 +95,18 @@ def disposition(
 
     if llm_pick == "":
         # The LLM was asked and explicitly found no suitable candidate.
+        #
+        # llm_pick is carried through deliberately: "" is the signal that a
+        # rejection HAPPENED, as distinct from the judge never running
+        # (None). db._mapping_row() needs to tell those apart so it can
+        # report the candidate's own similarity rather than the judge's 0.0
+        # confidence -- the 0.0 is a verdict about the match, not a
+        # measurement of the candidate, and a steward still needs to see how
+        # close the near-miss was.
         return MatchResult(
             source=source, candidate=top_master, rank=1, scores=top_scores,
             confidence_tier="No Himalaya Equivalent", resolution_method="llm_no_equivalent",
+            llm_pick=llm_pick,
             llm_confidence=llm_confidence, llm_reason=llm_reason,
         )
 
