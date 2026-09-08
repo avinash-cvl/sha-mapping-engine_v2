@@ -47,14 +47,19 @@ LEXICAL_TOPK = 150
 # How many ranked candidates survive scoring -- this is both what the LLM
 # judge gets to choose from and what is persisted for a steward.
 #
-# Raised from 3 to 10. Three candidates picked by the ensemble is a narrow
+# Raised from 3 to 5. Three candidates picked by the ensemble is a narrow
 # funnel: if the ensemble's ordering is wrong, the right product is not in
-# the list and no amount of prompt quality can recover it. The judge is good
-# at picking one product out of ten, so give it ten.
+# the list and no amount of prompt quality can recover it. Five keeps a
+# genuine margin for the judge to reach past a mis-ranked #1 (measured: on
+# one face-wash row the judge correctly chose the ensemble's #3) without
+# padding the prompt with candidates that are mostly noise.
+#
+# eval/shortlist_depth.py measures how deep the judge actually reaches, so
+# this can be revisited against data rather than intuition.
 #
 # Note step_15 still persists only the top 3 rows to the mapping table --
 # this widens what the JUDGE sees, not what a steward is shown.
-TOP_N_OUTPUT = int(os.environ.get("TOP_N_OUTPUT", "10"))
+TOP_N_OUTPUT = int(os.environ.get("TOP_N_OUTPUT", "5"))
 COMPETITOR_TOP_N_OUTPUT = 3
 
 # Ask the LLM judge about every row that has candidates, rather than only

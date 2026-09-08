@@ -335,9 +335,25 @@ def persist_sku_disposition(
         raise ValueError("persist_sku_disposition requires results for exactly one source product")
 
     try:
+        # Delete EVERY existing mapping row for this source product, not just
+        # the ones carrying this run's batch_id.
+        #
+        # The batch_id predicate used to be part of this WHERE clause, which
+        # meant the delete could never match a previous run: each run mints a
+        # new batch_id, so re-running a SKU APPENDED a second full set of
+        # rank-1/2/3 rows instead of replacing the old ones. Measured on a
+        # re-run of three swiggy SKUs: 6 mapping rows each, with two
+        # different rank-1 candidates from two different runs, and nothing in
+        # the table marking which one was current. A steward reviewing that
+        # is choosing between a stale answer and a fresh one at random.
+        #
+        # A source product has exactly one current disposition, so scoping
+        # the delete to the product alone is what "replace this SKU's
+        # disposition" has to mean. Retry safety is unaffected: this still
+        # only ever touches rows for the one product being written, inside
+        # the same transaction as the insert.
         conn.execute(
             channel_tables.mapping.delete().where(
-                channel_tables.mapping.c.batch_id == batch_id,
                 getattr(channel_tables.mapping.c, product_id_column) == product_id,
             )
         )

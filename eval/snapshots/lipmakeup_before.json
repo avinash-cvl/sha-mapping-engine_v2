@@ -1,0 +1,18 @@
+{
+  "amazon": {
+    "AutoMatch": 51,
+    "StewardReview": 5
+  },
+  "blinkit": {
+    "AutoMatch": 5,
+    "StewardReview": 3
+  },
+  "swiggy": {
+    "AutoMatch": 2,
+    "LowConfidence": 2
+  },
+  "zepto": {
+    "AutoMatch": 3,
+    "StewardReview": 1
+  }
+}
