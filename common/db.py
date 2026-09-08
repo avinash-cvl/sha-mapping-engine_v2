@@ -264,21 +264,42 @@ def _mapping_row(
     if final_score is None:
         final_score = ensemble_score
 
-    # ALTERNATIVES (rank 2, 3, ...) carry NO confidence.
+    # A REJECTION reports the candidate's similarity, not the judge's 0.0.
+    #
+    # When the judge returns pick=null it means "none of these IS the
+    # product". Writing that 0.0 into the displayed score produces a rank 1
+    # showing 0% directly above alternatives showing 92% and 90% -- which
+    # reads as though the best match is the worst option. The verdict is
+    # already carried, unambiguously, by confidence_level ("No Himalaya
+    # Equivalent") and by the row's queue.
+    #
+    # So the number stays a measurement of the candidate and the tier stays
+    # the verdict. On this row that is 0.96 similarity under a "No Himalaya
+    # Equivalent" label: "we found something very close, and it is still not
+    # the same sellable unit" -- which is the true and useful statement.
+    if r.llm_pick == "" and ensemble_score is not None:
+        final_score = ensemble_score
+
+    # ALTERNATIVES (rank 2, 3, ...) report their SIMILARITY.
     #
     # They were never the decision -- disposition_all() files them as
-    # "alternative" with an empty confidence_tier -- so there is no verdict
-    # about them to be confident in. They were being written with a
-    # final_score anyway, and the portal drew each one a percentage ring:
-    # a rejected listing showed 92 / 88 / 87 beneath a "Low Match" heading,
-    # which is what business users are reacting to.
+    # "alternative" with an empty confidence_tier -- so strictly there is no
+    # "confidence" to report for them. Writing NULL was tried and is worse in
+    # practice: the portal renders a NULL score as 0, so every alternative
+    # displayed a 0% ring, which reads as "nothing like this" for candidates
+    # that are often within a point or two of the winner.
     #
-    # Their similarity is still available in ensemble_score, which is the
-    # honest field for "here is how close this option is" -- a steward
-    # choosing between alternatives wants exactly that, and it is not a
-    # confidence claim.
+    # A steward comparing options needs to see how close each one is, so
+    # report the similarity. It is the honest number for an alternative, and
+    # a wrong-but-plausible 92 is far less damaging on screen than a flatly
+    # false 0.
+    #
+    # The portal should still distinguish the two: rank 1's number is
+    # confidence in the match, ranks 2+ are similarity of an option. That is
+    # a labelling change on their side -- until then, a real number beats a
+    # NULL that renders as zero.
     if r.rank and r.rank > 1:
-        final_score = None
+        final_score = ensemble_score
 
     # The category decision rides in llm_reasoning so it is visible without a
     # schema change; the structured columns below are written as well, but
