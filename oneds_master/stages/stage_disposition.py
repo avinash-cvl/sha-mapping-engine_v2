@@ -55,14 +55,35 @@ def needs_judge(ranked: list[tuple[MasterProduct, ScoreBreakdown]]) -> bool:
 
 
 def _tier_and_method(score: float, llm_confidence: float) -> tuple[str, str]:
+    """Confidence tier for a row, from ONE decided score.
+
+    `score` is the candidate's ensemble. When the judge ran, its confidence
+    is what actually decides the row, so the tier must band the SAME number
+    determine_mapping_status() bands -- otherwise the two labels a reviewer
+    sees are computed from different inputs and disagree on the same row.
+    Measured before this change, on 72 lip makeup rows: 9 rows were tiered
+    "Matched" while queued as StewardReview, and 3 were tiered "Medium"
+    while filed LowConfidence.
+
+    The promotion floor is preserved: the judge's confidence may only carry
+    a row the ensemble already scored respectably, but it may always demote.
+    That is the same asymmetry determine_mapping_status() applies, kept in
+    step so the two cannot drift apart again.
+    """
     llm_ran = not math.isnan(llm_confidence)
-    if score >= C.TIER_HIGH:
+
+    decided = score
+    if llm_ran:
+        if score >= C.LLM_PROMOTE_SCORE_FLOOR:
+            decided = llm_confidence
+        # Below the floor the ensemble stands on its own -- the judge's
+        # confidence was never eligible to promote it.
+
+    if decided >= C.TIER_HIGH:
         return "Matched", ("llm_confirmed" if llm_ran else "pipeline_high")
-    if score >= C.LLM_PROMOTE_SCORE_FLOOR and llm_ran and llm_confidence >= C.LLM_PROMOTE_CONFIDENCE:
-        return "Matched", "llm_promoted"
-    if score >= C.TIER_REVIEW:
+    if decided >= C.TIER_REVIEW:
         return "Medium", ("llm_confirmed" if llm_ran else "pipeline_review")
-    if score >= C.TIER_NOEQ:
+    if decided >= C.TIER_NOEQ:
         return "Low Confidence", ("llm_low" if llm_ran else "pipeline_low")
     return "No Himalaya Equivalent", ("llm_no_equivalent" if llm_ran else "pipeline_no_equivalent")
 

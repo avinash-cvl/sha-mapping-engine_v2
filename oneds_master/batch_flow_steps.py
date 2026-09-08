@@ -2797,6 +2797,27 @@ def determine_mapping_status(match_results):
     if getattr(rank_one, "resolution_method", None) in _CATEGORY_TERMINAL_METHODS:
         return "StewardReview"
 
+    # The tier was already decided by stage_disposition._tier_and_method(),
+    # which weighed the ensemble, the judge's confidence and the promotion
+    # floor together. Re-deriving the queue from a raw score here is what let
+    # the two labels disagree, and the disagreement is worst exactly where a
+    # reviewer notices it: a row the judge REJECTED carries a high similarity
+    # score (the near-miss candidate is genuinely close), so re-banding that
+    # score filed "No Himalaya Equivalent" rows as LowConfidence -- measured,
+    # 7 of 72 lip makeup rows, one of them at 0.96.
+    #
+    # Translate the decided tier instead. Score banding below is only a
+    # fallback for rows that never got a tier at all.
+    tier = (getattr(rank_one, "confidence_tier", "") or "").strip()
+    tier_to_status = {
+        "Matched": "AutoMatch",
+        "Medium": "StewardReview",
+        "Low Confidence": "LowConfidence",
+        "No Himalaya Equivalent": "NoHimalayaEquivalent",
+    }
+    if tier in tier_to_status:
+        return tier_to_status[tier]
+
     final_score = getattr(rank_one, "llm_confidence", None)
     if final_score is not None and final_score != final_score:  # NaN
         final_score = None
@@ -2849,11 +2870,15 @@ def determine_mapping_status(match_results):
         # is higher, demotion when it is lower. final_score is already
         # llm_confidence here, so there is nothing to do.
 
+    # Same bands as stage_disposition._tier_and_method(), read from the same
+    # constants, so mapping_status and confidence_level can never disagree.
+    # These were hardcoded 0.86/0.61 here while the tier used TIER_HIGH=0.87
+    # and TIER_REVIEW=0.50 -- two banding systems on one row.
     if final_score is None:
         return "NoHimalayaEquivalent"
-    if final_score >= 0.86:
+    if final_score >= C.TIER_HIGH:
         return "AutoMatch"
-    if final_score >= 0.61:
+    if final_score >= C.TIER_REVIEW:
         return "StewardReview"
     return "LowConfidence"
 

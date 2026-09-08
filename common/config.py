@@ -130,8 +130,21 @@ DIVISION_MISMATCH_PENALTY = 0.85
 # ---------------------------------------------------------------------------
 # CONFIDENCE TIERS (Stage 6)
 # ---------------------------------------------------------------------------
-TIER_HIGH = 0.87     # >= -> Matched
-TIER_REVIEW = 0.50   # >= -> Medium ; below -> Low
+# ONE set of bands drives BOTH of the labels a reviewer sees:
+#   confidence_level (stage_disposition._tier_and_method)  "Matched"/"Medium"/...
+#   mapping_status   (determine_mapping_status)            AutoMatch/StewardReview/...
+#
+# These used to be two independent systems on the same row: confidence_level
+# banded the ENSEMBLE at 0.87/0.50/0.45, while mapping_status banded
+# max(llm, ensemble) at HARDCODED 0.86/0.61. Different inputs, different cut
+# points, so they contradicted each other constantly -- measured on 72 lip
+# makeup rows, 9 rows read "Matched" while sitting in the StewardReview queue
+# and 3 read "Medium" while filed LowConfidence. A reviewer cannot act on a
+# row that calls itself matched and unmatched at once.
+#
+# Same numbers now feed both, so a row's tier and its queue always agree.
+TIER_HIGH = 0.86     # >= -> Matched      / AutoMatch
+TIER_REVIEW = 0.61   # >= -> Medium       / StewardReview
 TIER_NOEQ = 0.45     # competitor SKUs below this -> No Himalaya Equivalent
 
 # A row that didn't clear TIER_HIGH can still be promoted to Matched if the
