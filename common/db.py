@@ -236,37 +236,49 @@ def _mapping_row(
 
     ensemble_score = _none_if_nan(scores.ensemble) if scores else None
 
-    # final_score is the SIMILARITY of this candidate -- how close it is to
-    # the listing. It is deliberately NOT forced to agree with the tier.
+    # TWO NUMBERS, TWO MEANINGS -- kept in separate columns so the portal can
+    # never read one as the other:
     #
-    # The two are different questions and both matter to a steward:
+    #   ensemble_score : SIMILARITY. "how close is this candidate to the
+    #                    listing?" A rejected near miss legitimately scores
+    #                    high here -- 0.92 for a combo pack whose components
+    #                    match but whose composition does not.
+    #   final_score    : CONFIDENCE IN THE MATCH. "how sure are we this IS
+    #                    the product?" This is what the review portal draws
+    #                    as its percentage ring and bands into Strong /
+    #                    Possible / Low Match, so it MUST agree with the
+    #                    tier or the screen contradicts itself.
     #
-    #   ensemble/final : "how close is this candidate?"   0.96 -- same product
-    #                    line, same 4.5g size, wrong pack count
-    #   confidence_level: "did we conclude it IS the product?"  No
+    # Business users reported exactly that contradiction: a row filed under
+    # "Low Match, Confidence < 61%" displaying a 92% ring, because
+    # final_score carried the rejected candidate's similarity. Whatever the
+    # column is called, the portal treats it as confidence, so it has to be
+    # confidence.
     #
-    # A "Pack of 5" listing with no pack-of-5 in the master is correctly
-    # rejected, but 7005170 (LITCHI SHINE LIP CARE 4.5G PACK OF 2) is still a
-    # very near miss and a steward may well approve it. Zeroing the score
-    # there would say "nothing like this exists", which is false and strictly
-    # less useful than the truth: "we found something very close, but it is
-    # not the same sellable unit."
+    # When the judge ran, its confidence IS the answer -- including a
+    # rejection, where 0.0 means "we are not confident this is the product".
+    # The similarity is not lost: it stays in ensemble_score, and a steward
+    # who wants to know how close the near miss was reads it there.
     #
-    # So the score keeps its meaning, and the tier carries the verdict. What
-    # must NOT happen is the portal reading the similarity number as
-    # confidence -- see the note in the commit and the review_status column.
-    #
-    # The max() that used to sit here is still wrong for a different reason:
-    # it let a REJECTED candidate's ensemble overwrite a judge confidence that
-    # was deliberately lower, so a demoted row reported a higher number than
-    # the judge assigned. Keep the ensemble as the reported similarity, but
-    # never let it masquerade as the judge's confidence.
-    # Rejections (judge returned pick=null, confidence 0.0) report the
-    # candidate's own similarity rather than the judge's 0.0 -- the 0.0 is a
-    # verdict about the MATCH, not a measurement of the CANDIDATE, and the
-    # tier already carries the verdict.
-    if final_score is None or (r.llm_pick == "" and ensemble_score is not None):
+    # The ensemble only fills in when the judge never ran at all (NaN).
+    if final_score is None:
         final_score = ensemble_score
+
+    # ALTERNATIVES (rank 2, 3, ...) carry NO confidence.
+    #
+    # They were never the decision -- disposition_all() files them as
+    # "alternative" with an empty confidence_tier -- so there is no verdict
+    # about them to be confident in. They were being written with a
+    # final_score anyway, and the portal drew each one a percentage ring:
+    # a rejected listing showed 92 / 88 / 87 beneath a "Low Match" heading,
+    # which is what business users are reacting to.
+    #
+    # Their similarity is still available in ensemble_score, which is the
+    # honest field for "here is how close this option is" -- a steward
+    # choosing between alternatives wants exactly that, and it is not a
+    # confidence claim.
+    if r.rank and r.rank > 1:
+        final_score = None
 
     # The category decision rides in llm_reasoning so it is visible without a
     # schema change; the structured columns below are written as well, but
