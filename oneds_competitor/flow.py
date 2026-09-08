@@ -61,9 +61,12 @@ obs = observe
 # Initialize the SDK – correct call!
 # ============================================================
 init_client(
-    endpoint="http://20.11.53.58:8001",
-    api_key="U0hfT0JTRVJWQUJJTElUWXx8MjAtMDctMjAyN3x8ZWM1M2NlMDQtZjVhZS00NjJiLWI1ZmUtNjc4YWNlZDkzZjM5fHxoaW1hbGF5YS1za3V8fDUzZDZmZDQxLWNmYzMtNDcxZi04ZDVkLTcyNTYzMWRmMDE3Yw==",
-    service_name="himalaya-sku",
+    # Read from config (OBSERVABILITY_* env vars) rather than hardcoded here.
+    # The token was previously inline in this file, which put a live
+    # credential into source control.
+    endpoint=C.OBSERVABILITY_API_URL,
+    api_key=C.OBSERVABILITY_API_TOKEN,
+    service_name=C.OBSERVABILITY_PROJECT_ID,
     debug=True,
     session_id_path="run_id"
 )
@@ -72,9 +75,11 @@ init_client(
 # Optional debug print – verify token and project
 # ============================================================
 from sha_observability_sdk import _config
-logger.info(f"🔑 Token length: {len(_config.api_key)}")
-logger.info(f"🔑 Token (first 20 chars): {_config.api_key[:20]}")
-logger.info(f"📁 Project ID: {_config.service_name}")
+# Log only WHETHER a token is configured, never any part of its value --
+# a prefix in a log file is still credential material in something that
+# gets shared and attached to tickets.
+logger.info("Observability token configured: %s", bool(_config.api_key))
+logger.info("Project ID: %s", _config.service_name)
 
 # ============================================================
 # Logging setup

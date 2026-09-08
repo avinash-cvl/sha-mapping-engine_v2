@@ -1,0 +1,82 @@
+{
+  "captured_at": "2026-09-08T09:13:39.397358+00:00",
+  "scope": "himalaya-brand source rows only",
+  "per_channel": {
+    "amazon": {
+      "status_counts": {
+        "AutoMatch": 1852,
+        "LowConfidence": 461,
+        "NoHimalayaEquivalent": 7,
+        "PENDING": 178,
+        "StewardReview": 435
+      },
+      "total": 2933,
+      "scores": {
+        "rank1_rows": 2748,
+        "avg_ensemble": 0.7316,
+        "min_ensemble": 0.0892,
+        "max_ensemble": 1.0,
+        "avg_final": 0.8786
+      }
+    },
+    "blinkit": {
+      "status_counts": {
+        "LowConfidence": 33,
+        "PENDING": 3,
+        "AutoMatch": 101,
+        "StewardReview": 88
+      },
+      "total": 225,
+      "scores": {
+        "rank1_rows": 222,
+        "avg_ensemble": 0.7415,
+        "min_ensemble": 0.2322,
+        "max_ensemble": 0.9634,
+        "avg_final": 0.8399
+      }
+    },
+    "swiggy": {
+      "status_counts": {
+        "LowConfidence": 42,
+        "PENDING": 10,
+        "AutoMatch": 139,
+        "StewardReview": 153
+      },
+      "total": 344,
+      "scores": {
+        "rank1_rows": 334,
+        "avg_ensemble": 0.729,
+        "min_ensemble": 0.1995,
+        "max_ensemble": 0.9728,
+        "avg_final": 0.8401
+      }
+    },
+    "zepto": {
+      "status_counts": {
+        "LowConfidence": 57,
+        "PENDING": 8,
+        "AutoMatch": 182,
+        "StewardReview": 142
+      },
+      "total": 389,
+      "scores": {
+        "rank1_rows": 381,
+        "avg_ensemble": 0.7334,
+        "min_ensemble": 0.197,
+        "max_ensemble": 1.0,
+        "avg_final": 0.8444
+      }
+    }
+  },
+  "totals": {
+    "AutoMatch": 2274,
+    "LowConfidence": 593,
+    "NoHimalayaEquivalent": 7,
+    "PENDING": 199,
+    "StewardReview": 818
+  },
+  "grand_total": 3891,
+  "processed": 3692,
+  "automatch_rate_of_processed": 61.59,
+  "needs_human_or_failed": 1411
+}
