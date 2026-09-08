@@ -16,10 +16,34 @@ from common.models import MasterProduct, MatchResult, ScoreBreakdown, SourceProd
 
 
 def needs_judge(ranked: list[tuple[MasterProduct, ScoreBreakdown]]) -> bool:
-    """Thin-margin band: top-1 score is in the ambiguous review zone, or
-    top-1 vs top-2 margin is too thin to trust even a decent score."""
+    """Whether to ask the LLM judge about this row.
+
+    Now: any row that has candidates at all (see JUDGE_ALL_CANDIDATES).
+
+    It used to be a thin-margin band -- only rows scoring in
+    [TIER_REVIEW, TIER_HIGH), or with a top-1/top-2 margin under 0.05. That
+    band is a small minority of rows, which meant the per-category judge
+    prompts in agents/prompts/*.md were never consulted for most of the
+    catalogue: a row at 0.88 was stamped Matched by arithmetic alone and a
+    row at 0.48 was closed as Low Confidence, neither ever seen by the
+    model. Category-specific prompting cannot improve results it is not
+    invoked for.
+
+    Product identity ("is this the SAME sellable unit?") is a judgment about
+    brand, product line, formulation and pack -- exactly what the LLM is
+    good at and what a weighted sum of six surface-similarity signals is
+    bad at. So the judge decides, and the ensemble ranks the shortlist it
+    decides from.
+
+    Set JUDGE_ALL_CANDIDATES=false to restore the old thin-margin band (one
+    LLM call per ambiguous row instead of per candidate-bearing row).
+    """
     if not ranked:
         return False
+
+    if C.JUDGE_ALL_CANDIDATES:
+        return True
+
     top_score = ranked[0][1].ensemble
     if C.TIER_REVIEW <= top_score < C.TIER_HIGH:
         return True

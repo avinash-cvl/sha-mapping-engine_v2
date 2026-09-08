@@ -90,13 +90,17 @@ def score_candidate(
     )
     overlap = overlap_score(source, master)
 
+    # Uses the competitor flow's OWN weight vector, not the master flow's.
+    # These were the same six constants until the master blend dropped
+    # category_score and moved its weight onto semantic; keeping them
+    # separate means retuning one flow can never silently shift the other.
     ensemble = (
-        C.W_SEMANTIC * score_semantic
-        + C.W_LEXICAL * score_lexical
-        + C.W_CATEGORY * category
-        + C.W_TYPE * type_align
-        + C.W_PACK * pack
-        + C.W_OVERLAP * overlap
+        C.W_COMPETITOR_SEMANTIC * score_semantic
+        + C.W_COMPETITOR_LEXICAL * score_lexical
+        + C.W_COMPETITOR_CATEGORY * category
+        + C.W_COMPETITOR_TYPE * type_align
+        + C.W_COMPETITOR_PACK * pack
+        + C.W_COMPETITOR_OVERLAP * overlap
     )
 
     penalty_applied: str | None = None

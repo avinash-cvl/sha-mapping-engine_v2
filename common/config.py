@@ -43,19 +43,69 @@ CACHE_DIR = os.environ.get("EMBED_CACHE_DIR", "cache")
 # ---------------------------------------------------------------------------
 SEMANTIC_TOPK = 150
 LEXICAL_TOPK = 150
-TOP_N_OUTPUT = 3
+
+# How many ranked candidates survive scoring -- this is both what the LLM
+# judge gets to choose from and what is persisted for a steward.
+#
+# Raised from 3 to 10. Three candidates picked by the ensemble is a narrow
+# funnel: if the ensemble's ordering is wrong, the right product is not in
+# the list and no amount of prompt quality can recover it. The judge is good
+# at picking one product out of ten, so give it ten.
+#
+# Note step_15 still persists only the top 3 rows to the mapping table --
+# this widens what the JUDGE sees, not what a steward is shown.
+TOP_N_OUTPUT = int(os.environ.get("TOP_N_OUTPUT", "10"))
 COMPETITOR_TOP_N_OUTPUT = 3
+
+# Ask the LLM judge about every row that has candidates, rather than only
+# the thin-margin band stage_disposition.needs_judge() used to gate on.
+# See that function for the reasoning. Set to false to restore the old
+# behaviour (far fewer LLM calls, decisions made by the ensemble alone).
+JUDGE_ALL_CANDIDATES = os.environ.get(
+    "JUDGE_ALL_CANDIDATES", "true"
+).lower() == "true"
 
 # ---------------------------------------------------------------------------
 # SCORE WEIGHTS (Stage 5) -- the AHP reference vector from founding_doc.md
 # section B.12. Must sum to ~1.0.
 # ---------------------------------------------------------------------------
-W_SEMANTIC = 0.30
+# W_CATEGORY was 0.10, spent on stage_scoring.category_score() -- a
+# substring test the code itself marked "TODO: placeholder", returning a
+# flat 1.0/0.3/0.5 on `source_subcategory in master_category`. That is not
+# a measurement of anything: the two vocabularies are different taxonomies,
+# so it mostly returned 0.3 and acted as a near-constant offset. Its weight
+# is moved to W_SEMANTIC, which is now trustworthy -- the master embeddings
+# were rebuilt on identity-only text (see eval/reembed_master.py), so
+# semantic similarity finally compares like with like.
+#
+# Category is NOT lost as a signal: the candidate pool is already scoped by
+# category upstream (step 5's eligible-master groups), which is a far
+# stronger use of the same information than a substring test in the blend.
+W_SEMANTIC = 0.40
 W_LEXICAL = 0.18
-W_CATEGORY = 0.10
 W_TYPE = 0.20
 W_PACK = 0.10
 W_OVERLAP = 0.12
+
+# ---------------------------------------------------------------------------
+# COMPETITOR FLOW WEIGHTS -- oneds_competitor/stages/stage_scoring.py
+# ---------------------------------------------------------------------------
+# The competitor flow still uses the original six-signal blend, including
+# category_score. It is a different matching problem (find a comparable
+# RIVAL product, where category similarity is genuinely informative rather
+# than a placeholder) and is deliberately out of scope for the Himalaya
+# mapping-quality work, so it keeps the exact weight vector it was tuned
+# with -- the original 0.30 semantic, not the master flow's raised 0.40.
+#
+# These are separate constants precisely so that retuning one flow cannot
+# silently change the other. Sharing W_SEMANTIC between the two is what made
+# the competitor blend briefly sum to 1.1 while this change was in progress.
+W_COMPETITOR_SEMANTIC = 0.30
+W_COMPETITOR_LEXICAL = 0.18
+W_COMPETITOR_CATEGORY = 0.10
+W_COMPETITOR_TYPE = 0.20
+W_COMPETITOR_PACK = 0.10
+W_COMPETITOR_OVERLAP = 0.12
 
 # Multiplicative penalties, applied after the weighted blend above.
 DOMAIN_MISMATCH_PENALTY = 0.60
