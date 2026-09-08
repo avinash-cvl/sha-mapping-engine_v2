@@ -10,6 +10,7 @@ from concurrent.futures import (
 )
 from dataclasses import replace
 
+import common.config as C
 from common import db
 from oneds_master.stages import stage_disposition
 from oneds_master.category.resolve import pack_targets, resolve_batch
@@ -200,11 +201,15 @@ def process_one_sku(
         # STEP 8 - BM25
         # ====================================================
 
+        # Retrieval depth comes from config (LEXICAL_TOPK / SEMANTIC_TOPK),
+        # not a literal here. These were hardcoded to 20 while config.py
+        # declared 150, so tuning retrieval depth in config had no effect on
+        # this flow at all -- the setting looked live and was dead.
         bm25_results = step_8_search_bm25(
             batch=[source],
             bm25_index=bm25_index,
             eligible_master=eligible_master,
-            top_n=20,
+            top_n=C.LEXICAL_TOPK,
             source_products=source_products,
             synonym_terms=synonym_terms,
         )
@@ -234,7 +239,7 @@ def process_one_sku(
         vector_results = step_10_vector_search(
             conn=worker_conn,
             batch=[source],
-            top_k=20,
+            top_k=C.SEMANTIC_TOPK,
             source_products=source_products,
         )
 
