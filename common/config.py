@@ -153,7 +153,29 @@ IDENTITY_CONFLICT_CAP = float(os.environ.get("IDENTITY_CONFLICT_CAP", "0.60"))
 # category where one of them is noise can be tuned without disabling the rest.
 IDENTITY_CONFLICT_ON_SIZE = os.environ.get("IDENTITY_CONFLICT_ON_SIZE", "true").lower() == "true"
 IDENTITY_CONFLICT_ON_COUNT = os.environ.get("IDENTITY_CONFLICT_ON_COUNT", "true").lower() == "true"
-IDENTITY_CONFLICT_ON_FORM = os.environ.get("IDENTITY_CONFLICT_ON_FORM", "true").lower() == "true"
+# Form conflicts are OFF by default, and that is a statement about the
+# vocabulary rather than about product form.
+#
+# _type_cluster() works off TYPE_VOCABULARY, a hand-maintained list of 86
+# terms. Measured against live data it cannot classify 28% of the master or
+# 24% of listings at all, and where both sides DO classify it disagrees on 106
+# rank-1 pairs -- almost none of which are real form mismatches:
+#
+#   "Himalaya Herbal Balm Lip 10 g"      vs "LIP BALM 10g"          cream/lip
+#   "Himalaya Anti-Hair Fall Cream"      vs "ANTI-HAIR FALL CREAM"   hair/cream
+#   "Oil Clear Mud Pack 100gm"           vs "OIL CLEAR MUD FACE PACK" oil/mask
+#
+# Those are the same product each time. Longest-match-wins picks whichever
+# vocabulary term happens to appear, so word order and bundle text decide the
+# cluster. Treating that as a hard identity conflict makes the engine's
+# correctness depend on a word list nobody can complete -- 25 categories'
+# worth of forms, found one screenshot at a time.
+#
+# Form still contributes to attribute_score, where being wrong costs a little.
+# It no longer caps a pair outright, where being wrong costs the match. Size,
+# count and family are parsed from the data itself and carry the conflict
+# logic instead.
+IDENTITY_CONFLICT_ON_FORM = os.environ.get("IDENTITY_CONFLICT_ON_FORM", "false").lower() == "true"
 IDENTITY_CONFLICT_ON_BRAND = os.environ.get("IDENTITY_CONFLICT_ON_BRAND", "true").lower() == "true"
 # Family is the only attribute that separates two different products sharing a
 # form and a pack: a Tan Removal 8g x12 mask and a Dark Spot Turmeric 8g x12
@@ -181,6 +203,29 @@ IDENTITY_FAMILY_CONFLICT_RATIO = float(os.environ.get("IDENTITY_FAMILY_CONFLICT_
 # third of the catalogue permanently ambiguous. Naming two distinct tokens of
 # a product line is strong evidence regardless of how long the line's name is.
 IDENTITY_FAMILY_MIN_SHARED = int(os.environ.get("IDENTITY_FAMILY_MIN_SHARED", "2"))
+
+# Catalogue-side packaging vocabulary. These words appear in the master's
+# product_group but never in a marketplace listing, so leaving them in the
+# distinctive set guarantees zero overlap and a false family conflict.
+#
+# Measured: master 7000685's group is "REGULAR LIP BALM". "lip" and "balm" are
+# generic form words and get stripped, leaving "regular" as the ONLY
+# distinctive token -- a word no shopper-facing title contains. The listing
+# "Himalaya Herbals Lip Balm, 10G (Pack Of 24)" therefore scored 0/1 overlap
+# and was ruled a different product family, which capped a pair that agreed on
+# brand, form, size AND count -- an exact 24x10g match the judge scored 0.99.
+#
+# These describe how a product is packed or sold, never what it is.
+IDENTITY_CATALOGUE_WORDS = frozenset(
+    part.strip()
+    for part in os.environ.get(
+        "IDENTITY_CATALOGUE_WORDS",
+        "regular,offer,sales,pack,packs,container,carton,display,blister,"
+        "jar,bottle,tube,sachet,sachets,refill,combi,combo,kit,free,india,"
+        "indian,export,domestic,trade,consumer,institutional",
+    ).split(",")
+    if part.strip()
+)
 
 # Which attributes actually IDENTIFY a product, as opposed to merely being
 # consistent with one. Brand is near-constant (the master is Himalaya-only)
@@ -279,7 +324,14 @@ TYPE_VOCABULARY = [
     "body lotion", "body butter", "body wash", "body oil", "body scrub",
     "hair oil", "hair serum", "hair mask", "hair cream", "hair gel",
     "baby massage oil", "massage oil", "baby oil",
-    "lip balm", "lip care", "lip oil", "wet wipes",
+    # "lip butter" and "lip mask" are longer forms that must precede the bare
+    # "butter"/"mask" below, since longest-match-wins can only pick a term
+    # that exists. They were added after a real miss -- "AYURVEDA SECRETS GHEE
+    # LIP BUTTER 10G" matched only "butter" and landed in the cream cluster --
+    # but adding terms one incident at a time is not a strategy, which is why
+    # IDENTITY_CONFLICT_ON_FORM now defaults false rather than relying on this
+    # list being complete.
+    "lip balm", "lip butter", "lip care", "lip oil", "lip mask", "wet wipes",
     "nursing pads", "breast pads", "bra pads", "nursing pad",
     "gift basket", "gift set", "gift pack", "diaper rash", "baby wipes",
     "talcum powder", "baby powder",
@@ -309,7 +361,10 @@ TYPE_CLUSTERS: dict[str, list[str]] = {
     "toner": ["toner", "face toner"],
     "oil": ["oil", "face oil", "body oil", "lip oil", "massage oil",
             "baby massage oil", "baby oil"],
-    "lip": ["lip balm", "lip care"],
+    # "lip oil" is deliberately NOT here -- it already belongs to the oil
+    # cluster, and a term in two clusters makes _type_cluster()'s answer
+    # depend on dict ordering rather than on the product.
+    "lip": ["lip balm", "lip butter", "lip care", "lip mask"],
     "wipes": ["wipes", "wipe", "wet wipes", "baby wipes"],
     "nursing": ["nursing pads", "breast pads", "bra pads", "nursing pad"],
     "gift": ["gift basket", "gift set", "gift pack", "kit"],

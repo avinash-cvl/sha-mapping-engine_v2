@@ -227,6 +227,7 @@ def families_agree(source: SourceProduct, master: MasterProduct) -> bool | None:
         for word in _tokens(master.product_group)
         if word not in stage_scoring._GROUP_STOPWORDS
         and word not in stage_scoring._GROUP_FILLER
+        and word not in C.IDENTITY_CATALOGUE_WORDS
     }
     if not distinctive:
         return None
