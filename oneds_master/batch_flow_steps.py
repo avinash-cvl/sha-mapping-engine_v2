@@ -2898,14 +2898,22 @@ def _identity_aware_status(rank_one) -> str | None:
 
     Three outcomes, in order of authority:
 
-      1. identity_match, no conflict -> Deterministic. The parsed attributes
-         say this IS the sellable unit; a low similarity score is then a fact
+      1. identity_match, no conflict -> AutoMatch. The parsed attributes say
+         this IS the sellable unit; a low similarity score is then a fact
          about wording, not about the products.
       2. critical_conflict           -> capped at IDENTITY_CONFLICT_CAP, so it
          can never reach AutoMatch however confident the judge was. A 100ml
          listing against a 500ml master is wrong at any confidence.
       3. otherwise                   -> the eight-signal blend, banded on the
          same thresholds the existing path uses, so the two remain comparable.
+
+    Deliberately NOT "Deterministic". That tier predates this work and means
+    something specific: a mapping a human already approved, short-circuited
+    from the crosswalk by stage_deterministic.py. An engine-derived identity
+    match is strong evidence, not a human decision, and writing it into the
+    same bucket would erase the distinction the portal draws between "someone
+    signed off on this" and "the pipeline is confident". match_method on the
+    row still records that identity, not score, is what decided it.
     """
     candidate = getattr(rank_one, "candidate", None)
     scores = getattr(rank_one, "scores", None)
@@ -2927,7 +2935,7 @@ def _identity_aware_status(rank_one) -> str | None:
     )
 
     if verdict.identity_match and not verdict.critical_conflict:
-        return "Deterministic"
+        return "AutoMatch"
     if score >= 0.86:
         return "AutoMatch"
     if score >= 0.61:

@@ -302,6 +302,22 @@ def _mapping_row(
             if value is not None and column in mapping_table.c:
                 row[column] = value
 
+        # With the flag on, final_score carries the v2 number so the portal
+        # shows what the engine actually decided. The portal reads
+        # final_score; writing the new score anywhere else would leave the
+        # displayed confidence disagreeing with the tier beside it -- which is
+        # how a correct 99% match came to sit in the Low Match tab.
+        #
+        # Measured on the same 238 rows against crosswalk ground truth,
+        # swapping the two scores moved precision 30.0% -> 41.7% (false
+        # positives 14 -> 7) and recall 100% -> 83.3%: seven fewer wrong
+        # mappings asserted, one correct match lost.
+        #
+        # final_score_v2 keeps its own copy regardless, so the two remain
+        # comparable after the switch and this is reversible by flag alone.
+        if C.SCORING_V2_ENABLED and identity.get("final_score_v2") is not None:
+            row["final_score"] = identity["final_score_v2"]
+
     return row
 
 
@@ -517,7 +533,14 @@ def mark_product_status(conn: Connection, channel_tables: db_models.ChannelTable
     """Updates staging.{channel}_products.mapping_status -- the PENDING /
     AUTO_MATCHED / APPROVED / REJECTED enum from the meeting notes, kept on
     the product row itself so "is this SKU still awaiting steward action"
-    is a single-column read, not a join/derive."""
+    is a single-column read, not a join/derive.
+
+    An Approved row is never reached by this path in the first place: step_6
+    excludes it from selection, and step_6b answers it from the crosswalk and
+    marks it Deterministic in bulk. That is the correct outcome -- a steward's
+    decision is the strongest evidence there is, and Deterministic is the tier
+    that says so.
+    """
     conn.execute(
         channel_tables.products.update()
         .where(channel_tables.products.c.id == product_id)
