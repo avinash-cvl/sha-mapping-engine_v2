@@ -100,6 +100,23 @@ _COUNT_PATTERNS = (
     # below the 2-unit floor -- losing a 20-pack entirely.
     re.compile(r"(?<![\w.])\d{1,4}\s*[x*]\s*(\d{1,4})\s*[nN]\b", re.IGNORECASE),
     re.compile(r"(?<![\w.])(\d{1,4})\s*[nN]\s*\(", re.IGNORECASE),
+    # SIZE x COUNT -- "8g x 12", "10g x 2", "100 ml x 3".
+    #
+    # Must precede the COUNT x SIZE pattern below, which would otherwise read
+    # the leading "8" of "8g x 12" as the count. The two notations share the
+    # same NxM shape and mean opposite things; what disambiguates them is
+    # which side carries the unit. Here the unit is on the LEFT, so the left
+    # number is the size and the right is the count. In "24x10g" the unit is
+    # on the right, so the left number is the count -- that case is handled
+    # below and stays correct because this pattern requires the unit first.
+    #
+    # Without this "8gm Pack of 12" and "8G 1X12N" parsed to count 12 while
+    # the equivalent "8 g x 12" parsed to nothing, so the same sellable unit
+    # compared as a count mismatch depending only on how the seller wrote it.
+    re.compile(
+        r"(?<![\w.])\d+(?:\.\d+)?\s*(?:kg|gms|gm|g|ml|ltr|l)\s*[x*]\s*(\d{1,4})\b",
+        re.IGNORECASE,
+    ),
     re.compile(r"(?<![\w.])(\d{1,4})\s*[x*]\s*\d", re.IGNORECASE),
     # "60 Count", "60 Pieces", "30 Tablets", "10 Sachets". Tablet/capsule
     # counts matter here in a way they do not for toiletries: the master

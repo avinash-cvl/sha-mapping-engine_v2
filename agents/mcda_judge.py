@@ -143,6 +143,14 @@ Respond with strict JSON only:
 {
 "pick": int|null,
 "confidence": float,
+"identity_match": bool,
+"brand_match": bool,
+"product_family_match": bool,
+"variant_match": bool,
+"product_type_match": bool,
+"pack_size_match": bool,
+"pack_quantity_match": bool,
+"critical_conflict": bool,
 "reason": string
 }
 
@@ -155,6 +163,28 @@ Respond with strict JSON only:
   confidence at 0.50 no matter how well the product line matches, and say so in
   `reason`. If pack facts are unstated on either side, do not treat that as
   agreement -- cap confidence at 0.75.
+
+Judge each attribute of your PICK separately, and answer per attribute rather
+than letting one strong signal carry the rest:
+
+- `brand_match`          same brand.
+- `product_family_match` same product line -- "Tan Removal Orange" is a
+                         different line from "Dark Spot Clearing Turmeric"
+                         even when both are 8g sachets of the same form.
+- `variant_match`        same flavour/scent/formulation variant.
+- `product_type_match`   same form (cream vs wash vs tablet vs syrup).
+- `pack_size_match`      same size per unit (8g vs 8g, not 100ml vs 500ml).
+- `pack_quantity_match`  same number of units (12 vs 12, not 12 vs 144).
+- `identity_match`       true only when this is the same sellable unit -- what
+                         a shopper receives is interchangeable.
+- `critical_conflict`    true when any attribute POSITIVELY disagrees, as
+                         opposed to being unstated. An attribute neither side
+                         mentions is unknown, not a conflict.
+
+Use false only for a real disagreement. Where a fact is simply absent from both
+texts, prefer true for that attribute and lower `confidence` instead -- absence
+is uncertainty, not contradiction.
+
 - In `reason`, refer to candidates only by product_code (e.g. '7002677'),
   never as 'Candidate 0'. Never assign a candidate's product_code to the
   source product."""
@@ -270,6 +300,31 @@ def judge(
         pick_idx = parsed.get("pick")
         confidence = float(parsed.get("confidence", 0.0))
         reason = parsed.get("reason")
+
+        # The per-attribute verdicts ride on the audit entry rather than the
+        # return tuple. judge() is called from more than one place and its
+        # 4-tuple contract is relied on; widening it would touch every caller
+        # to deliver something only the identity layer reads.
+        #
+        # .get() throughout, with no default substituted for a missing key:
+        # every one of these is optional. A model that ignores the extended
+        # contract, or an older prompt still in cache, yields None -- which
+        # stage_identity treats as "unstated", the same as any other absent
+        # fact. Nothing here is required for the judge to keep working.
+        audit_entry["llm_identity"] = {
+            field: parsed.get(field)
+            for field in (
+                "identity_match",
+                "brand_match",
+                "product_family_match",
+                "variant_match",
+                "product_type_match",
+                "pack_size_match",
+                "pack_quantity_match",
+                "critical_conflict",
+            )
+        }
+
         if pick_idx is None:
             return "", confidence, reason, audit_entry
         product_code = ranked[pick_idx][0].product_code
