@@ -64,6 +64,54 @@ def _tokens(text: str) -> set[str]:
     return set(_WORD_RE.findall((text or "").lower()))
 
 
+# How many distinct product groups each token appears in, learned from the
+# master rather than listed by hand. Populated by build_token_frequency()
+# once per run; empty means "unknown", and the rarity rule then does nothing
+# rather than guessing.
+_TOKEN_GROUP_FREQUENCY: dict[str, int] = {}
+
+
+def build_token_frequency(master_rows) -> None:
+    """Count how many product groups each token appears in.
+
+    This is what separates a variant name from a filler word without anyone
+    maintaining a list. Measured on the live master: "shine" appears in 7
+    groups, "peach" and "cherry" in 2 each -- so a listing that shares only
+    "shine" with the CHERRY group has matched nothing that identifies a
+    product. 224 tokens are unique to a single group; 11 appear in 16 or more.
+
+    Called once per run from step_3, after the master is loaded. Cheap: one
+    pass over ~650 distinct groups.
+    """
+    frequency: dict[str, int] = {}
+    seen_groups: set[str] = set()
+    for row in master_rows:
+        group = getattr(row, "product_group", "") or ""
+        if not group or group in seen_groups:
+            continue
+        seen_groups.add(group)
+        for word in _tokens(group):
+            if (word in stage_scoring._GROUP_STOPWORDS
+                    or word in stage_scoring._GROUP_FILLER
+                    or word in C.IDENTITY_CATALOGUE_WORDS):
+                continue
+            frequency[word] = frequency.get(word, 0) + 1
+    _TOKEN_GROUP_FREQUENCY.clear()
+    _TOKEN_GROUP_FREQUENCY.update(frequency)
+
+
+def _rarest_frequency(words: set[str]) -> int:
+    """Group-count of the rarest token in `words`.
+
+    A large number when frequencies are unknown, so an unpopulated table
+    leaves the rarity rule inert rather than treating every missing token as
+    a variant.
+    """
+    if not _TOKEN_GROUP_FREQUENCY:
+        return 10 ** 6
+    return min(_TOKEN_GROUP_FREQUENCY.get(word, 10 ** 6) for word in words)
+
+
 @dataclass(frozen=True)
 class IdentityVerdict:
     """The identity layer's answer for one (source, candidate) pair.
@@ -82,6 +130,14 @@ class IdentityVerdict:
     comparable: tuple[str, ...] = ()
     evidence: dict[str, object] = field(default_factory=dict)
 
+    # How many of the five identity criteria could actually be checked.
+    # 1.0 means brand, family, form, size AND count were all comparable;
+    # 0.8 means one of them was unstated on one side and simply unknown.
+    # Distinct from attribute_score, which measures how well the COMPARABLE
+    # ones agreed -- a pair can agree perfectly on four criteria and still
+    # have said nothing about the fifth.
+    coverage: float = 1.0
+
     @property
     def summary(self) -> str:
         """One-line trace, e.g. 'identity attr=0.92 agree=family,size,count'.
@@ -96,6 +152,8 @@ class IdentityVerdict:
             parts.append("agree=" + ",".join(self.agreed))
         if self.conflicts:
             parts.append("CONFLICT=" + ",".join(self.conflicts))
+        if self.identity_match and self.coverage < 1.0:
+            parts.append(f"PARTIAL(cov={self.coverage:.0%})")
         if not self.identity_match and not self.conflicts:
             discriminating = [n for n in self.agreed if n in C.IDENTITY_DISCRIMINATING]
             if (len(self.comparable) < C.IDENTITY_MIN_COMPARABLE
@@ -167,15 +225,46 @@ def sizes_agree(
 
 
 def counts_agree(source_count: int | None, master_count: int | None) -> bool | None:
-    """True/False when both sides state a count, None when either is silent.
+    """True/False when the counts are comparable, None when they are not.
 
-    Silence stays None here, unlike pack_count_score() which reads it as one.
-    That function is scoring a similarity; this one is asserting an identity,
-    and asserting "the master says nothing, therefore it is a single" would
-    manufacture a conflict out of a gap in the catalogue.
+    Silence on BOTH sides is None -- neither states a count, so there is
+    nothing to compare and treating that as agreement would manufacture
+    identity out of a gap in the catalogue.
+
+    But silence on ONE side, when the other states a multipack, is NOT
+    unknown. A listing that says "Pack of 5" against a master that says
+    nothing is a 5-pack against a single unit: the catalogue names its
+    multipacks explicitly ("PACK OF 2", "24x10g", "3X60'S"), so a master row
+    that stays silent is a single, and that is a real disagreement.
+
+    Measured on live data, treating it as unknown inverted a whole ranking:
+    "Litchi Shine Lip Care 4.5G (Pack Of 5)" scored a perfect 1.00 against
+    both LITCHI SHINE LIP CARE 4.5G (a single) and LITCHI SHINE SERUM 4.5G,
+    because neither states a count so count was excluded -- while the one
+    candidate that DOES declare a count, PACK OF 2, was capped at 0.60 for
+    declaring the wrong one. Silence outscored honesty.
+
+    A source that states nothing while the master states a multipack stays
+    None. Marketplace titles omit pack information constantly, so that
+    direction really is unknown rather than a claim about a single.
     """
-    if source_count is None or master_count is None:
+    if source_count is None and master_count is None:
         return None
+    if source_count is not None and master_count is None:
+        # Listing declares a multipack, catalogue row does not: single unit.
+        return False if source_count > 1 else None
+    if source_count is None:
+        # Mirror of the case above. A listing that names no pack is offering
+        # one unit -- that is how anyone reads "Himalaya Peach Shine Lip Care,
+        # 4.5g" -- so a master row declaring PACK OF 3 is a different sellable
+        # unit, not an unknown.
+        #
+        # Handling only the other direction left this wide open: the single,
+        # the PACK OF 2 and the PACK OF 3 all scored a perfect 1.00 against
+        # one silent listing, because count was dropped as unstated and every
+        # remaining attribute agreed. Three different products, three
+        # identical scores.
+        return False if master_count > 1 else None
     return source_count == master_count
 
 
@@ -257,6 +346,24 @@ def families_agree(source: SourceProduct, master: MasterProduct) -> bool | None:
     # "unknown" is the honest answer. It leaves the attribute out of the score
     # rather than inventing agreement or a conflict.
     shared = distinctive & source_words
+    missing = distinctive - source_words
+
+    # A token the listing does NOT have, which is rare across the catalogue,
+    # is a variant name -- and a missing variant name is a different product.
+    #
+    # Plain overlap treats every token alike, which is how "Peach Shine Lip
+    # Care" matched the CHERRY SHINE LIP BALM group: the two groups reduce to
+    # {peach, shine} and {cherry, shine}, the listing shares "shine", and
+    # 1/2 = 0.50 cleared the match ratio. The one token that actually names
+    # the product -- peach vs cherry -- was worth exactly as much as the one
+    # that names nothing. Both scored 100%.
+    #
+    # Rarity is measured from the master itself rather than listed by hand:
+    # "shine" is in 7 groups, "peach" and "cherry" in 2 each. A token in few
+    # groups identifies a line; one in many does not.
+    if missing and _rarest_frequency(missing) <= C.IDENTITY_VARIANT_MAX_GROUPS:
+        return False
+
     overlap = len(shared) / len(distinctive)
 
     # A ratio alone cannot judge a short group. 251 of the master's 653 groups
@@ -369,6 +476,7 @@ def evaluate(source: SourceProduct, master: MasterProduct) -> IdentityVerdict:
     return IdentityVerdict(
         identity_match=identity_match,
         attribute_score=round(attribute_score, 4),
+        coverage=round(len(comparable) / len(checks), 4) if checks else 0.0,
         critical_conflict=critical_conflict,
         conflicts=tuple(conflicts),
         agreed=tuple(agreed),
@@ -389,6 +497,7 @@ def final_score(
     llm_confidence: float | None,
     identity_match: bool,
     critical_conflict: bool,
+    coverage: float = 1.0,
 ) -> float:
     """Blend the eight signals into one score, then apply the two overrides.
 
@@ -427,7 +536,35 @@ def final_score(
     blended = sum(weight * value for weight, value in terms) / total_weight
 
     if identity_match and not critical_conflict:
-        return 1.0
+        # Top score only when EVERY criterion was actually checked.
+        #
+        # identity_match means "nothing contradicted and enough agreed", which
+        # is not the same as "all five verified". Measured on lip makeup, 63
+        # of 77 top-scoring rows had verified only four -- and the unverified
+        # one was usually count, which is exactly what separates a single from
+        # a multipack. Worse, "Litchi Shine Lip Care 4.5g" scored 0.99 against
+        # both LITCHI SHINE LIP CARE and LITCHI SHINE SERUM LIP BALM: same
+        # four criteria agreed, and the word that distinguishes them (serum)
+        # is not one of the five.
+        #
+        # So a partial verification is scaled down by how much of the evidence
+        # was actually available. Four of five is strong, but it is not the
+        # same claim as five of five, and the number a reviewer sees should
+        # say so.
+        if coverage >= 1.0:
+            return C.IDENTITY_MAX_SCORE
+        return round(C.IDENTITY_MAX_SCORE * (
+            C.IDENTITY_PARTIAL_FLOOR
+            + (1.0 - C.IDENTITY_PARTIAL_FLOOR) * coverage
+        ), 4)
     if critical_conflict:
-        return min(blended, C.IDENTITY_CONFLICT_CAP)
-    return max(0.0, min(1.0, blended))
+        # Scale, then ceiling. A flat min(blended, cap) made every conflicted
+        # candidate render as the identical number -- measured, ten rows with
+        # ensembles from 0.89 to 0.73 all displayed 0.60, so the portal showed
+        # no difference between a near-miss on pack count and a poor match
+        # that also had one. The multiplier keeps them ordered; the ceiling
+        # keeps all of them below the AutoMatch line.
+        return max(0.0, min(blended * C.IDENTITY_CONFLICT_PENALTY, C.IDENTITY_CONFLICT_CAP))
+    # Capped at IDENTITY_MAX_SCORE too, so no path reaches 1.0 -- a blend of
+    # eight signals that all happen to be perfect is still not certainty.
+    return max(0.0, min(C.IDENTITY_MAX_SCORE, blended))

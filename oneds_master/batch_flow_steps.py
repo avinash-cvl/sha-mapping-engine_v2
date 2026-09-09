@@ -514,6 +514,11 @@ def step_3_build_master_lookup(
     # 2. Build master_by_code
     # --------------------------------------------------------
 
+    # Learn how many product groups each token appears in, so the identity
+    # layer can tell a variant name from a filler word without a hand-kept
+    # list. See stage_identity.build_token_frequency().
+    stage_identity.build_token_frequency(master_products)
+
     master_by_code = {
         product.product_code: product
         for product in master_products
@@ -2160,6 +2165,13 @@ def step_12_score_candidates(
             master_by_code,
         )
 
+        # Re-order by the identity-aware score before anything downstream
+        # reads position 0. disposition() takes ranked[0] as the winner and
+        # the judge is shown this list in order, so reordering later would
+        # leave the decision made on ensemble order while the displayed
+        # numbers came from somewhere else.
+        ranked = stage_disposition.rerank_by_identity(source_product, ranked)
+
         ranked_results[source_id] = {
             "source": source_product,
             "ranked": ranked,
@@ -2932,6 +2944,7 @@ def _identity_aware_status(rank_one) -> str | None:
         llm_confidence,
         verdict.identity_match,
         verdict.critical_conflict,
+        verdict.coverage,
     )
 
     if verdict.identity_match and not verdict.critical_conflict:

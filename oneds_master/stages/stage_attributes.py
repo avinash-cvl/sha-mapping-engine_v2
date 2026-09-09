@@ -91,9 +91,14 @@ def parse_pack(text: str) -> tuple[float, str] | None:
 # "5" out of "5S" inside a word. Upstream flagged this notation as unparsed
 # entirely, which left diaper listings with no count at all.
 _COUNT_PATTERNS = (
-    re.compile(r"\bpack\s+of\s+(\d{1,4})\b", re.IGNORECASE),
-    re.compile(r"\bset\s+of\s+(\d{1,4})\b", re.IGNORECASE),
-    re.compile(r"\bcombo\s+of\s+(\d{1,4})\b", re.IGNORECASE),
+    # \s* not \s+ after "of": real titles run the number straight on, and
+    # "RICH COCOA BUTTER LIP CARE 4.5G PACK OF2" parsed to no count at all.
+    # The engine then read the listing as a single unit, ruled the correct
+    # PACK OF 2 master a multipack mismatch, and scored two single-unit rows
+    # above it at 100%.
+    re.compile(r"\bpack\s*of\s*(\d{1,4})\b", re.IGNORECASE),
+    re.compile(r"\bset\s*of\s*(\d{1,4})\b", re.IGNORECASE),
+    re.compile(r"\bcombo\s*of\s*(\d{1,4})\b", re.IGNORECASE),
     # "6N(5N+FREE 1N)" and "1X20N" both state the count with an N suffix.
     # The 1X20N form has to be read before the generic count-x-size pattern
     # below, which would otherwise take the leading "1" and discard it as
