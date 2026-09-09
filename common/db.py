@@ -335,9 +335,23 @@ def persist_sku_disposition(
         raise ValueError("persist_sku_disposition requires results for exactly one source product")
 
     try:
+        # Scoped to the source product ALONE, deliberately not to
+        # (batch_id, product_id).
+        #
+        # Every run mints a fresh batch_id, so a delete that also matched on it
+        # could never see the rows an EARLIER run wrote for this SKU -- they
+        # survived alongside the new ones. A SKU processed twice ended up with
+        # two rank-1 rows and the portal rendered both: measured, 1600 SKUs
+        # carried duplicate rank-1 rows, and one showed the same candidate
+        # twice at 0.99 and 0.76 because the two runs disagreed on whether the
+        # judge had run.
+        #
+        # A source product has exactly one current disposition, so replacing by
+        # product_id is what "replace this SKU's disposition" always meant. The
+        # batch_id is still WRITTEN on each row, so which run produced a row
+        # stays visible -- it just no longer scopes the replace.
         conn.execute(
             channel_tables.mapping.delete().where(
-                channel_tables.mapping.c.batch_id == batch_id,
                 getattr(channel_tables.mapping.c, product_id_column) == product_id,
             )
         )
