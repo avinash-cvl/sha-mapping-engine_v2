@@ -106,6 +106,134 @@ PACK_TYPE_MISMATCH_PENALTY = float(os.environ.get("PACK_TYPE_MISMATCH_PENALTY", 
 PACK_COUNT_MISMATCH_PENALTY = float(os.environ.get("PACK_COUNT_MISMATCH_PENALTY", "0.85"))
 
 # ---------------------------------------------------------------------------
+# PRODUCT IDENTITY (oneds_master/stages/stage_identity.py)
+# ---------------------------------------------------------------------------
+# The ensemble answers "how similar are these two rows"; identity answers a
+# different question -- "are these the SAME sellable unit". A row can be the
+# same product and still score poorly on similarity: measured, "Himalaya Tan
+# Removal Orange Peel Off Mask, 8gm, Pack of 12" against the master's "TAN
+# REMOVAL ORANGE PEEL OFF MASK 8G 1X12N SACHET" scored an ensemble of 0.23 --
+# below a turmeric face pack at 0.55 -- because the two write the same pack
+# three different ways and share few literal tokens. Identity compares the
+# PARSED attributes instead, so notation stops mattering.
+#
+# Every threshold here is a starting point, not a calibrated value. None of
+# them has been fitted against reviewed outcomes yet.
+
+# Two sizes count as the same when within this relative tolerance. Not zero:
+# the same product is written 4.5g and 4.50g, and 1 KG against 1000 GM must
+# agree once normalised. Deliberately tight -- 100ml against 500ml is a
+# different sellable unit and must never pass.
+IDENTITY_PACK_TOLERANCE = float(os.environ.get("IDENTITY_PACK_TOLERANCE", "0.02"))
+
+# How much each attribute contributes to attribute_score, which is a
+# 0-1 measure of "how much of the identity evidence agrees". Weights are
+# renormalised over whichever attributes are actually comparable on a given
+# pair, so a row that states no variant is not punished for silence.
+IDENTITY_W_BRAND = float(os.environ.get("IDENTITY_W_BRAND", "0.15"))
+IDENTITY_W_FAMILY = float(os.environ.get("IDENTITY_W_FAMILY", "0.30"))
+IDENTITY_W_FORM = float(os.environ.get("IDENTITY_W_FORM", "0.15"))
+IDENTITY_W_SIZE = float(os.environ.get("IDENTITY_W_SIZE", "0.25"))
+IDENTITY_W_COUNT = float(os.environ.get("IDENTITY_W_COUNT", "0.15"))
+
+# attribute_score at or above which a pair is called a deterministic identity
+# match -- provided no critical conflict fired. 0.85 rather than 1.0 because
+# the master states some attributes nowhere: a row whose family, form and
+# pack all agree should not be denied identity because neither side named a
+# variant.
+IDENTITY_MATCH_THRESHOLD = float(os.environ.get("IDENTITY_MATCH_THRESHOLD", "0.85"))
+
+# A pair that trips a critical conflict cannot score above this, whatever the
+# LLM says. This is the guard that stops a confident judge promoting a
+# 100ml/500ml pair: the conflict is a fact about the products, not an opinion
+# the model is entitled to overrule.
+IDENTITY_CONFLICT_CAP = float(os.environ.get("IDENTITY_CONFLICT_CAP", "0.60"))
+
+# Which conflicts are treated as critical. Individually switchable so a
+# category where one of them is noise can be tuned without disabling the rest.
+IDENTITY_CONFLICT_ON_SIZE = os.environ.get("IDENTITY_CONFLICT_ON_SIZE", "true").lower() == "true"
+IDENTITY_CONFLICT_ON_COUNT = os.environ.get("IDENTITY_CONFLICT_ON_COUNT", "true").lower() == "true"
+IDENTITY_CONFLICT_ON_FORM = os.environ.get("IDENTITY_CONFLICT_ON_FORM", "true").lower() == "true"
+IDENTITY_CONFLICT_ON_BRAND = os.environ.get("IDENTITY_CONFLICT_ON_BRAND", "true").lower() == "true"
+# Family is the only attribute that separates two different products sharing a
+# form and a pack: a Tan Removal 8g x12 mask and a Dark Spot Turmeric 8g x12
+# mask agree on brand, form, size and count. Without this the pair reads as
+# near-identity.
+IDENTITY_CONFLICT_ON_FAMILY = os.environ.get("IDENTITY_CONFLICT_ON_FAMILY", "true").lower() == "true"
+
+# Family agreement is judged on how much of the master's product line the
+# listing actually names, not on an exact subset. Exact matching failed on a
+# real pair: "Himalaya Neem Face Wash 100ml" against the group "PURIFYING NEEM
+# FACE WASH" missed the single word "purifying" and was called a different
+# family -- a marketplace title dropping a catalogue qualifier is not a claim
+# about a different product.
+#
+# At or above MATCH_RATIO the line is considered named; at or below
+# CONFLICT_RATIO it is a genuinely different line ("TAN REMOVAL ORANGE" vs
+# "DARK SPOT CLEARING TURMERIC" share nothing). Between the two the evidence
+# is ambiguous and family is reported as unstated rather than guessed.
+IDENTITY_FAMILY_MATCH_RATIO = float(os.environ.get("IDENTITY_FAMILY_MATCH_RATIO", "0.5"))
+IDENTITY_FAMILY_CONFLICT_RATIO = float(os.environ.get("IDENTITY_FAMILY_CONFLICT_RATIO", "0.25"))
+
+# Absolute floor alongside the ratio. 251 of the master's 653 product groups
+# reduce to exactly TWO distinctive tokens, so a listing that drops one
+# qualifier scores precisely 0.50 on them -- and a ratio-only rule leaves a
+# third of the catalogue permanently ambiguous. Naming two distinct tokens of
+# a product line is strong evidence regardless of how long the line's name is.
+IDENTITY_FAMILY_MIN_SHARED = int(os.environ.get("IDENTITY_FAMILY_MIN_SHARED", "2"))
+
+# Which attributes actually IDENTIFY a product, as opposed to merely being
+# consistent with one. Brand is near-constant (the master is Himalaya-only)
+# and form is coarse ("shampoo" covers hundreds of SKUs) -- a pair agreeing on
+# those two has established almost nothing.
+#
+# This exists because attribute_score renormalises over whatever was
+# comparable, so a listing stating nothing but "himalaya anti dandruff
+# shampoo" scored a perfect 1.00 on brand+form alone and was called a
+# deterministic match against a 400ml master. Measured against steward
+# verdicts, that promoted 8 of 9 known-WRONG matches to the highest tier.
+# Identity now requires evidence that actually discriminates.
+IDENTITY_DISCRIMINATING = frozenset(
+    part.strip()
+    for part in os.environ.get("IDENTITY_DISCRIMINATING", "family,size,count").split(",")
+    if part.strip()
+)
+
+# Minimum comparable attributes before identity can be asserted at all, and
+# minimum discriminating ones among them. Two of each: one distinctive
+# attribute agreeing is a coincidence away from a different product in the
+# same line.
+IDENTITY_MIN_COMPARABLE = int(os.environ.get("IDENTITY_MIN_COMPARABLE", "3"))
+IDENTITY_MIN_DISCRIMINATING = int(os.environ.get("IDENTITY_MIN_DISCRIMINATING", "2"))
+
+# ---------------------------------------------------------------------------
+# V2 SCORING WEIGHTS (final_score) -- opt-in, off by default
+# ---------------------------------------------------------------------------
+# The existing W_* vector blends six similarity signals into ensemble_score
+# and is left exactly as it is. This second vector produces a SEPARATE
+# final_score that also weighs the identity evidence and the LLM's verdict,
+# neither of which the six can see.
+#
+# Enabled only when SCORING_V2_ENABLED is true. While it is false the new
+# columns are still written for comparison, but disposition keeps using the
+# existing logic -- so the two can be measured side by side on the same run
+# before anything depends on the new number.
+#
+# These weights are an initial guess. They are NOT optimal and have not been
+# fitted to reviewed outcomes; config.calibration_buckets is where measured
+# reliability will eventually come from.
+SCORING_V2_ENABLED = os.environ.get("SCORING_V2_ENABLED", "false").lower() == "true"
+
+W2_SEMANTIC = float(os.environ.get("W2_SEMANTIC", "0.20"))
+W2_LEXICAL = float(os.environ.get("W2_LEXICAL", "0.10"))
+W2_CATEGORY = float(os.environ.get("W2_CATEGORY", "0.05"))
+W2_TYPE = float(os.environ.get("W2_TYPE", "0.10"))
+W2_PACK = float(os.environ.get("W2_PACK", "0.15"))
+W2_OVERLAP = float(os.environ.get("W2_OVERLAP", "0.05"))
+W2_ATTRIBUTES = float(os.environ.get("W2_ATTRIBUTES", "0.15"))
+W2_LLM = float(os.environ.get("W2_LLM", "0.20"))
+
+# ---------------------------------------------------------------------------
 # CATEGORY GATE (oneds_master/category)
 # ---------------------------------------------------------------------------
 # Minimum category-resolver confidence at which the resolved master

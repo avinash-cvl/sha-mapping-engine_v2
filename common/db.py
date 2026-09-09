@@ -284,7 +284,75 @@ def _mapping_row(
             if value is not None and column in mapping_table.c:
                 row[column] = value
 
+        # Identity / v2 scoring columns (sql/014_identity_scoring_columns.sql).
+        #
+        # Written on EVERY run, including while SCORING_V2_ENABLED is false.
+        # That is the point: the old disposition still decides the row's
+        # status, and these columns record what the identity path WOULD have
+        # concluded, so the two can be compared on the same run before either
+        # is trusted. Recording only when the flag is on would mean switching
+        # it on blind.
+        #
+        # llm_score is stored separately from final_score because final_score
+        # holds max(ensemble, llm) -- the judge's own number is not
+        # recoverable from it, which made "how often was the LLM alone right"
+        # an unanswerable question.
+        identity = _identity_columns(r)
+        for column, value in identity.items():
+            if value is not None and column in mapping_table.c:
+                row[column] = value
+
     return row
+
+
+def _identity_columns(r: MatchResult) -> dict[str, Any]:
+    """The identity verdict for one result, as column values.
+
+    Imported lazily. common/db.py is imported by oneds_competitor as well,
+    which has its own stages package and no identity layer; a module-level
+    import would make this file depend on a sibling pipeline's internals for
+    a feature that pipeline does not use.
+
+    Returns empty on any failure. A scoring extra must never be able to stop a
+    row being persisted -- the mapping itself is the thing that matters.
+    """
+    if r.candidate is None or r.scores is None:
+        return {}
+    try:
+        from oneds_master.stages import stage_identity
+    except Exception:
+        return {}
+    try:
+        verdict = stage_identity.evaluate(r.source, r.candidate)
+        llm_score = _none_if_nan(r.llm_confidence)
+        final_v2 = stage_identity.final_score(
+            r.scores,
+            verdict.attribute_score,
+            llm_score,
+            verdict.identity_match,
+            verdict.critical_conflict,
+        )
+        if verdict.identity_match and not verdict.critical_conflict:
+            method = "DETERMINISTIC"
+        elif verdict.critical_conflict:
+            method = "CONFLICT_CAPPED"
+        elif llm_score is not None:
+            method = "IDENTITY+LLM"
+        else:
+            method = "ENSEMBLE"
+        return {
+            "attribute_score": round(verdict.attribute_score, 4),
+            "llm_score": llm_score,
+            "final_score_v2": round(final_v2, 4),
+            "match_method": method,
+            "critical_conflict": verdict.critical_conflict,
+            "identity_match": verdict.identity_match,
+            # Truncated to the column width; the summary is a trace for a
+            # human, not a parsed field, so losing the tail is harmless.
+            "identity_evidence": verdict.summary[:400],
+        }
+    except Exception:
+        return {}
 
 
 def write_staging_mapping(
@@ -335,9 +403,23 @@ def persist_sku_disposition(
         raise ValueError("persist_sku_disposition requires results for exactly one source product")
 
     try:
+        # Scoped to the source product ALONE, deliberately not to
+        # (batch_id, product_id).
+        #
+        # Every CLI invocation mints a fresh batch_id, so a delete that also
+        # matched on it could never see the rows an EARLIER run wrote for this
+        # SKU -- they survived alongside the new ones. A SKU processed in two
+        # runs ended up with two rank-1 rows, and the portal rendered both:
+        # measured, 1600 SKUs carried duplicate rank-1 rows and one zepto SKU
+        # showed the same candidate twice, once at 0.99 and once at 0.76,
+        # because the two runs disagreed on whether the judge ran.
+        #
+        # A source product has exactly one current disposition, so replacing
+        # by product_id is what "replace this SKU's disposition" always meant.
+        # The batch_id still gets WRITTEN on each row, so which run produced a
+        # row stays visible; it just no longer scopes the replace.
         conn.execute(
             channel_tables.mapping.delete().where(
-                channel_tables.mapping.c.batch_id == batch_id,
                 getattr(channel_tables.mapping.c, product_id_column) == product_id,
             )
         )

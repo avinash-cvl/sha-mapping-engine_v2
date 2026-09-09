@@ -15,6 +15,7 @@ from common import embedder
 from common.models import SourceProduct
 from oneds_master.stages import stage_attributes
 from oneds_master.stages import stage_deterministic
+from oneds_master.stages import stage_identity
 from oneds_master.stages import stage_lexicon
 from oneds_master.stages import stage_scoring
 from oneds_master.stages  import stage_disposition
@@ -979,9 +980,26 @@ def step_6_get_source_batch(
 
     # --------------------------------------------------------
     # 2. Get PENDING source records
+    #
+    # A steward's Approved verdict is final: that row is excluded here, at
+    # selection, so it never reaches retrieval, scoring or the LLM judge.
+    # Filtering at this point rather than later is deliberate -- it is the
+    # only place that costs nothing. Every downstream stage (BM25, vector
+    # search, the judge) would otherwise do full work on a row whose answer
+    # a human has already settled, and the judge in particular is a paid
+    # call per SKU.
+    #
+    # Guarded with hasattr because review_status was added to the channel
+    # tables later than this code and oneds_competitor's tables do not carry
+    # it: a missing column simply means nothing is excluded, which is the
+    # pre-existing behaviour.
+    #
+    # Rejected is deliberately NOT excluded. A rejection says "this candidate
+    # was wrong", not "stop trying" -- those rows should flow back through the
+    # engine so an improved ensemble/judge can propose something better.
     # --------------------------------------------------------
 
-    rows = conn.execute(
+    query = (
         sa.select(
             source
         )
@@ -996,6 +1014,20 @@ def step_6_get_source_batch(
         .where(
             source.c.subcategory == subcategory
         )
+    )
+
+    if hasattr(source.c, "review_status"):
+        query = query.where(
+            sa.or_(
+                source.c.review_status.is_(None),
+                sa.func.upper(
+                    sa.func.ltrim(sa.func.rtrim(source.c.review_status))
+                ) != "APPROVED",
+            )
+        )
+
+    rows = conn.execute(
+        query
         .order_by(
             source.c.id
         )
@@ -1003,7 +1035,7 @@ def step_6_get_source_batch(
     ).all()
 
     logger.info(
-        "PENDING records retrieved: %d",
+        "PENDING records retrieved: %d (steward-approved rows excluded)",
         len(rows),
     )
     # --------------------------------------------------------
@@ -2797,6 +2829,25 @@ def determine_mapping_status(match_results):
     if getattr(rank_one, "resolution_method", None) in _CATEGORY_TERMINAL_METHODS:
         return "StewardReview"
 
+    # ------------------------------------------------------------------
+    # Identity-aware path (SCORING_V2_ENABLED). Off by default: while the
+    # flag is false the identity verdict is still computed and persisted for
+    # comparison, but the status below is decided exactly as it was, so the
+    # two can be measured against each other on one run before anything
+    # depends on the new number.
+    #
+    # This exists because a low ensemble does not mean "not a match". Measured:
+    # "Tan Removal Orange Peel Off Mask, 8gm, Pack of 12" against the master's
+    # "TAN REMOVAL ORANGE PEEL OFF MASK 8G 1X12N SACHET" -- the same sellable
+    # unit -- scored an ensemble of 0.23 and landed in LowConfidence, because
+    # the two write one pack three different ways and share few literal tokens.
+    # Identity compares parsed attributes, so notation stops deciding the tier.
+    # ------------------------------------------------------------------
+    if C.SCORING_V2_ENABLED:
+        v2_status = _identity_aware_status(rank_one)
+        if v2_status is not None:
+            return v2_status
+
     final_score = getattr(rank_one, "llm_confidence", None)
     if final_score is not None and final_score != final_score:  # NaN
         final_score = None
@@ -2834,6 +2885,52 @@ def determine_mapping_status(match_results):
     if final_score >= 0.86:
         return "AutoMatch"
     if final_score >= 0.61:
+        return "StewardReview"
+    return "LowConfidence"
+
+
+def _identity_aware_status(rank_one) -> str | None:
+    """Status from the identity verdict + blended final_score, or None.
+
+    None means "this row has nothing for the identity path to work with" --
+    no candidate, or no scores -- and the caller falls through to the existing
+    logic rather than inventing an answer.
+
+    Three outcomes, in order of authority:
+
+      1. identity_match, no conflict -> Deterministic. The parsed attributes
+         say this IS the sellable unit; a low similarity score is then a fact
+         about wording, not about the products.
+      2. critical_conflict           -> capped at IDENTITY_CONFLICT_CAP, so it
+         can never reach AutoMatch however confident the judge was. A 100ml
+         listing against a 500ml master is wrong at any confidence.
+      3. otherwise                   -> the eight-signal blend, banded on the
+         same thresholds the existing path uses, so the two remain comparable.
+    """
+    candidate = getattr(rank_one, "candidate", None)
+    scores = getattr(rank_one, "scores", None)
+    if candidate is None or scores is None:
+        return None
+
+    verdict = stage_identity.evaluate(rank_one.source, candidate)
+
+    llm_confidence = getattr(rank_one, "llm_confidence", None)
+    if llm_confidence is not None and llm_confidence != llm_confidence:  # NaN
+        llm_confidence = None
+
+    score = stage_identity.final_score(
+        scores,
+        verdict.attribute_score,
+        llm_confidence,
+        verdict.identity_match,
+        verdict.critical_conflict,
+    )
+
+    if verdict.identity_match and not verdict.critical_conflict:
+        return "Deterministic"
+    if score >= 0.86:
+        return "AutoMatch"
+    if score >= 0.61:
         return "StewardReview"
     return "LowConfidence"
 
