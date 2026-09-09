@@ -958,12 +958,16 @@ def main() -> None:
                     # need writing here, just the status flip. One bulk
                     # call for the whole group's resolved set, not a
                     # per-SKU loop.
-                    resolved_count = step_16_mark_completed(
-                        conn=conn,
-                        source_table=args.source_table,
-                        batch=[r.source for r in crosswalk_resolved],
-                        status="DeterministicMatch",
-                    )
+                    # The status is deliberately NOT rewritten.
+                    #
+                    # These rows are already resolved -- a steward approved
+                    # them, and the crosswalk holds the answer. Stamping an
+                    # engine tier over that means a run can silently change
+                    # how an approved row reads in the portal, which is the
+                    # one thing a run must never do. They are counted as
+                    # processed and skipped; whatever mapping_status they
+                    # carry is a settled record and stays as it is.
+                    resolved_count = len(crosswalk_resolved)
 
                     total_processed += resolved_count
 
