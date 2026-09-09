@@ -143,11 +143,45 @@ IDENTITY_W_COUNT = float(os.environ.get("IDENTITY_W_COUNT", "0.15"))
 # variant.
 IDENTITY_MATCH_THRESHOLD = float(os.environ.get("IDENTITY_MATCH_THRESHOLD", "0.85"))
 
-# A pair that trips a critical conflict cannot score above this, whatever the
-# LLM says. This is the guard that stops a confident judge promoting a
-# 100ml/500ml pair: the conflict is a fact about the products, not an opinion
-# the model is entitled to overrule.
-IDENTITY_CONFLICT_CAP = float(os.environ.get("IDENTITY_CONFLICT_CAP", "0.60"))
+# Highest score the engine will ever report. Never 1.0.
+#
+# 100% is a claim of certainty, and the engine is not certain: it compares
+# parsed attributes, and the catalogue does not state every attribute of every
+# product. A perfect score on the facts that WERE comparable is not proof that
+# the two are the same sellable unit -- packaging variants, e-com-only SKUs
+# and jar-versus-blister distinctions routinely differ in ways no title
+# mentions. Displaying 1.00 invites a reviewer to trust the row without
+# looking, and makes the engine indefensible on the ones it gets wrong.
+#
+# 0.99 says "as confident as this can get" while leaving the last point of
+# doubt visible, which is the honest position.
+IDENTITY_MAX_SCORE = float(os.environ.get("IDENTITY_MAX_SCORE", "0.99"))
+
+# Floor for a partially-verified identity match, as a fraction of
+# IDENTITY_MAX_SCORE. A pair that agreed on every criterion it could check but
+# could only check four of five is strong evidence -- it is not the same claim
+# as five of five, and the number a reviewer sees should say so.
+#
+# Measured on lip makeup, 63 of 77 top-scoring rows had verified only four
+# criteria, and the missing one was usually count -- exactly what separates a
+# single from a multipack. At 0.80, four-of-five scores 0.95 and five-of-five
+# scores 0.99: both still AutoMatch, but no longer indistinguishable.
+IDENTITY_PARTIAL_FLOOR = float(os.environ.get("IDENTITY_PARTIAL_FLOOR", "0.80"))
+
+# A pair that trips a critical conflict is multiplied by this and then held
+# below the AutoMatch line, whatever the LLM says. The conflict is a fact
+# about the products, not an opinion the model is entitled to overrule.
+#
+# A multiplier rather than a flat cap, because a cap destroyed the ordering it
+# was meant to protect: min(blended, 0.60) collapsed every conflicted
+# candidate to exactly 0.60, so a 0.92-ensemble near-miss and a 0.73-ensemble
+# poor match rendered as the same number in the portal. Scaling keeps them
+# distinguishable while still ruling both out of an automatic match.
+IDENTITY_CONFLICT_PENALTY = float(os.environ.get("IDENTITY_CONFLICT_PENALTY", "0.65"))
+
+# Hard ceiling for a conflicted pair. Sits below the 0.86 AutoMatch threshold
+# so no amount of similarity can carry a contradiction into an auto-match.
+IDENTITY_CONFLICT_CAP = float(os.environ.get("IDENTITY_CONFLICT_CAP", "0.85"))
 
 # Which conflicts are treated as critical. Individually switchable so a
 # category where one of them is noise can be tuned without disabling the rest.
@@ -203,6 +237,20 @@ IDENTITY_FAMILY_CONFLICT_RATIO = float(os.environ.get("IDENTITY_FAMILY_CONFLICT_
 # third of the catalogue permanently ambiguous. Naming two distinct tokens of
 # a product line is strong evidence regardless of how long the line's name is.
 IDENTITY_FAMILY_MIN_SHARED = int(os.environ.get("IDENTITY_FAMILY_MIN_SHARED", "2"))
+
+# A product-group token appearing in at most this many groups is treated as a
+# VARIANT name, and a listing that does not contain it is a different product.
+#
+# Measured on the live master: "peach" and "cherry" appear in 2 groups each,
+# "litchi" in 1, while "shine" appears in 7 and "neem" in 18. Plain overlap
+# scored "Peach Shine Lip Care" as a match for the CHERRY SHINE group, because
+# the shared token was "shine" and 1-of-2 cleared the ratio -- the token that
+# names the product counted the same as the one that names nothing.
+#
+# 3 keeps flavour and scent names (2-3 groups) strict while leaving genuinely
+# common words to the ratio. Frequencies are learned from the master by
+# stage_identity.build_token_frequency(), never hand-listed.
+IDENTITY_VARIANT_MAX_GROUPS = int(os.environ.get("IDENTITY_VARIANT_MAX_GROUPS", "3"))
 
 # Catalogue-side packaging vocabulary. These words appear in the master's
 # product_group but never in a marketplace listing, so leaving them in the

@@ -98,6 +98,48 @@ def disposition(
     )
 
 
+def rerank_by_identity(
+    source: SourceProduct,
+    ranked: list[tuple[MasterProduct, ScoreBreakdown]],
+) -> list[tuple[MasterProduct, ScoreBreakdown]]:
+    """Re-order candidates by the score the portal displays.
+
+    rank_candidates() sorts on ensemble_score. That is the right order for the
+    six similarity signals, but it is not the order final_score puts them in
+    once the identity layer has applied its conflicts -- and final_score is
+    what the portal renders. Measured on "Litchi Shine Lip Care 4.5G (Pack Of
+    5)", the best-match tile read 60 while both alternatives read 100.
+
+    Applied before disposition() rather than after, because disposition()
+    takes ranked[0] as the winner. Reordering afterwards would fix the
+    displayed numbers while leaving the DECISION made on the old order --
+    the tiles would look right and the mapping would still be wrong.
+
+    The LLM's confidence is deliberately not part of the key: the judge has
+    not run yet at this point, and it grades one candidate rather than
+    ranking the set. Ordering on the ensemble plus the identity evidence is
+    what makes a candidate whose pack facts contradict the listing fall below
+    one whose facts agree.
+    """
+    if not C.SCORING_V2_ENABLED or len(ranked) < 2:
+        return ranked
+
+    from oneds_master.stages import stage_identity
+
+    def _key(pair: tuple[MasterProduct, ScoreBreakdown]) -> tuple[float, float]:
+        master, scores = pair
+        verdict = stage_identity.evaluate(source, master)
+        score = stage_identity.final_score(
+            scores, verdict.attribute_score, None,
+            verdict.identity_match, verdict.critical_conflict, verdict.coverage,
+        )
+        # ensemble breaks ties so equal scores keep a stable, reproducible
+        # order rather than depending on retrieval order.
+        return (score, scores.ensemble)
+
+    return sorted(ranked, key=_key, reverse=True)
+
+
 def disposition_all(
     source: SourceProduct,
     ranked: list[tuple[MasterProduct, ScoreBreakdown]],

@@ -347,6 +347,7 @@ def _identity_columns(r: MatchResult) -> dict[str, Any]:
             llm_score,
             verdict.identity_match,
             verdict.critical_conflict,
+            verdict.coverage,
         )
         if verdict.identity_match and not verdict.critical_conflict:
             method = "DETERMINISTIC"

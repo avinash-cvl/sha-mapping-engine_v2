@@ -95,7 +95,43 @@ def test_identity_survives_a_low_ensemble():
     assert stage_identity.final_score(
         result.scores, verdict.attribute_score, result.llm_confidence,
         verdict.identity_match, verdict.critical_conflict,
-    ) == 1.0
+    ) == C.IDENTITY_MAX_SCORE
+
+
+def test_no_path_ever_reaches_certainty():
+    """The engine must never display 100%.
+
+    It compares the attributes the catalogue happens to state, so a perfect
+    score on those is not proof the two are the same sellable unit --
+    packaging variants, e-com-only SKUs and jar-versus-blister distinctions
+    differ in ways no title mentions. A 100% invites a reviewer to approve
+    without looking, and is indefensible on the rows it gets wrong.
+    """
+    highest = 0.0
+    for ensemble in (0.0, 0.5, 0.8, 0.95, 1.0):
+        for attribute in (0.0, 0.5, 0.85, 1.0):
+            for llm in (None, 0.5, 0.99, 1.0):
+                for identity in (True, False):
+                    for conflict in (True, False):
+                        if identity and conflict:
+                            continue  # not a state the layer can produce
+                        highest = max(highest, stage_identity.final_score(
+                            scores(ensemble), attribute, llm, identity, conflict,
+                        ))
+    assert highest < 1.0
+    assert highest == C.IDENTITY_MAX_SCORE
+
+
+def test_a_conflict_can_never_reach_automatch():
+    """A contradiction stays below the 0.86 line at any confidence."""
+    highest = 0.0
+    for ensemble in (0.5, 0.9, 1.0):
+        for attribute in (0.5, 0.85, 1.0):
+            for llm in (None, 0.9, 1.0):
+                highest = max(highest, stage_identity.final_score(
+                    scores(ensemble), attribute, llm, False, True,
+                ))
+    assert highest < 0.86
 
 
 # ---------------------------------------------------------------------------
@@ -261,6 +297,144 @@ def test_identity_needs_discriminating_attributes():
     assert "brand" not in C.IDENTITY_DISCRIMINATING
     assert "form" not in C.IDENTITY_DISCRIMINATING
     assert C.IDENTITY_DISCRIMINATING >= {"family", "size", "count"}
+
+
+# ---------------------------------------------------------------------------
+# TEST 5c -- a silent catalogue row is a SINGLE, not an unknown
+# ---------------------------------------------------------------------------
+# The bug this guards against was visible in the portal: "Litchi Shine Lip
+# Care 4.5G (Pack Of 5)" showed its best match at 60% and BOTH alternatives at
+# 100%. The 100s were master rows that state no count at all -- count was
+# treated as unstated and dropped, so they scored perfectly on what remained,
+# while the one candidate that declared a count (PACK OF 2) was capped for
+# declaring the wrong one. Silence outscored honesty.
+
+@pytest.mark.parametrize("code,name", [
+    ("7002444", "LITCHI SHINE LIP CARE 4.5G INDIA"),
+    ("7006520", "LITCHI SHINE SERUM LIP BALM 4.5G INDIA"),
+])
+def test_multipack_listing_conflicts_with_silent_single(code, name):
+    verdict = stage_identity.evaluate(
+        source("Himalaya Herbal Litchi Shine Lip Care 4.5G (Pack Of 5), Pink", 4.5, "GM"),
+        master(code, name, 4.5, "GM", "LITCHI SHINE LIP CARE"),
+    )
+    assert verdict.identity_match is False, (
+        "a Pack of 5 cannot be identical to a catalogue row that names no pack"
+    )
+    assert "pack_count" in verdict.conflicts
+
+
+def test_count_silence_means_single_in_both_directions():
+    """Silence is a claim about a SINGLE unit, whichever side is silent.
+
+    A row that names no pack is offering one unit -- that is how anyone reads
+    "Himalaya Peach Shine Lip Care, 4.5g". So a multipack on the other side is
+    a different sellable unit, not an unknown.
+
+    Handling only one direction left the mirror case wide open: measured, a
+    single-unit listing scored a perfect 1.00 against the single, the PACK OF
+    2 AND the PACK OF 3 -- three different products, three identical scores --
+    because count was dropped as unstated and everything else agreed.
+    """
+    assert stage_identity.counts_agree(None, None) is None   # nothing to compare
+    assert stage_identity.counts_agree(1, None) is None      # both single
+    assert stage_identity.counts_agree(None, 1) is None      # both single
+    assert stage_identity.counts_agree(5, None) is False     # 5-pack vs single
+    assert stage_identity.counts_agree(None, 3) is False     # single vs 3-pack
+    assert stage_identity.counts_agree(5, 2) is False        # real mismatch
+    assert stage_identity.counts_agree(2, 2) is True
+
+
+@pytest.mark.parametrize("code,name,expected_identity", [
+    ("7002445", "PEACH SHINE LIP CARE 4.5G INDIA", True),
+    ("7005711", "PEACH SHINE LIP CARE 4.5G (PACK OF 3) INDIA", False),
+    ("7005165", "PEACH SHINE LIP CARE 4.5G PACK OF 2 INDIA", False),
+])
+def test_single_listing_does_not_match_a_multipack(code, name, expected_identity):
+    """One listing, three candidates, three different answers."""
+    verdict = stage_identity.evaluate(
+        source("Himalaya Lip Care - Peach Shine, 4.5g Pack", 4.5, "GM"),
+        master(code, name, 4.5, "GM", "PEACH SHINE LIP CARE"),
+    )
+    assert verdict.identity_match is expected_identity
+
+
+# ---------------------------------------------------------------------------
+# TEST 9 -- "PACK OF2" with no space
+# ---------------------------------------------------------------------------
+# Real listing text. The count pattern required whitespace after "of", so this
+# parsed to no count at all -- the engine read the listing as a single unit,
+# ruled the correct PACK OF 2 master a multipack mismatch and capped it at 60%,
+# while two single-unit rows scored 100% beside it.
+
+@pytest.mark.parametrize("title,expected", [
+    ("RICH COCOA BUTTER LIP CARE 4.5G PACK OF2", 2),
+    ("NAT. SOFT VANILLA LIP CARE 4.5G PACK OF2", 2),
+    ("Himalaya Lip Balm PACK OF3", 3),
+    ("Himalaya Lip Balm Pack of 2", 2),      # spaced form still works
+    ("Himalaya Lip Balm (Pack Of 2)", 2),
+])
+def test_pack_of_parses_without_a_space(title, expected):
+    assert stage_attributes.parse_pack_count(title) == expected
+
+
+# ---------------------------------------------------------------------------
+# TEST 10 -- a variant name is not interchangeable
+# ---------------------------------------------------------------------------
+# "Peach Shine Lip Care" matched the CHERRY SHINE group at 100%: the two groups
+# reduce to {peach, shine} and {cherry, shine}, the listing shares "shine", and
+# 1-of-2 cleared the match ratio. The token that names the product counted the
+# same as the one that names nothing. The LLM's own reasoning on that row said
+# "7005713 is the wrong variant (Cherry)" while the score said 100%.
+
+def _frequency_from(groups: dict[str, int]) -> None:
+    """Seed the learned token frequencies directly, without a DB round trip."""
+    stage_identity._TOKEN_GROUP_FREQUENCY.clear()
+    stage_identity._TOKEN_GROUP_FREQUENCY.update(groups)
+
+
+def test_wrong_variant_is_not_the_same_family():
+    # Real frequencies from the live master: peach/cherry name a line, shine
+    # does not.
+    _frequency_from({"peach": 2, "cherry": 2, "shine": 7})
+    try:
+        verdict = stage_identity.evaluate(
+            source("Himalaya Peach Shine Lip Care, 4.5 Grams (Pack Of 2)", 4.5, "GM"),
+            master("7005713", "CHERRY SHINE LIP CARE 4.5G (PACK OF 2) INDIA",
+                   4.5, "GM", "CHERRY SHINE LIP BALM"),
+        )
+        assert verdict.identity_match is False
+        assert "product_family" in verdict.conflicts
+    finally:
+        stage_identity._TOKEN_GROUP_FREQUENCY.clear()
+
+
+def test_right_variant_still_matches():
+    _frequency_from({"peach": 2, "cherry": 2, "shine": 7})
+    try:
+        verdict = stage_identity.evaluate(
+            source("Himalaya Peach Shine Lip Care, 4.5 Grams (Pack Of 2)", 4.5, "GM"),
+            master("7005165", "PEACH SHINE LIP CARE 4.5G PACK OF 2 INDIA",
+                   4.5, "GM", "PEACH SHINE LIP BALM"),
+        )
+        assert verdict.identity_match is True
+    finally:
+        stage_identity._TOKEN_GROUP_FREQUENCY.clear()
+
+
+def test_rarity_rule_is_inert_without_frequencies():
+    """An unpopulated table must not turn every missing token into a variant.
+
+    build_token_frequency() runs once per pipeline run; anything calling the
+    identity layer without it (a unit test, another pipeline) has to keep
+    working rather than silently rejecting every candidate.
+    """
+    stage_identity._TOKEN_GROUP_FREQUENCY.clear()
+    verdict = stage_identity.evaluate(
+        source("Himalaya Neem Face Wash 100ml", 100.0, "ML"),
+        master("X3", "PURIFYING NEEM FACE WASH 100ML", 100.0, "ML", GROUP_NEEM_WASH),
+    )
+    assert verdict.identity_match is True
 
 
 # ---------------------------------------------------------------------------
