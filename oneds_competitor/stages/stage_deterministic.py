@@ -81,7 +81,7 @@ def apply_crosswalk(
             type_align=float("nan"), pack=float("nan"), overlap=float("nan"),
             ensemble=ensemble_score,
         ),
-        confidence_tier="Deterministic",
+        confidence_tier="DeterministicMatch",
         resolution_method="crosswalk_deterministic",
         llm_confidence=float("nan"),
     )

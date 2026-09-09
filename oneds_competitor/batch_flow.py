@@ -798,7 +798,7 @@ def main() -> None:
                         conn=conn,
                         source_table=args.source_table,
                         batch=[r.source for r in crosswalk_resolved],
-                        status="Deterministic",
+                        status="DeterministicMatch",
                     )
 
                     total_processed += resolved_count

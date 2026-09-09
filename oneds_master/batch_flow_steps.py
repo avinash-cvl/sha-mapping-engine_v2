@@ -979,9 +979,25 @@ def step_6_get_source_batch(
 
     # --------------------------------------------------------
     # 2. Get PENDING source records
+    #
+    # A steward's Approved verdict is final: that row is excluded here, at
+    # selection, so it never reaches retrieval, scoring or the LLM judge.
+    # Filtering at this point rather than later is deliberate -- it is the
+    # only place that costs nothing. step_6b's crosswalk short-circuit also
+    # catches these, but only AFTER the batch has been built, and the judge
+    # is a paid call per SKU.
+    #
+    # Rejected is deliberately NOT excluded. A rejection says "this candidate
+    # was wrong", not "stop trying" -- those rows should flow back through the
+    # engine so an improved ensemble or judge can propose something better.
+    #
+    # Guarded with hasattr: review_status was added to the channel tables
+    # later than this code, and oneds_competitor's tables do not carry it. A
+    # missing column simply means nothing is excluded, which is the
+    # pre-existing behaviour.
     # --------------------------------------------------------
 
-    rows = conn.execute(
+    query = (
         sa.select(
             source
         )
@@ -996,6 +1012,20 @@ def step_6_get_source_batch(
         .where(
             source.c.subcategory == subcategory
         )
+    )
+
+    if hasattr(source.c, "review_status"):
+        query = query.where(
+            sa.or_(
+                source.c.review_status.is_(None),
+                sa.func.upper(
+                    sa.func.ltrim(sa.func.rtrim(source.c.review_status))
+                ) != "APPROVED",
+            )
+        )
+
+    rows = conn.execute(
+        query
         .order_by(
             source.c.id
         )
@@ -1003,7 +1033,7 @@ def step_6_get_source_batch(
     ).all()
 
     logger.info(
-        "PENDING records retrieved: %d",
+        "PENDING records retrieved: %d (steward-approved rows excluded)",
         len(rows),
     )
     # --------------------------------------------------------

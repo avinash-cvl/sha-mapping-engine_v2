@@ -33,33 +33,71 @@ def _chunks(items: list[str], size: int) -> list[list[str]]:
 
 def load_approved_crosswalk(conn: db.Connection, skus: list[str]) -> dict[str, dict[str, object]]:
     """Return {sku: row} for SKUs already at match_rank=1 with an
-    approved/auto_approved status in any active channel's crosswalk."""
+    approved/auto_approved status in any active channel's crosswalk.
+
+    Rows whose staging review_status now says Rejected are excluded even when
+    the crosswalk still holds an approval. Measured on live data: 4 SKUs were
+    approved by one reviewer and later REJECTED by another, and the rejection
+    only updated staging.*_products -- the crosswalk row was never cleaned up.
+    The short-circuit kept treating them as settled, so they were skipped by
+    every subsequent run and carried a stale Deterministic status with no
+    mapping row at all. A later rejection is the newer decision and has to win.
+    """
     if not skus:
         return {}
     engine = conn.engine
-    channel_targets: list[sa.Table] = []
+    channel_targets: list[tuple[sa.Table, sa.Table | None]] = []
     for channel_key in db_models.list_active_channels(engine):
         channel_tables = db_models.resolve_channel_tables(engine, channel_key)
-        channel_targets.extend((channel_tables.crosswalk, channel_tables.crosswalk_competitor))
+        products = getattr(channel_tables, "products", None)
+        channel_targets.append((channel_tables.crosswalk, products))
+        channel_targets.append((channel_tables.crosswalk_competitor, products))
     if not channel_targets:
         return {}
 
     result: dict[str, dict[str, object]] = {}
     for sku_chunk in _chunks(skus, _SKU_CHUNK_SIZE):
-        #print(channel_targets)
         selects = [
             sa.select(target.c.sku, target.c.product_code, target.c.ensemble_score)
             .where(
                 target.c.sku.in_(sku_chunk),
                 target.c.match_rank == 1,
-                target.c.match_status.in_(("auto_approved", "approved")),
+                # Case-insensitive. The portal writes 'Approved' while this
+                # filter listed only the lower-case spellings, so a portal
+                # approval was invisible to the short-circuit and the SKU was
+                # re-scored -- and re-judged -- on every run.
+                sa.func.lower(sa.func.ltrim(sa.func.rtrim(target.c.match_status)))
+                .in_(("auto_approved", "approved")),
             )
-            for target in channel_targets
+            for target, _ in channel_targets
         ]
         rows = conn.execute(sa.union_all(*selects)).all()
         for row in rows:
             result[str(row.sku)] = {"product_code": row.product_code, "ensemble_score": row.ensemble_score}
-    return result
+
+    # Drop anything a steward has since rejected. A second pass rather than a
+    # join, because the crosswalk and the products table are per-channel and a
+    # SKU only ever belongs to one of them.
+    rejected: set[str] = set()
+    seen_products: set[str] = set()
+    for _, products in channel_targets:
+        if products is None or "review_status" not in products.c:
+            continue
+        if products.name in seen_products:
+            continue  # crosswalk and crosswalk_competitor share one products table
+        seen_products.add(products.name)
+        for sku_chunk in _chunks(list(result), _SKU_CHUNK_SIZE):
+            if not sku_chunk:
+                continue
+            rows = conn.execute(
+                sa.select(products.c.sku).where(
+                    products.c.sku.in_(sku_chunk),
+                    sa.func.lower(sa.func.ltrim(sa.func.rtrim(products.c.review_status))) == "rejected",
+                )
+            ).all()
+            rejected.update(str(row.sku) for row in rows)
+
+    return {sku: row for sku, row in result.items() if sku not in rejected}
 
 
 def apply_crosswalk(
@@ -81,7 +119,7 @@ def apply_crosswalk(
             type_align=float("nan"), pack=float("nan"), overlap=float("nan"),
             ensemble=ensemble_score,
         ),
-        confidence_tier="Deterministic",
+        confidence_tier="DeterministicMatch",
         resolution_method="crosswalk_deterministic",
         llm_confidence=float("nan"),
     )
