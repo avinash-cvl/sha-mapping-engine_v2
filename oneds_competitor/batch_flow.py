@@ -794,12 +794,10 @@ def main() -> None:
                     # need writing here, just the status flip. One bulk
                     # call for the whole group's resolved set, not a
                     # per-SKU loop.
-                    resolved_count = step_16_mark_completed(
-                        conn=conn,
-                        source_table=args.source_table,
-                        batch=[r.source for r in crosswalk_resolved],
-                        status="Deterministic",
-                    )
+                    # Status deliberately NOT rewritten -- see the same
+                    # decision in oneds_master/batch_flow.py. An approved row
+                    # is a settled record; a run must not restamp it.
+                    resolved_count = len(crosswalk_resolved)
 
                     total_processed += resolved_count
 

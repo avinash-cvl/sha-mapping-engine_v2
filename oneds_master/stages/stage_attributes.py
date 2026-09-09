@@ -91,15 +91,38 @@ def parse_pack(text: str) -> tuple[float, str] | None:
 # "5" out of "5S" inside a word. Upstream flagged this notation as unparsed
 # entirely, which left diaper listings with no count at all.
 _COUNT_PATTERNS = (
-    re.compile(r"\bpack\s+of\s+(\d{1,4})\b", re.IGNORECASE),
-    re.compile(r"\bset\s+of\s+(\d{1,4})\b", re.IGNORECASE),
-    re.compile(r"\bcombo\s+of\s+(\d{1,4})\b", re.IGNORECASE),
+    # \s* not \s+ after "of": real listings run the number straight on, and
+    # "RICH COCOA BUTTER LIP CARE 4.5G PACK OF2" parsed to no count at all.
+    # The row then compared as a single unit, so the correct 2-pack master
+    # scored no better than a single -- measured on amazon lip balms, where
+    # the matching PACK OF 2 lost to two single-unit candidates.
+    re.compile(r"\bpack\s*of\s*(\d{1,4})\b", re.IGNORECASE),
+    re.compile(r"\bset\s*of\s*(\d{1,4})\b", re.IGNORECASE),
+    re.compile(r"\bcombo\s*of\s*(\d{1,4})\b", re.IGNORECASE),
     # "6N(5N+FREE 1N)" and "1X20N" both state the count with an N suffix.
     # The 1X20N form has to be read before the generic count-x-size pattern
     # below, which would otherwise take the leading "1" and discard it as
     # below the 2-unit floor -- losing a 20-pack entirely.
     re.compile(r"(?<![\w.])\d{1,4}\s*[x*]\s*(\d{1,4})\s*[nN]\b", re.IGNORECASE),
     re.compile(r"(?<![\w.])(\d{1,4})\s*[nN]\s*\(", re.IGNORECASE),
+    # SIZE x COUNT -- "150g x 2", "200ml *2", "8 g x 12".
+    #
+    # Must precede the COUNT x SIZE pattern below, which would otherwise read
+    # the leading "150" of "150g x 2" as the count. The two notations share
+    # the same NxM shape and mean opposite things; what separates them is
+    # which side carries the unit. Here the unit is on the LEFT, so the left
+    # number is the size and the right is the count. In "24x10g" the unit is
+    # on the right, so the left number IS the count -- handled below, and it
+    # stays correct because this pattern requires a unit first.
+    #
+    # Without it the same pack parsed differently depending only on how the
+    # seller wrote it: "12 x 8g" gave 12 while "8g x 12" gave nothing.
+    # Measured: 15 source listings and 13 master rows use the size-first form
+    # -- "Complete Care 300g (150g x 2)", "Baby Cream 400ml (200ml *2 Pack)".
+    re.compile(
+        r"(?<![\w.])\d+(?:\.\d+)?\s*(?:kg|gms|gm|g|ml|ltr|l)\s*[x*]\s*(\d{1,4})\b",
+        re.IGNORECASE,
+    ),
     re.compile(r"(?<![\w.])(\d{1,4})\s*[x*]\s*\d", re.IGNORECASE),
     # "60 Count", "60 Pieces", "30 Tablets", "10 Sachets". Tablet/capsule
     # counts matter here in a way they do not for toiletries: the master
