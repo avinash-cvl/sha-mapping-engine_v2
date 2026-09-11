@@ -174,15 +174,17 @@ def step_1_source_summary(
     max_workers: int,
     category: str | None = None,
     subcategory: str | None = None,
+    skus: list[str] | None = None,
 ) -> None:
 
     logger.info("==========================================")
     logger.info("BATCH FLOW - STEP 1")
     logger.info("==========================================")
     logger.info(
-        "Filter | category=%r | subcategory=%r",
+        "Filter | category=%r | subcategory=%r | skus=%s",
         category,
         subcategory,
+        len(skus) if skus else None,
     )
 
     # --------------------------------------------------------
@@ -236,6 +238,14 @@ def step_1_source_summary(
             sa.func.lower(sa.func.trim(source.c.subcategory)) == subcategory.strip().lower()
         )
 
+    # An explicit SKU list narrows the run to exactly those rows. It is applied
+    # HERE as well as in step 6 so the group list itself collapses to only the
+    # groups those SKUs live in -- otherwise every category/subcategory group in
+    # the table still spins up a BM25 index and a master shortlist before step 6
+    # returns an empty batch, which is the bulk of the wall time on a spot-check.
+    if skus:
+        pending_query = pending_query.where(source.c.sku.in_(skus))
+
     pending_count = conn.execute(
         pending_query
     ).scalar_one()
@@ -273,6 +283,9 @@ def step_1_source_summary(
         groups_query = groups_query.where(
             sa.func.lower(sa.func.trim(source.c.subcategory)) == subcategory.strip().lower()
         )
+
+    if skus:
+        groups_query = groups_query.where(source.c.sku.in_(skus))
 
     rows = conn.execute(
         groups_query
@@ -932,6 +945,7 @@ def step_6_get_source_batch(
     category: str,
     subcategory: str,
     batch_size: int = 500,
+    skus: list[str] | None = None,
 ):
     logger.info("==========================================")
     logger.info("BATCH FLOW - STEP 6")
@@ -1020,6 +1034,15 @@ def step_6_get_source_batch(
                 ) != "APPROVED",
             )
         )
+
+    # Explicit SKU list: restrict the batch to exactly these rows. Deliberately
+    # ANDed with the filters above rather than replacing them -- an explicit SKU
+    # does NOT override the steward-approved exclusion, so naming an Approved
+    # SKU here still skips it. Nothing about --sku should be able to overwrite a
+    # governed answer.
+    if skus:
+        query = query.where(source.c.sku.in_(skus))
+        logger.info("SKU filter   : %d explicit sku(s)", len(skus))
 
     rows = conn.execute(
         query
