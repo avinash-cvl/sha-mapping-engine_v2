@@ -54,22 +54,29 @@ CACHE_DIR = os.environ.get("EMBED_CACHE_DIR", "cache")
 SEMANTIC_TOPK = int(os.environ.get("SEMANTIC_TOPK", "40"))
 LEXICAL_TOPK = int(os.environ.get("LEXICAL_TOPK", "40"))
 
-# How many ranked candidates survive scoring -- this is both what the LLM
-# judge gets to choose from and what is persisted for a steward.
+# How many ranked candidates survive scoring -- this is what the LLM judge
+# gets to choose from. step_15 persists only the top 3 rows to the mapping
+# table either way, so this controls judge width, not what a steward sees.
 #
-# Raised from 3 to 5. Three candidates picked by the ensemble is a narrow
-# funnel: if the ensemble's ordering is wrong, the right product is not in
-# the list and no amount of prompt quality can recover it. Five keeps a
-# genuine margin for the judge to reach past a mis-ranked #1 (measured: on
-# one face-wash row the judge correctly chose the ensemble's #3) without
-# padding the prompt with candidates that are mostly noise.
+# Set to 3 for LLM cost. Note the saving is smaller than it looks: measured
+# on one face-care row the human prompt was ~1,193 chars against a ~6,503
+# char system prompt, so candidates are only ~15% of the payload and 5->3
+# trims roughly 6% of input tokens per call, not 40%.
+#
+# History: this was 3, raised to 5, now back to 3. The case for 5 was that
+# three candidates picked by the ensemble is a narrow funnel -- if the
+# ensemble's ordering is wrong the right product is not in the list and no
+# amount of prompt quality can recover it (measured: on one face-wash row
+# the judge correctly chose the ensemble's #3). That risk is real and is
+# NOT hypothetical: on B09VH3HQBK the correct rows 7004920/7005161 ranked
+# 33rd and 36th of 99 after a mis-firing type_hard_incompatible penalty, so
+# neither 3 nor 5 would have reached them. Narrowing to 3 makes the judge's
+# dependence on correct ensemble ordering tighter, so ordering defects now
+# surface as wrong answers rather than being recoverable by the judge.
 #
 # eval/shortlist_depth.py measures how deep the judge actually reaches, so
 # this can be revisited against data rather than intuition.
-#
-# Note step_15 still persists only the top 3 rows to the mapping table --
-# this widens what the JUDGE sees, not what a steward is shown.
-TOP_N_OUTPUT = int(os.environ.get("TOP_N_OUTPUT", "5"))
+TOP_N_OUTPUT = int(os.environ.get("TOP_N_OUTPUT", "3"))
 COMPETITOR_TOP_N_OUTPUT = 3
 
 # Ask the LLM judge about every row that has candidates, rather than only
