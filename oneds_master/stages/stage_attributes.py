@@ -123,6 +123,23 @@ _COUNT_PATTERNS = (
         r"(?<![\w.])\d+(?:\.\d+)?\s*(?:kg|gms|gm|g|ml|ltr|l)\s*[x*]\s*(\d{1,4})\b",
         re.IGNORECASE,
     ),
+    # "125gx4N" -- SIZE x COUNT with the count carrying an N suffix. The
+    # size-first pattern above stops at "\d{1,4}\b", and the "N" makes the
+    # match fail the word boundary, so this form parsed to no count at all.
+    # It is the master's own VALUE PACK notation: measured, "ALMOND & ROSE
+    # SOAP 125gx4N INDIA VALUE PACK" (7001720) took a pack_count_mismatch
+    # penalty against a listing that genuinely is 4x125g, dropping the
+    # correct row to rank 19 behind promo bundles it should have beaten.
+    re.compile(
+        r"(?<![\w.])\d+(?:\.\d+)?\s*(?:kg|gms|gm|g|ml|ltr|l)\s*[x*]\s*(\d{1,4})\s*[nN]\b",
+        re.IGNORECASE,
+    ),
+    # "2NX150ML" / "2N X 200ML" -- COUNT-N then size, the mirror of the above
+    # and equally a master VALUE PACK form (7004111, 7004112, 7004753).
+    re.compile(
+        r"(?<![\w.])(\d{1,4})\s*[nN]\s*[x*]\s*\d+(?:\.\d+)?\s*(?:kg|gms|gm|g|ml|ltr|l)\b",
+        re.IGNORECASE,
+    ),
     re.compile(r"(?<![\w.])(\d{1,4})\s*[x*]\s*\d", re.IGNORECASE),
     # "60 Count", "60 Pieces", "30 Tablets", "10 Sachets". Tablet/capsule
     # counts matter here in a way they do not for toiletries: the master
