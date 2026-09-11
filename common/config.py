@@ -51,7 +51,25 @@ CACHE_DIR = os.environ.get("EMBED_CACHE_DIR", "cache")
 # LLM spend. 40 keeps the merged pool near the behaviour the current
 # thresholds were tuned against while still being tunable per run:
 #     SEMANTIC_TOPK=150 LEXICAL_TOPK=150 python -m oneds_master.batch_flow ...
-SEMANTIC_TOPK = int(os.environ.get("SEMANTIC_TOPK", "40"))
+#
+# SEMANTIC_TOPK raised 40 -> 100. A candidate that misses the vector cut-off
+# is not scored as "unmeasured", it is scored as semantically DISSIMILAR:
+# step_11 fills its semantic score with 0.0, and W_SEMANTIC is the heaviest
+# weight in the blend at 0.40. So missing the window costs ~0.26 of ensemble,
+# which no other signal can recover -- a perfect pack match is worth 0.10.
+#
+# Measured on 3O9PHDFB9H ("Purifying Neem Face Wash", 400ml): the correct
+# 7004295 sits at vector rank 59, just outside 40. It entered scoring with
+# sem=0.000 despite pack=1.00 (exact 400ml) and lex=0.901, scored 0.6288
+# against a 300ml row's 0.8807, and ranked 35th. At 100 it is inside the
+# window. Its cosine is 0.6428 against a top of 0.6963 -- the gap is small
+# because the listing's text is the bare "PURIFYING NEEM FACE WASH", with
+# nothing in it to separate one size from another.
+#
+# Cost measured, not assumed: vector search goes 48.1ms -> 58.8ms per SKU,
+# about +39 seconds across a full 3,653-row PENDING run, and zero LLM spend
+# -- the judge still receives scored[:TOP_N_OUTPUT], which is unchanged.
+SEMANTIC_TOPK = int(os.environ.get("SEMANTIC_TOPK", "100"))
 LEXICAL_TOPK = int(os.environ.get("LEXICAL_TOPK", "40"))
 
 # How many ranked candidates survive scoring -- this is what the LLM judge
