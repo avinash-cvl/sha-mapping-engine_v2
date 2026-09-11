@@ -38,6 +38,23 @@ from common.models import MasterProduct, SourceProduct
 # reading the same "NxSIZEunit" shape out of listing titles.
 _MULTIPACK_TOKEN_RE = re.compile(r"\b(\d+)\s*[x×]\s*(\d+(?:\.\d+)?)(g|gm|ml|kg|l)\b")
 
+# The mirror notation: SIZE-first, "125gx4N" / "75gx6". The master writes 51
+# active rows this way, and BM25 tokenizes "125gx4n" as one unsplittable
+# string -- so a listing that says "4x125g" shares NO token with it, while a
+# row that happens to spell it "4x125g" scores an exact hit.
+#
+# Measured on B00YTUG0PG ("Himalaya Herbals Soap - Almond and Rose, 4x125g
+# Pack"): the correct 7001720 "ALMOND & ROSE SOAP 125gx4N INDIA VALUE PACK"
+# took lexical 0.6235 while the promo row 7003118 "BUY 4X125G & GET 2X75G
+# FREE" took 0.8790 -- purely because "4x125g" appears in its text (twice)
+# and not in the correct row's. Every other signal was identical between the
+# two: overlap 0.5556, pack 1.000, type 1.00, count 4, semantic ~0.80. The
+# 0.26 lexical gap alone decided the mapping.
+_MULTIPACK_SIZE_FIRST_RE = re.compile(
+    r"\b(\d+(?:\.\d+)?)\s*(g|gm|ml|kg|l)\s*[x×]\s*(\d{1,4})\s*n?\b",
+    re.IGNORECASE,
+)
+
 
 def _expand_multipack_tokens(text: str) -> str:
     """Appends ONE bridge token for "NxSIZEunit" -- the glued unit-size
@@ -60,6 +77,20 @@ def _expand_multipack_tokens(text: str) -> str:
     extra: list[str] = []
     for _count, size, unit in _MULTIPACK_TOKEN_RE.findall(text):
         extra.append(f"{size}{unit}")   # "10g" -- the common listing form
+
+    # SIZE-first rows get the same two bridges, in the forms a listing writes:
+    # the glued unit size ("125g") and the count-first notation ("4x125g").
+    #
+    # Emitting "4x125g" is safe in a way the rejected bare-count experiment
+    # was not: it is a single glued token carrying BOTH the count and the
+    # size, so it can only match a listing that states that exact
+    # combination. A "5g Pack of 24" listing cannot match "24x10g" through
+    # it, because "24x5g" and "24x10g" are different tokens -- which is
+    # precisely the failure that made emitting a free-floating "24" wrong.
+    for size, unit, count in _MULTIPACK_SIZE_FIRST_RE.findall(text):
+        extra.append(f"{size}{unit}")            # "125g"
+        extra.append(f"{count}x{size}{unit}")    # "4x125g"
+
     return f"{text} {' '.join(extra)}" if extra else text
 
 
