@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 
@@ -32,6 +33,56 @@ import math
 logger = logging.getLogger(__name__)
 
 
+# The staging clean_title has the row's pack_size_band spelled out in words and
+# appended to it by the upstream ingest pipeline (sha-pipelines, a separate
+# repo) -- ">400.0" becomes "GREATER THAN 400", "200.0-340.0" becomes
+# "BETWEEN 200 AND 340". clean_title is the BM25 query and the text_overlap
+# source, so those digits are searched for as ordinary tokens.
+#
+# Measured on 3O9PHDFB9H: a 400ml "Purifying Neem Face Wash" queried BM25 as
+# "PURIFYING NEEM FACE WASH GREATER THAN 150" (its band is >150), matched the
+# literal token "150" against every 150ml master row, and pushed the correct
+# 400ml row (7004295) to BM25 rank 48 -- outside LEXICAL_TOPK=40, so it never
+# reached scoring or the judge. The same mechanism cost ACGX4ZWXF2 (200ml) and
+# AIWYCFHH4C (300ml) their correct rows.
+#
+# Stripped here rather than upstream: this runs on every batch, needs no
+# re-ingest of 372k rows, and leaves the stored column untouched for anything
+# else that reads it.
+_BAND_WORDS = re.compile(
+    r"\s*(?:GREATER THAN|LESS THAN|LESSER THAN|UPTO|UP TO|ABOVE|BELOW)\s*"
+    r"[\d.]+\s*$|\s*BETWEEN\s*[\d.]+\s*AND\s*[\d.]+\s*$",
+    re.IGNORECASE,
+)
+
+
+def _strip_pack_size_band(clean_title: str, title: str, band) -> str:
+    """Remove a trailing spelled-out pack_size_band from clean_title.
+
+    Deliberately conservative on three counts, because "UP TO"/"ABOVE" are
+    also ordinary marketing copy ("UP TO 48 HOURS OF MOISTURE", "FOR KIDS
+    ABOVE 10 YEAR") and stripping those would delete real title text:
+
+      1. only when the row actually HAS a pack_size_band;
+      2. only at the very END of the string;
+      3. only when what remains still starts with the row's own title, so a
+         title that genuinely ends in such a phrase is never truncated.
+
+    Measured across all four channels: 34,543 of 206,265 banded rows (16.8%)
+    carry an appended band, against 37,896 rows containing the phrases
+    anywhere -- the difference is marketing copy this leaves alone.
+    """
+    if not clean_title or band is None or str(band).strip() in ("", "NULL"):
+        return clean_title
+    stripped = _BAND_WORDS.sub("", clean_title).strip()
+    if not stripped or stripped == clean_title:
+        return clean_title
+    # Guard: only accept the strip when the title itself survives intact.
+    if title and not stripped.upper().startswith(title.upper().strip()[: len(stripped)]):
+        return clean_title
+    return stripped
+
+
 def build_source_product(source, source_table: str) -> SourceProduct:
     """Build a SourceProduct from one raw staging row, up front -- before
     lexicon/attribute/candidate generation, same stage order as flow.py.
@@ -43,6 +94,9 @@ def build_source_product(source, source_table: str) -> SourceProduct:
 
     title = getattr(source, "title", None) or ""
     clean_title = (getattr(source, "clean_title", None) or title.lower()).strip()
+    clean_title = _strip_pack_size_band(
+        clean_title, title, getattr(source, "pack_size_band", None)
+    )
     category = getattr(source, "category", None) or ""
     subcategory = getattr(source, "subcategory", None) or ""
     brand = getattr(source, "brand", None) or ""
