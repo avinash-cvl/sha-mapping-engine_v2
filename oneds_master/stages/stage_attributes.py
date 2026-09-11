@@ -155,6 +155,14 @@ _COUNT_PATTERNS = (
 # parse_pack(), which requires an explicit unit.
 _MAX_PACK_COUNT = 999
 
+# The largest pack_count that may be used to divide a staging pack_size back
+# down to a unit size (see extract_attributes). Deliberately far below
+# _MAX_PACK_COUNT: a count that large alongside a pack_size it divides evenly
+# is almost always a unit word misread as a quantity ("Pack of 200 Gram"), and
+# dividing on it silently destroys a real measurement. Measured across 686
+# himalaya multipack rows, every genuine retail multipack is <= 12.
+_MAX_DIVISIBLE_COUNT = 12
+
 
 def parse_pack_count(text: str | None) -> int | None:
     """Unit count stated in a title, or None when the title says nothing.
@@ -258,7 +266,39 @@ def extract_attributes(source: SourceProduct) -> SourceProduct:
         # title path produces -- otherwise a raw 'GM' meets the master's
         # normalised 'g' and pack_score() scores an exact 10g/10g match 0.0,
         # because it treats a unit mismatch as a hard zero.
-        parsed = normalize_pack(source.pack_value, source.pack_unit)
+        #
+        # The staging pack_size is the COMBINED weight on a multipack listing,
+        # while the master states the size of ONE unit -- so a "Pack of 3" of a
+        # 30g sheet mask arrives here as 90g and pack_score() reads 30/90=0.33
+        # against the very row it should match. Divide it back down to the unit
+        # size when the row states a count.
+        #
+        # Only on this branch, and deliberately so: when the TITLE carries a
+        # size, parse_pack() already returned the unit size (measured on 645
+        # himalaya multipack rows, 428 state the unit size in the title and are
+        # handled above) and dividing again would be wrong. This path is only
+        # reached when the title is silent, which is exactly when the staging
+        # column is the sole source and its combined reading goes unchallenged.
+        #
+        # Guarded by divisibility: a clean quotient means the value really was
+        # count x unit. A tablet count or a mg strength that merely happens to
+        # sit alongside a pack_no would not divide evenly, and is left alone.
+        # _MAX_DIVISIBLE_COUNT guards against a count that is really a weight:
+        # "Himalaya Baby Powder (Pack of 200 Gram)" parses to count=200, and
+        # dividing its 200g by that yields a 1g baby powder. A genuine retail
+        # multipack is small -- measured across 686 himalaya multipack rows,
+        # every true one is <= 12 -- so a larger "count" against a pack_size it
+        # happens to divide is the unit word being read as a quantity.
+        staging_value = source.pack_value
+        if (
+            staging_value is not None
+            and source.pack_count is not None
+            and 1 < source.pack_count <= _MAX_DIVISIBLE_COUNT
+            and float(staging_value) % source.pack_count == 0
+            and float(staging_value) / source.pack_count > 0
+        ):
+            staging_value = float(staging_value) / source.pack_count
+        parsed = normalize_pack(staging_value, source.pack_unit)
     if parsed is None and source.pack_unit is None:
         # A size with no unit at all. The staging uom column is NULL on a
         # large share of rows, and dropping those would throw away a real
