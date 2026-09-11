@@ -181,6 +181,36 @@ _MAX_PACK_COUNT = 999
 _MAX_DIVISIBLE_COUNT = 12
 
 
+def _title_states(text: str | None, value: float) -> bool:
+    """True when the title itself states `value` as a standalone number.
+
+    The divide in extract_attributes() assumes a staging pack_size is the
+    COMBINED weight of a multipack. That assumption is only safe while the
+    listing text says nothing about the size -- if the seller wrote the number
+    themselves, it is the DECLARED per-unit figure and dividing it contradicts
+    their own copy.
+
+    parse_pack() already covers the case where the title states a size in a
+    unit it recognises (kg/gm/g/ml/l). This catches the notations it does not:
+    a truncated unit ("60m"), a count unit ("60 Tablets", "60tab", "60 caps"),
+    or a bare number. Measured on B0CL9Z8NW8 ("herbals baby shampoo 60m, Pack
+    of 3", staging 60 ML): parse_pack saw no size, so 60 was divided by 3 to
+    20ml, against a master row that really is 60ml per bottle.
+
+    Deliberately matches a bare number too, not just number+unit. The whole
+    point is that the seller wrote this figure, and a staging value that
+    merely HAPPENS to divide evenly is not evidence against that. Measured
+    across 686 himalaya multipack rows this costs nothing: on every row where
+    the divide is genuinely right the combined total does not appear in the
+    title ("Baby Lotion (400Ml) (Pack Of 2)" carries 400, never 800).
+    """
+    if not text:
+        return False
+    # Integral values are written without the ".0" ("60", not "60.0").
+    needle = f"{value:.10g}"
+    return re.search(rf"(?<![\w.]){re.escape(needle)}(?![\d.])", text) is not None
+
+
 def parse_pack_count(text: str | None) -> int | None:
     """Unit count stated in a title, or None when the title says nothing.
 
@@ -313,6 +343,10 @@ def extract_attributes(source: SourceProduct) -> SourceProduct:
             and 1 < source.pack_count <= _MAX_DIVISIBLE_COUNT
             and float(staging_value) % source.pack_count == 0
             and float(staging_value) / source.pack_count > 0
+            # ...and the seller did not write this number themselves. See
+            # _title_states(): a figure the title states is the DECLARED
+            # per-unit size, not a combined total to be divided.
+            and not _title_states(source.title, float(staging_value))
         ):
             staging_value = float(staging_value) / source.pack_count
         parsed = normalize_pack(staging_value, source.pack_unit)
