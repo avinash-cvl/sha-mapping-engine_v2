@@ -568,6 +568,20 @@ def main() -> None:
     )
 
     match_parser.add_argument(
+        "--sku",
+        nargs="+",
+        default=None,
+        metavar="SKU",
+        help=(
+            "Optional explicit SKU list -- run ONLY these rows. Narrows both "
+            "the group list and each batch, so unrelated SKUs in the same "
+            "category/subcategory are untouched. Combines with (does not "
+            "override) the PENDING and steward-approved filters: naming an "
+            "Approved SKU still skips it."
+        ),
+    )
+
+    match_parser.add_argument(
         "--no-llm",
         action="store_true",
         help="Skip attribute_fallback/synonyms/mcda_judge LLM calls (same meaning as flow.py's --no-llm)",
@@ -686,6 +700,11 @@ def main() -> None:
         )
 
         logger.info(
+            "sku filter   = %s",
+            f"{len(args.sku)} explicit sku(s)" if args.sku else "none (all)",
+        )
+
+        logger.info(
             "=================================================="
         )
 
@@ -704,6 +723,7 @@ def main() -> None:
                 max_workers=args.max_workers,
                 category=args.category,
                 subcategory=args.subcategory,
+                skus=args.sku,
             )
 
             logger.info(
@@ -855,12 +875,17 @@ def main() -> None:
                         group_info.get("subcategory"),
                     )
 
+                    # Also SKU-filtered: this path WRITES a no-equivalent
+                    # disposition, so without the filter a --sku run would
+                    # still touch every other PENDING row in a group that
+                    # happens to have no eligible master records.
                     no_match_batch = step_6_get_source_batch(
                         conn=conn,
                         source_table=args.source_table,
                         category=group_info["category"],
                         subcategory=group_info["subcategory"],
                         batch_size=args.batch_size,
+                        skus=args.sku,
                     )
 
                     if no_match_batch:
@@ -916,6 +941,7 @@ def main() -> None:
                     category=group_info["category"],
                     subcategory=group_info["subcategory"],
                     batch_size=args.batch_size,
+                    skus=args.sku,
                 )
 
                 logger.info(
