@@ -60,13 +60,51 @@ def _type_cluster(text: str) -> str | None:
     return None
 
 
-def type_alignment_score(source_text: str, master_text: str) -> tuple[float, bool]:
+def _master_type_cluster(master_text: str, master_title: str | None = None) -> str | None:
+    """The master's product type, read from its TITLE in preference to its
+    search_text.
+
+    search_text has the row's own category and subcategory appended to it by
+    the ingest pipeline, and _type_cluster() is longest-match-wins over the
+    whole string -- so the category tail wins against the real product words.
+    Measured: "FACE CLEANSERS EXCL. FACE WASH" contains "face cleanser" (13
+    chars), which beats "face mask" (9) on length, and every sheet mask,
+    scrub and face pack in that category classified as "wash". ('mask',
+    'wash') is in TYPE_HARD_INCOMPAT, so the correct candidate took
+    type_align=0.0 AND a x0.4 penalty while the wrong one kept type=1.0
+    (measured on B09VH3HQBK: the correct 7004920 scored 0.0463 against a mud
+    pack's 0.2942, despite twice the text overlap, and ranked 36th of 99).
+
+    Falls back to search_text when the title yields no cluster at all: 269
+    master rows carry abbreviated titles ("CCTP 175G + GTB", "PSSL 100ml+
+    PNFW") whose type is only recoverable from the expanded search_text.
+    Measured over all 3,662 master rows, this changes 220 (6.0%) and leaves
+    every row classifiable -- against 489 changed / 269 lost for title-only.
+    The dominant transition is wash -> mask (70 rows): scrubs, face packs and
+    sheet masks that the category tail had mis-typed.
+    """
+    from_title = _type_cluster(master_title) if master_title else None
+    if from_title is not None:
+        return from_title
+    return _type_cluster(master_text)
+
+
+def type_alignment_score(
+    source_text: str,
+    master_text: str,
+    master_title: str | None = None,
+) -> tuple[float, bool]:
     """Returns (score, hard_incompatible). Same cluster -> 1.0. Neither side
     classifiable -> a neutral 0.5. Different, non-conflicting clusters ->
     0.3. A hard-incompatible pair -> 0.0 with hard_incompatible=True, so the
-    caller applies TYPE_HARD_INCOMPAT_PENALTY on top of the raw blend."""
+    caller applies TYPE_HARD_INCOMPAT_PENALTY on top of the raw blend.
+
+    master_title is optional so existing callers (and oneds_competitor) keep
+    working unchanged -- without it the master's type comes from master_text
+    exactly as before.
+    """
     source_cluster = _type_cluster(source_text)
-    master_cluster = _type_cluster(master_text)
+    master_cluster = _master_type_cluster(master_text, master_title)
     if source_cluster is None or master_cluster is None:
         return 0.5, False
     if source_cluster == master_cluster:
@@ -167,7 +205,9 @@ def score_candidate(
     score_semantic: float,
     score_lexical: float,
 ) -> ScoreBreakdown:
-    type_align, hard_incompat = type_alignment_score(source.title, master.text)
+    type_align, hard_incompat = type_alignment_score(
+        source.title, master.text, master.product_name
+    )
     category = category_score(source.subcategory, master.category)
     pack = stage_attributes.pack_score(
         (source.pack_value, source.pack_unit) if source.pack_value is not None else None,
