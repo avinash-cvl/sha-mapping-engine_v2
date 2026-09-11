@@ -186,6 +186,24 @@ def pack_type_mismatch(source_text: str, master: MasterProduct) -> bool:
     pack_type = (master.pack_type or "").upper()
     if not any(marker in pack_type for marker in ("MULTI", "KIT")):
         return False
+    # pack_type alone is not trustworthy enough to penalise on. Measured
+    # against the master's own titles, it disagrees with them on 1,597 of
+    # 3,662 active rows (43.6%): genuine bundles ("PSSL 100ml+PNFW 100ml",
+    # "SWTP 175G + TG TB & TC FREE") are filed REGULAR SALES PACK, while
+    # plain singles ("SOOTHING BODY LOTION NS 200ml", "NEEM FACE PACK 75gm
+    # (RS.20 OFF)") are filed OFFER SALES PK-MULTI.
+    #
+    # The penalty therefore fired on the wrong row exactly when it mattered:
+    # for ACGX4ZWXF2 ("Purifying Neem Face Wash", 200ml) the correct plain
+    # 7000861 carries OFFER SALES PK-MULTI and took x0.97, while the bundle
+    # 7001609 ("PURIF NEEM FAC WAS 200ml+PNS 50g") carries REGULAR SALES PACK
+    # and was spared -- handing rank 1 to the bundle by 0.0136.
+    #
+    # So require the master's TITLE to corroborate the flag. The title is
+    # verifiable; the attribute is not. A row whose title shows no multipack
+    # notation at all is not treated as a multipack however it is filed.
+    if not _MULTIPACK_CUE.search((master.product_name or "").lower()):
+        return False
     return not _MULTIPACK_CUE.search(source_text.lower())
 
 
