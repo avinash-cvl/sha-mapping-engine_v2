@@ -68,6 +68,7 @@ OTX_PS = "OTX - PARTYSMART"
 OTX_PO = "OTX - PURE HERBS - OTHERS"
 OTX_PORG = "OTX - PURE HERBS - ORGANIC"
 PH_F = "PHARMA - FORMULATIONS"
+PH_O = "PHARMA - OTHERS"
 PH_PH = "PHARMA - PURE HERBS - OTHERS"
 
 ORGANIC = r"\borganic\b|\bcertified organic\b|\busda\b"
@@ -266,6 +267,40 @@ PACKS["health drink & mixes"] = CategoryPack(
     name="health drink & mixes", rules=[
         Rule("electrolyte / rehydration", OTX_FF, "RESTORE RECOVERY DRINK", 0.82,
              subcats=("electrolyte supplements",)),
+        # INTERIM -- the client is expected to supply the authoritative 1DS ->
+        # master category mapping. Replace these two rules with theirs when it
+        # lands; they are here so the QUISTA cluster is not blocked meanwhile.
+        #
+        # The QUISTA line is split across TWO master categories, and the split
+        # is decided by the variant word in the title:
+        #   QUISTA PRO / PRO MASS            -> OTX - FUNCTIONAL FOODS  (8 rows)
+        #   QUISTA KIDZ / DN / ACTIVE / MOMZ -> PHARMA - OTHERS        (29 rows)
+        # PHARMA - OTHERS / QUISTA also holds the 21 HIOWNA rows -- the same
+        # paediatric/adult nutrition line under its older brand name.
+        #
+        # Routing every "powdered drink mixes" listing to OTX_FF put the correct
+        # row OUTSIDE the category gate for every KIDZ/DN/ACTIVE listing, so it
+        # was filtered out before scoring ran and no scoring change could reach
+        # it. Measured on 7 steward-reviewed SKUs (B07R9DYYCG, B089FGW1SK,
+        # B0CPXYF4F2, B0CPXZ259S, B0CPXZBY9D, B0CPY1RWZR, B0D9M95DWH): every one
+        # names its variant explicitly in the title, and every one wants a
+        # PHARMA - OTHERS row. The gate went 0/7 to 7/7, and 4 of 7 then rank
+        # the expected row #1.
+        #
+        # The other 3 are NOT mapping problems and this rule cannot fix them:
+        # 7004354 and 7004355 are duplicate master rows with identical titles
+        # (the engine picks the other one), and the two Kidz listings compete
+        # with HIOWNA KIDZ rows and refill packs in the same category -- one of
+        # them is a 2x200g combo with no matching master row at all.
+        #
+        # Ordered before the generic rule below; first match wins.
+        Rule("quista pharma variant", PH_O, "QUISTA", 0.88,
+             title=r"\bquista\b.{0,20}?\b(kidz|dn|active|momz)\b|"
+                   r"\b(kidz|dn|active|momz)\b.{0,20}?\bquista\b",
+             subcats=("powdered drink mixes",)),
+        Rule("hiowna", PH_O, "QUISTA", 0.88,
+             title=r"\bhiowna\b",
+             subcats=("powdered drink mixes",)),
         Rule("powdered drink mix", OTX_FF, "QUISTA", 0.80,
              subcats=("powdered drink mixes",)),
     ],
