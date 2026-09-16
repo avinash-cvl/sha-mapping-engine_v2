@@ -28,13 +28,47 @@ def _type_cluster(text: str) -> str | None:
     return None
 
 
-def type_alignment_score(source_text: str, master_text: str) -> tuple[float, bool]:
+def _master_type_cluster(master_text: str, master_title: str | None = None) -> str | None:
+    """The master's product type, read from its TITLE in preference to its
+    search_text.
+
+    Ported from oneds_master.stages.stage_scoring, which carries the full
+    measurement: search_text has the row's own category and subcategory
+    appended by the ingest pipeline, and _type_cluster() is longest-match-wins
+    over the whole string -- so the category tail beats the real product words.
+    "FACE CLEANSERS EXCL. FACE WASH" contains "face cleanser" (13 chars), which
+    outranks "face mask" (9), and every sheet mask, scrub and face pack in that
+    category classified as type "wash". ('mask', 'wash') is in
+    TYPE_HARD_INCOMPAT, so the correct candidate took type_align=0.0 AND a x0.4
+    penalty while the wrong one kept type=1.0.
+
+    Falls back to search_text when the title yields no cluster: 269 master rows
+    carry abbreviated titles ("CCTP 175G + GTB") whose type is only recoverable
+    from the expanded text. Both flows read the same staging.himalaya_products,
+    so the measured blast radius is identical -- 220 of 3,662 rows (6.0%) change
+    cluster, every one of them a correction.
+    """
+    from_title = _type_cluster(master_title) if master_title else None
+    if from_title is not None:
+        return from_title
+    return _type_cluster(master_text)
+
+
+def type_alignment_score(
+    source_text: str,
+    master_text: str,
+    master_title: str | None = None,
+) -> tuple[float, bool]:
     """Returns (score, hard_incompatible). Same cluster -> 1.0. Neither side
     classifiable -> a neutral 0.5. Different, non-conflicting clusters ->
     0.3. A hard-incompatible pair -> 0.0 with hard_incompatible=True, so the
-    caller applies TYPE_HARD_INCOMPAT_PENALTY on top of the raw blend."""
+    caller applies TYPE_HARD_INCOMPAT_PENALTY on top of the raw blend.
+
+    master_title is optional so any other caller keeps today's behaviour --
+    without it the master's type comes from master_text exactly as before.
+    """
     source_cluster = _type_cluster(source_text)
-    master_cluster = _type_cluster(master_text)
+    master_cluster = _master_type_cluster(master_text, master_title)
     if source_cluster is None or master_cluster is None:
         return 0.5, False
     if source_cluster == master_cluster:
@@ -82,7 +116,9 @@ def score_candidate(
     score_semantic: float,
     score_lexical: float,
 ) -> ScoreBreakdown:
-    type_align, hard_incompat = type_alignment_score(source.title, master.text)
+    type_align, hard_incompat = type_alignment_score(
+        source.title, master.text, master.product_name
+    )
     category = category_score(source.subcategory, master.category)
     pack = stage_attributes.pack_score(
         (source.pack_value, source.pack_unit) if source.pack_value is not None else None,

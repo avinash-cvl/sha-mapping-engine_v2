@@ -19,6 +19,10 @@ from oneds_competitor.stages import stage_lexicon
 from oneds_competitor.stages import stage_scoring
 from oneds_competitor.stages  import stage_disposition
 from agents import attribute_fallback, mcda_judge, synonyms
+# The band-strip is shared, not re-implemented: both flows read the same
+# staging.*_products tables, so the pollution is identical and one copy keeps
+# the three guards (has a band / at the end / title survives) in one place.
+from oneds_master.batch_flow_steps import _strip_pack_size_band
 from common.models import MatchResult
 import sqlalchemy as sa
 import common.config as C
@@ -40,6 +44,20 @@ def build_source_product(source, source_table: str) -> SourceProduct:
 
     title = getattr(source, "title", None) or ""
     clean_title = (getattr(source, "clean_title", None) or title.lower()).strip()
+    # The staging clean_title has the row's pack_size_band spelled out in words
+    # and appended by the upstream ingest pipeline: ">150.0" becomes "GREATER
+    # THAN 150", "200.0-340.0" becomes "BETWEEN 200 AND 340". clean_title is the
+    # BM25 query and the text_overlap source, so those digits are searched as
+    # ordinary tokens -- a 400ml listing matches every 150ml master row.
+    #
+    # Imported from oneds_master rather than copied: the two flows read the SAME
+    # staging.*_products tables, so the pollution and its three guards are
+    # identical, and a second copy would be one more place to fix. Measured on
+    # the competitor population: 34,098 of 367,307 PENDING rows carry an
+    # appended band (zepto/blinkit/swiggy only -- amazon's column is NULL).
+    clean_title = _strip_pack_size_band(
+        clean_title, title, getattr(source, "pack_size_band", None)
+    )
     category = getattr(source, "category", None) or ""
     subcategory = getattr(source, "subcategory", None) or ""
     brand = getattr(source, "brand", None) or ""
