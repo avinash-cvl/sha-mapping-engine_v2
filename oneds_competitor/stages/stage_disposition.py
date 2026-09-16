@@ -16,10 +16,34 @@ from common.models import MasterProduct, MatchResult, ScoreBreakdown, SourceProd
 
 
 def needs_judge(ranked: list[tuple[MasterProduct, ScoreBreakdown]]) -> bool:
-    """Thin-margin band: top-1 score is in the ambiguous review zone, or
-    top-1 vs top-2 margin is too thin to trust even a decent score."""
+    """Whether to ask the LLM judge about this row.
+
+    Now: any row that has candidates at all (see JUDGE_ALL_CANDIDATES).
+
+    It used to be a thin-margin band -- only rows scoring in
+    [TIER_REVIEW, TIER_HIGH), or with a top-1/top-2 margin under 0.05. That
+    band is a small minority of rows, which meant the per-category judge
+    prompts in agents/prompts/*.md were never consulted for most of the
+    catalogue: a row at 0.88 was stamped Matched by arithmetic alone and a
+    row at 0.48 was closed as Low Confidence, neither ever seen by the
+    model. Category-specific prompting cannot improve results it is not
+    invoked for.
+
+    Product identity ("is this the SAME sellable unit?") is a judgment about
+    brand, product line, formulation and pack -- exactly what the LLM is
+    good at and what a weighted sum of six surface-similarity signals is
+    bad at. So the judge decides, and the ensemble ranks the shortlist it
+    decides from.
+
+    Set JUDGE_ALL_CANDIDATES=false to restore the old thin-margin band (one
+    LLM call per ambiguous row instead of per candidate-bearing row).
+    """
     if not ranked:
         return False
+
+    if C.JUDGE_ALL_CANDIDATES:
+        return True
+
     top_score = ranked[0][1].ensemble
     if C.TIER_REVIEW <= top_score < C.TIER_HIGH:
         return True
@@ -31,14 +55,35 @@ def needs_judge(ranked: list[tuple[MasterProduct, ScoreBreakdown]]) -> bool:
 
 
 def _tier_and_method(score: float, llm_confidence: float) -> tuple[str, str]:
+    """Confidence tier for a row, from ONE decided score.
+
+    `score` is the candidate's ensemble. When the judge ran, its confidence
+    is what actually decides the row, so the tier must band the SAME number
+    determine_mapping_status() bands -- otherwise the two labels a reviewer
+    sees are computed from different inputs and disagree on the same row.
+    Measured before this change, on 72 lip makeup rows: 9 rows were tiered
+    "Matched" while queued as StewardReview, and 3 were tiered "Medium"
+    while filed LowConfidence.
+
+    The promotion floor is preserved: the judge's confidence may only carry
+    a row the ensemble already scored respectably, but it may always demote.
+    That is the same asymmetry determine_mapping_status() applies, kept in
+    step so the two cannot drift apart again.
+    """
     llm_ran = not math.isnan(llm_confidence)
-    if score >= C.TIER_HIGH:
+
+    decided = score
+    if llm_ran:
+        if score >= C.LLM_PROMOTE_SCORE_FLOOR:
+            decided = llm_confidence
+        # Below the floor the ensemble stands on its own -- the judge's
+        # confidence was never eligible to promote it.
+
+    if decided >= C.TIER_HIGH:
         return "Matched", ("llm_confirmed" if llm_ran else "pipeline_high")
-    if score >= C.LLM_PROMOTE_SCORE_FLOOR and llm_ran and llm_confidence >= C.LLM_PROMOTE_CONFIDENCE:
-        return "Matched", "llm_promoted"
-    if score >= C.TIER_REVIEW:
+    if decided >= C.TIER_REVIEW:
         return "Medium", ("llm_confirmed" if llm_ran else "pipeline_review")
-    if score >= C.TIER_NOEQ:
+    if decided >= C.TIER_NOEQ:
         return "Low Confidence", ("llm_low" if llm_ran else "pipeline_low")
     return "No Himalaya Equivalent", ("llm_no_equivalent" if llm_ran else "pipeline_no_equivalent")
 
@@ -71,9 +116,18 @@ def disposition(
 
     if llm_pick == "":
         # The LLM was asked and explicitly found no suitable candidate.
+        #
+        # llm_pick is carried through deliberately: "" is the signal that a
+        # rejection HAPPENED, as distinct from the judge never running
+        # (None). db._mapping_row() needs to tell those apart so it can
+        # report the candidate's own similarity rather than the judge's 0.0
+        # confidence -- the 0.0 is a verdict about the match, not a
+        # measurement of the candidate, and a steward still needs to see how
+        # close the near-miss was.
         return MatchResult(
             source=source, candidate=top_master, rank=1, scores=top_scores,
             confidence_tier="No Himalaya Equivalent", resolution_method="llm_no_equivalent",
+            llm_pick=llm_pick,
             llm_confidence=llm_confidence, llm_reason=llm_reason,
         )
 

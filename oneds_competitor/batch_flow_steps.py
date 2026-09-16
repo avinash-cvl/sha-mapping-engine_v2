@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 
@@ -19,10 +20,9 @@ from oneds_competitor.stages import stage_lexicon
 from oneds_competitor.stages import stage_scoring
 from oneds_competitor.stages  import stage_disposition
 from agents import attribute_fallback, mcda_judge, synonyms
-# The band-strip is shared, not re-implemented: both flows read the same
-# staging.*_products tables, so the pollution is identical and one copy keeps
-# the three guards (has a band / at the end / title survives) in one place.
-from oneds_master.batch_flow_steps import _strip_pack_size_band
+from oneds_competitor.category.core import NO_EQ, UNCLS
+from oneds_competitor.category.resolve import pack_targets, resolve
+from oneds_competitor.category.rules import PACKS
 from common.models import MatchResult
 import sqlalchemy as sa
 import common.config as C
@@ -31,6 +31,56 @@ from common import db_models
 import math
 
 logger = logging.getLogger(__name__)
+
+
+# The staging clean_title has the row's pack_size_band spelled out in words and
+# appended to it by the upstream ingest pipeline (sha-pipelines, a separate
+# repo) -- ">400.0" becomes "GREATER THAN 400", "200.0-340.0" becomes
+# "BETWEEN 200 AND 340". clean_title is the BM25 query and the text_overlap
+# source, so those digits are searched for as ordinary tokens.
+#
+# Measured on 3O9PHDFB9H: a 400ml "Purifying Neem Face Wash" queried BM25 as
+# "PURIFYING NEEM FACE WASH GREATER THAN 150" (its band is >150), matched the
+# literal token "150" against every 150ml master row, and pushed the correct
+# 400ml row (7004295) to BM25 rank 48 -- outside LEXICAL_TOPK=40, so it never
+# reached scoring or the judge. The same mechanism cost ACGX4ZWXF2 (200ml) and
+# AIWYCFHH4C (300ml) their correct rows.
+#
+# Stripped here rather than upstream: this runs on every batch, needs no
+# re-ingest of 372k rows, and leaves the stored column untouched for anything
+# else that reads it.
+_BAND_WORDS = re.compile(
+    r"\s*(?:GREATER THAN|LESS THAN|LESSER THAN|UPTO|UP TO|ABOVE|BELOW)\s*"
+    r"[\d.]+\s*$|\s*BETWEEN\s*[\d.]+\s*AND\s*[\d.]+\s*$",
+    re.IGNORECASE,
+)
+
+
+def _strip_pack_size_band(clean_title: str, title: str, band) -> str:
+    """Remove a trailing spelled-out pack_size_band from clean_title.
+
+    Deliberately conservative on three counts, because "UP TO"/"ABOVE" are
+    also ordinary marketing copy ("UP TO 48 HOURS OF MOISTURE", "FOR KIDS
+    ABOVE 10 YEAR") and stripping those would delete real title text:
+
+      1. only when the row actually HAS a pack_size_band;
+      2. only at the very END of the string;
+      3. only when what remains still starts with the row's own title, so a
+         title that genuinely ends in such a phrase is never truncated.
+
+    Measured across all four channels: 34,543 of 206,265 banded rows (16.8%)
+    carry an appended band, against 37,896 rows containing the phrases
+    anywhere -- the difference is marketing copy this leaves alone.
+    """
+    if not clean_title or band is None or str(band).strip() in ("", "NULL"):
+        return clean_title
+    stripped = _BAND_WORDS.sub("", clean_title).strip()
+    if not stripped or stripped == clean_title:
+        return clean_title
+    # Guard: only accept the strip when the title itself survives intact.
+    if title and not stripped.upper().startswith(title.upper().strip()[: len(stripped)]):
+        return clean_title
+    return stripped
 
 
 def build_source_product(source, source_table: str) -> SourceProduct:
@@ -44,17 +94,6 @@ def build_source_product(source, source_table: str) -> SourceProduct:
 
     title = getattr(source, "title", None) or ""
     clean_title = (getattr(source, "clean_title", None) or title.lower()).strip()
-    # The staging clean_title has the row's pack_size_band spelled out in words
-    # and appended by the upstream ingest pipeline: ">150.0" becomes "GREATER
-    # THAN 150", "200.0-340.0" becomes "BETWEEN 200 AND 340". clean_title is the
-    # BM25 query and the text_overlap source, so those digits are searched as
-    # ordinary tokens -- a 400ml listing matches every 150ml master row.
-    #
-    # Imported from oneds_master rather than copied: the two flows read the SAME
-    # staging.*_products tables, so the pollution and its three guards are
-    # identical, and a second copy would be one more place to fix. Measured on
-    # the competitor population: 34,098 of 367,307 PENDING rows carry an
-    # appended band (zepto/blinkit/swiggy only -- amazon's column is NULL).
     clean_title = _strip_pack_size_band(
         clean_title, title, getattr(source, "pack_size_band", None)
     )
@@ -78,6 +117,18 @@ def build_source_product(source, source_table: str) -> SourceProduct:
     if pack_unit is None:
         pack_unit = getattr(source, "pack_unit", None)
 
+    # Structured field first -- pack_no is a real product attribute, while
+    # the title is seller copy (V2's design rule 2). Falls back to parsing
+    # the title, which is where most listings actually state it: pack_no is
+    # populated on roughly a fifth of rows.
+    pack_count = getattr(source, "pack_no", None)
+    try:
+        pack_count = int(pack_count) if pack_count is not None else None
+    except (TypeError, ValueError):
+        pack_count = None
+    if pack_count is None or pack_count < 2:
+        pack_count = stage_attributes.parse_pack_count(title)
+
     benefit = getattr(source, "product_benefit", None)
     if benefit is None:
         benefit = getattr(source, "benefit", None)
@@ -98,6 +149,7 @@ def build_source_product(source, source_table: str) -> SourceProduct:
         subcategory=subcategory,
         pack_value=pack_value,
         pack_unit=pack_unit,
+        pack_count=pack_count,
         benefit=benefit,
         ingredient=ingredient,
         domain=domain,
@@ -176,15 +228,17 @@ def step_1_source_summary(
     max_workers: int,
     category: str | None = None,
     subcategory: str | None = None,
+    skus: list[str] | None = None,
 ) -> None:
 
     logger.info("==========================================")
     logger.info("BATCH FLOW - STEP 1")
     logger.info("==========================================")
     logger.info(
-        "Filter | category=%r | subcategory=%r",
+        "Filter | category=%r | subcategory=%r | skus=%s",
         category,
         subcategory,
+        len(skus) if skus else None,
     )
 
     # --------------------------------------------------------
@@ -223,6 +277,9 @@ def step_1_source_summary(
         .select_from(source)
         .where(
             source.c.mapping_status == "PENDING",
+            # THE competitor flow's defining filter -- the one line that
+            # separates it from oneds_master. Everything else in this module is
+            # the same logic. See the note on step_6_get_source_batch.
             ~source.c.brand.in_(C.HIMALAYA_BRANDS),
         )
     )
@@ -237,6 +294,14 @@ def step_1_source_summary(
         pending_query = pending_query.where(
             sa.func.lower(sa.func.trim(source.c.subcategory)) == subcategory.strip().lower()
         )
+
+    # An explicit SKU list narrows the run to exactly those rows. It is applied
+    # HERE as well as in step 6 so the group list itself collapses to only the
+    # groups those SKUs live in -- otherwise every category/subcategory group in
+    # the table still spins up a BM25 index and a master shortlist before step 6
+    # returns an empty batch, which is the bulk of the wall time on a spot-check.
+    if skus:
+        pending_query = pending_query.where(source.c.sku.in_(skus))
 
     pending_count = conn.execute(
         pending_query
@@ -261,6 +326,8 @@ def step_1_source_summary(
         )
         .where(
             source.c.mapping_status == "PENDING",
+            # Competitor rows only -- must match the count query above, or the
+            # group list and the totals would describe different populations.
             ~source.c.brand.in_(C.HIMALAYA_BRANDS),
         )
     )
@@ -275,6 +342,9 @@ def step_1_source_summary(
         groups_query = groups_query.where(
             sa.func.lower(sa.func.trim(source.c.subcategory)) == subcategory.strip().lower()
         )
+
+    if skus:
+        groups_query = groups_query.where(source.c.sku.in_(skus))
 
     rows = conn.execute(
         groups_query
@@ -350,6 +420,24 @@ def step_2_load_master(
     # 2. Load ALL master records
     # --------------------------------------------------------
 
+    # pack_type and division_name live only on the raw landing table -- the
+    # staging projection never carried them. Joined here (bronze_product_id
+    # -> raw.id, 1:1 for all rows) via an OUTER join so a staging row with no
+    # raw parent still loads, just without those fields.
+    #
+    # sap_status is deliberately NOT read: availability is a commercial
+    # state, not evidence about whether two products are the same, and a
+    # discontinued SKU is still the correct answer for a listing that sells
+    # it. MasterProduct.sap_status/.blocked_in_sap therefore stay at their
+    # defaults on this path.
+    # Aliased: raw.himalaya_products and staging.himalaya_products share an
+    # exposed name, which SQL Server rejects in one FROM clause.
+    raw_master = db_models.get_table(
+        conn.engine,
+        "raw",
+        "himalaya_products",
+    ).alias("raw_master")
+
     rows = conn.execute(
         sa.select(
             master.c.id,
@@ -359,10 +447,20 @@ def step_2_load_master(
             master.c.normalized_subcategory,
             master.c.search_text,
             master.c.normalized_uom,
+            master.c.normalized_pack_size,
+            master.c.normalized_product_group,
+            raw_master.c.pack_type,
+            raw_master.c.division_name,
+        )
+        .select_from(
+            master.outerjoin(
+                raw_master,
+                raw_master.c.id == master.c.bronze_product_id,
+            )
         )
         .where(
             master.c.product_code.is_not(None),
-            master.c.is_active == 1,
+            master.c.is_active == 1
         )
     ).all()
 
@@ -417,18 +515,50 @@ def step_3_build_master_lookup(
 
     master_products: list[MasterProduct] = []
 
+    unsized = 0
+
     for row in master_rows:
+
+        # Fold the master's own size columns into the same grams/millilitres
+        # convention extract_attributes() applies to the source side.
+        #
+        # pack_value used to be hardcoded None here while normalized_pack_size
+        # sat populated on every master row. pack_score() returns a neutral
+        # 0.5 whenever either side is missing, so W_PACK contributed the same
+        # constant to every candidate and could never separate, say, a 4.5g
+        # chapstick from a 10g tube. Passing the raw column through instead
+        # would be worse than the status quo: pack_score() treats a unit
+        # mismatch as a hard 0.0, and the master says 'GM' where the source
+        # says 'g'. Hence normalize_pack() on both halves.
+        pack = stage_attributes.normalize_pack(
+            getattr(row, "normalized_pack_size", None),
+            getattr(row, "normalized_uom", None),
+        )
+        if pack is None:
+            unsized += 1
 
         product = MasterProduct(
             product_code=row.product_code,
             product_name=row.normalized_title or "",
-            division="",
+            # division_name is NULL for every row in this master, so this
+            # stays "" -- an upstream data gap, not a wiring one. Note
+            # stage_scoring builds "{division} {category}" for its category
+            # text, so an empty division simply contributes nothing there,
+            # and DIVISION_MISMATCH_PENALTY never fires.
+            division=getattr(row, "division_name", None) or "",
             category=row.normalized_category or "",
             subcategory=row.normalized_subcategory or "",
+            # Availability is not identity evidence -- see the note on the
+            # raw join above.
             sap_status="",
             blocked_in_sap=False,
-            pack_value=None,
-            pack_unit=row.normalized_uom,
+            pack_value=pack[0] if pack else None,
+            pack_unit=pack[1] if pack else row.normalized_uom,
+            product_group=getattr(row, "normalized_product_group", None) or "",
+            pack_type=getattr(row, "pack_type", None) or "",
+            # The master carries no count column -- "(PACK OF 3)", "24x10g",
+            # "6N(5N+FREE 1N)" and "54'S" all live in the title only.
+            pack_count=stage_attributes.parse_pack_count(row.normalized_title),
             text=(
                 row.search_text
                 or row.normalized_title
@@ -442,6 +572,13 @@ def step_3_build_master_lookup(
     logger.info(
         "MasterProduct objects created: %d",
         len(master_products),
+    )
+
+    logger.info(
+        "Master pack sizes parsed: %d / %d (%d unsized -> neutral pack_score)",
+        len(master_products) - unsized,
+        len(master_products),
+        unsized,
     )
 
     # --------------------------------------------------------
@@ -790,6 +927,50 @@ def step_5_build_eligible_master_groups(
                     master.product_code
                 ] = master
 
+        # ----------------------------------------------------
+        # Widen the pool with every target the V2 category pack
+        # for this 1DS category can emit.
+        #
+        # The BM25 index (step 7) and the vector search (step 10)
+        # both operate over eligible_master, so a target the V2
+        # resolver can pick but config.oneds_master_category_mapping
+        # does not list would never be retrievable -- and the
+        # row-level gate in process_one_sku would then find nothing
+        # and fall back to ungated.
+        #
+        # Keyed into the same dict by product_code, so this is
+        # idempotent and can only ever WIDEN the pool, never
+        # narrow it. Recall cannot go down here.
+        # ----------------------------------------------------
+
+        pack = PACKS.get(oneds_category)
+
+        if pack is not None:
+
+            before_widening = len(eligible_by_code)
+
+            for cat, sub in pack_targets(pack):
+
+                for master in master_lookup.get(
+                    (
+                        cat.strip().lower(),
+                        sub.strip().lower(),
+                    ),
+                    [],
+                ):
+
+                    eligible_by_code[
+                        master.product_code
+                    ] = master
+
+            logger.info(
+                "V2 pack widening: %r | %d -> %d (+%d)",
+                oneds_category,
+                before_widening,
+                len(eligible_by_code),
+                len(eligible_by_code) - before_widening,
+            )
+
         eligible_master = list(
             eligible_by_code.values()
         )
@@ -823,6 +1004,7 @@ def step_6_get_source_batch(
     category: str,
     subcategory: str,
     batch_size: int = 500,
+    skus: list[str] | None = None,
 ):
     logger.info("==========================================")
     logger.info("BATCH FLOW - STEP 6")
@@ -872,14 +1054,38 @@ def step_6_get_source_batch(
     # 2. Get PENDING source records
     # --------------------------------------------------------
 
-    rows = conn.execute(
+    # A steward's Approved verdict is final: that row is excluded here, at
+    # selection, so it never reaches retrieval, scoring or the LLM judge.
+    # step_6b's crosswalk short-circuit also catches these, but only AFTER
+    # the batch has been built -- and the judge is a paid call per SKU.
+    #
+    # Rejected is deliberately NOT excluded. A rejection says "this candidate
+    # was wrong", not "stop trying", so those rows flow back through the
+    # engine for an improved ensemble or judge to reconsider.
+    #
+    # Guarded with hasattr: review_status was added to the channel tables
+    # later than this code, and oneds_competitor's tables do not carry it. A
+    # missing column simply means nothing is excluded -- the pre-existing
+    # behaviour.
+    query = (
         sa.select(
             source
         )
         .where(
             source.c.mapping_status == "PENDING",
+            # THE defining difference between this flow and oneds_master.
+            #
+            # oneds_master maps Himalaya's own listings to Himalaya master
+            # rows. This flow maps everyone ELSE's listings to the nearest
+            # Himalaya equivalent -- the competitive-substitute question -- so
+            # it takes the complement of the same brand set.
+            #
+            # Deliberately expressed as the negation of HIMALAYA_BRANDS rather
+            # than an explicit competitor list: the set of competitor brands is
+            # open-ended (367k rows across four channels) and any brand the
+            # ingest has not seen before should flow through here by default,
+            # not be silently dropped.
             ~source.c.brand.in_(C.HIMALAYA_BRANDS),
-            #source.c.sku == "B0405370-38d6-4bf9-b26d-1501b56a32a0",
         )
         .where(
             source.c.category == category
@@ -887,6 +1093,29 @@ def step_6_get_source_batch(
         .where(
             source.c.subcategory == subcategory
         )
+    )
+
+    if hasattr(source.c, "review_status"):
+        query = query.where(
+            sa.or_(
+                source.c.review_status.is_(None),
+                sa.func.upper(
+                    sa.func.ltrim(sa.func.rtrim(source.c.review_status))
+                ) != "APPROVED",
+            )
+        )
+
+    # Explicit SKU list: restrict the batch to exactly these rows. Deliberately
+    # ANDed with the filters above rather than replacing them -- an explicit SKU
+    # does NOT override the steward-approved exclusion, so naming an Approved
+    # SKU here still skips it. Nothing about --sku should be able to overwrite a
+    # governed answer.
+    if skus:
+        query = query.where(source.c.sku.in_(skus))
+        logger.info("SKU filter   : %d explicit sku(s)", len(skus))
+
+    rows = conn.execute(
+        query
         .order_by(
             source.c.id
         )
@@ -894,10 +1123,9 @@ def step_6_get_source_batch(
     ).all()
 
     logger.info(
-        "PENDING records retrieved: %d",
+        "PENDING records retrieved: %d (steward-approved rows excluded)",
         len(rows),
     )
-
     # --------------------------------------------------------
     # 3. Display sample
     # --------------------------------------------------------
@@ -994,6 +1222,110 @@ def step_6b_apply_crosswalk_shortcircuit(
     )
 
     logger.info("STEP 6B COMPLETED")
+
+    return resolved, remaining
+
+
+# ============================================================
+# STEP 6C - CATEGORY TERMINAL SHORT-CIRCUIT
+# ============================================================
+# Rows the V2 resolver confidently classifies as terminal should not be
+# embedded, retrieved, scored, or sent to the LLM judge. Mirrors step 6B:
+# it runs inside the per-group loop, before step 7B, and hands back
+# (resolved, remaining).
+
+# Terminal -> (confidence_tier, resolution_method). UNRESOLVED is
+# deliberately absent: it means "the rules could not decide", not "there is
+# nothing here", so those rows MUST keep flowing through the normal
+# pipeline. Short-circuiting them would silently lose recall.
+_CATEGORY_TERMINAL_DISPOSITION = {
+    NO_EQ: ("No Himalaya Equivalent", "category_no_equivalent"),
+    UNCLS: ("No Himalaya Equivalent", "category_unclassified"),
+}
+
+# The resolution_methods above, for determine_mapping_status().
+_CATEGORY_TERMINAL_METHODS = {
+    method for _tier, method in _CATEGORY_TERMINAL_DISPOSITION.values()
+}
+
+
+def step_6c_apply_category_shortcircuit(
+    source_table: str,
+    batch,
+    source_products: dict | None = None,
+):
+    """Splits `batch` into (resolved, remaining):
+      - resolved: {source_id: MatchResult} for rows the V2 category
+        resolver closed as NO MASTER EQUIVALENT or UNCLASSIFIED -- these skip
+        retrieval, scoring, and the LLM judge entirely. candidate/scores are
+        None, and the resolver's evidence rides along on the MatchResult.
+      - remaining: raw rows for SKUs still needing the full pipeline,
+        including every UNRESOLVED row.
+
+    Caller marks `resolved` completed via step_16_mark_completed rather
+    than writing mapping rows: these rows have no candidate, and
+    staging.*_product_mapping declares product_code NOT NULL. That matches
+    what every other no-candidate path here already does (empty eligible
+    group, crosswalk short-circuit)."""
+    logger.info("==========================================")
+    logger.info("BATCH FLOW - STEP 6C")
+    logger.info("==========================================")
+
+    if not batch:
+        return {}, []
+
+    resolved: dict = {}
+    remaining = []
+
+    for row in batch:
+
+        source_id = getattr(row, "id", None)
+
+        source_product = (source_products or {}).get(source_id)
+        if source_product is None:
+            source_product = build_source_product(row, source_table)
+
+        decision = resolve(source_product)
+
+        disposition = (
+            _CATEGORY_TERMINAL_DISPOSITION.get(decision.terminal)
+            if decision.terminal
+            else None
+        )
+
+        if disposition is None:
+            remaining.append(row)
+            continue
+
+        confidence_tier, resolution_method = disposition
+
+        resolved[source_id] = MatchResult(
+            source=source_product,
+            candidate=None,
+            rank=1,
+            scores=None,
+            confidence_tier=confidence_tier,
+            resolution_method=resolution_method,
+            llm_confidence=float("nan"),
+            category_evidence=decision.evidence,
+            category_confidence=decision.confidence,
+        )
+
+        logger.debug(
+            "Category short-circuit | SKU=%r | %s | evidence=%r",
+            getattr(row, "sku", None),
+            decision.terminal,
+            decision.evidence,
+        )
+
+    logger.info(
+        "Category short-circuit: %d / %d rows closed | %d remaining",
+        len(resolved),
+        len(batch),
+        len(remaining),
+    )
+
+    logger.info("STEP 6C COMPLETED")
 
     return resolved, remaining
 
@@ -1378,24 +1710,25 @@ def step_9_prepare_candidates(
             len(source_candidates),
         )
 
-    logger.debug("------------------------------------------")
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug("------------------------------------------")
 
-    logger.debug(
-        "Source records with candidates: %d",
-        len(candidate_map),
-    )
+        logger.debug(
+            "Source records with candidates: %d",
+            len(candidate_map),
+        )
 
-    total_candidates = sum(
-        len(item["candidates"])
-        for item in candidate_map.values()
-    )
+        total_candidates = sum(
+            len(item["candidates"])
+            for item in candidate_map.values()
+        )
 
-    logger.debug(
-        "Total candidate records: %d",
-        total_candidates,
-    )
+        logger.debug(
+            "Total candidate records: %d",
+            total_candidates,
+        )
 
-    logger.debug("------------------------------------------")
+        logger.debug("------------------------------------------")
 
     # --------------------------------------------------------
     # Display first few candidates
@@ -1643,35 +1976,36 @@ def step_10_vector_search(
     # Summary
     # --------------------------------------------------------
 
-    successful = sum(
-        1
-        for result in vector_results.values()
-        if not result.get("error")
-    )
+    if logger.isEnabledFor(logging.DEBUG):
+        successful = sum(
+            1
+            for result in vector_results.values()
+            if not result.get("error")
+        )
 
-    total_candidates = sum(
-        len(result.get("candidates", []))
-        for result in vector_results.values()
-    )
+        total_candidates = sum(
+            len(result.get("candidates", []))
+            for result in vector_results.values()
+        )
 
-    logger.debug("------------------------------------------")
+        logger.debug("------------------------------------------")
 
-    logger.debug(
-        "Vector search processed: %d source records",
-        len(vector_results),
-    )
+        logger.debug(
+            "Vector search processed: %d source records",
+            len(vector_results),
+        )
 
-    logger.debug(
-        "Successful vector searches: %d",
-        successful,
-    )
+        logger.debug(
+            "Successful vector searches: %d",
+            successful,
+        )
 
-    logger.debug(
-        "Total vector candidates: %d",
-        total_candidates,
-    )
+        logger.debug(
+            "Total vector candidates: %d",
+            total_candidates,
+        )
 
-    logger.debug("------------------------------------------")
+        logger.debug("------------------------------------------")
 
     logger.debug(
         "STEP 10 COMPLETED - "
@@ -1801,24 +2135,25 @@ def step_11_merge_candidates(
             len(candidates),
         )
 
-    logger.debug("------------------------------------------")
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug("------------------------------------------")
 
-    logger.debug(
-        "Source records processed: %d",
-        len(merged_results),
-    )
+        logger.debug(
+            "Source records processed: %d",
+            len(merged_results),
+        )
 
-    total_candidates = sum(
-        len(result["candidates"])
-        for result in merged_results.values()
-    )
+        total_candidates = sum(
+            len(result["candidates"])
+            for result in merged_results.values()
+        )
 
-    logger.debug(
-        "Total merged candidates: %d",
-        total_candidates,
-    )
+        logger.debug(
+            "Total merged candidates: %d",
+            total_candidates,
+        )
 
-    logger.debug("------------------------------------------")
+        logger.debug("------------------------------------------")
 
     logger.debug(
         "STEP 11 COMPLETED - "
@@ -1966,35 +2301,36 @@ def step_12_score_candidates(
     # Summary
     # --------------------------------------------------------
 
-    scored_count = sum(
-        1
-        for ranked in ranked_results.values()
-        if ranked
-    )
+    if logger.isEnabledFor(logging.DEBUG):
+        scored_count = sum(
+            1
+            for ranked in ranked_results.values()
+            if ranked
+        )
 
-    total_ranked = sum(
-        len(ranked)
-        for ranked in ranked_results.values()
-    )
+        total_ranked = sum(
+            len(ranked)
+            for ranked in ranked_results.values()
+        )
 
-    logger.debug("------------------------------------------")
+        logger.debug("------------------------------------------")
 
-    logger.debug(
-        "Source records scored: %d",
-        len(ranked_results),
-    )
+        logger.debug(
+            "Source records scored: %d",
+            len(ranked_results),
+        )
 
-    logger.debug(
-        "Source records with candidates: %d",
-        scored_count,
-    )
+        logger.debug(
+            "Source records with candidates: %d",
+            scored_count,
+        )
 
-    logger.debug(
-        "Total ranked candidates: %d",
-        total_ranked,
-    )
+        logger.debug(
+            "Total ranked candidates: %d",
+            total_ranked,
+        )
 
-    logger.debug("------------------------------------------")
+        logger.debug("------------------------------------------")
 
     logger.debug(
         "STEP 12 COMPLETED - "
@@ -2557,7 +2893,9 @@ def step_14_llm_judge(
 def determine_mapping_status(match_results):
     """Determine mapping status using Rank 1 only.
 
-    Score used: max(final_score, ensemble_score).
+    Score used: max(final_score, ensemble_score), except that LLM confidence
+    cannot promote a row whose ensemble is below LLM_PROMOTE_SCORE_FLOOR --
+    there the ensemble stands on its own. See the comment at that branch.
     Thresholds: >= 0.86 -> AutoMatch, 0.61-0.85 -> StewardReview,
     < 0.61 -> LowConfidence.
 
@@ -2570,6 +2908,36 @@ def determine_mapping_status(match_results):
 
     rank_one = match_results[0]
 
+    # A category-level finding is not a product-level verdict, so it routes to
+    # a steward rather than closing the row on score alone. Without this
+    # branch a scoreless short-circuit result would fall through to
+    # "NoHimalayaEquivalent" below, which reads as a pipeline conclusion.
+    # Purely additive: no pre-existing resolution_method is in this set, so
+    # every other row takes exactly the path it did before.
+    if getattr(rank_one, "resolution_method", None) in _CATEGORY_TERMINAL_METHODS:
+        return "StewardReview"
+
+    # The tier was already decided by stage_disposition._tier_and_method(),
+    # which weighed the ensemble, the judge's confidence and the promotion
+    # floor together. Re-deriving the queue from a raw score here is what let
+    # the two labels disagree, and the disagreement is worst exactly where a
+    # reviewer notices it: a row the judge REJECTED carries a high similarity
+    # score (the near-miss candidate is genuinely close), so re-banding that
+    # score filed "No Himalaya Equivalent" rows as LowConfidence -- measured,
+    # 7 of 72 lip makeup rows, one of them at 0.96.
+    #
+    # Translate the decided tier instead. Score banding below is only a
+    # fallback for rows that never got a tier at all.
+    tier = (getattr(rank_one, "confidence_tier", "") or "").strip()
+    tier_to_status = {
+        "Matched": "AutoMatch",
+        "Medium": "StewardReview",
+        "Low Confidence": "LowConfidence",
+        "No Himalaya Equivalent": "NoHimalayaEquivalent",
+    }
+    if tier in tier_to_status:
+        return tier_to_status[tier]
+
     final_score = getattr(rank_one, "llm_confidence", None)
     if final_score is not None and final_score != final_score:  # NaN
         final_score = None
@@ -2580,16 +2948,57 @@ def determine_mapping_status(match_results):
         if ensemble_score is not None and ensemble_score != ensemble_score:  # NaN
             ensemble_score = None
 
+    # LLM confidence may only promote a row that the ensemble already scored
+    # respectably -- the same LLM_PROMOTE_SCORE_FLOOR safeguard
+    # stage_disposition._tier_and_method() has always applied. Without it the
+    # bare max() below let the judge's self-reported confidence carry a weak
+    # ensemble the whole way: measured, an ensemble of 0.54 with confidence
+    # 0.91 became AutoMatch. That confidence is the judge's certainty in its
+    # own conclusion, not independent evidence, and it is graded from the same
+    # candidate list the ensemble already ranked -- so it must not be able to
+    # outvote a weak ensemble outright, only confirm a decent one.
+    #
+    # Demotion is deliberately left intact: an LLM confidence BELOW the
+    # ensemble still lowers the tier via the max() being skipped, because a
+    # confident "this is not the same product" is worth trusting downward.
+    # False negatives cost a steward review; false positives ship a wrong map.
+    # The judge's verdict is authoritative when it ran.
+    #
+    # This used to be effectively max(llm_confidence, ensemble_score), which
+    # meant a confident REJECTION could not lower the tier: a judge returning
+    # "not the same product, confidence 0.20" against an ensemble of 0.88
+    # still produced AutoMatch, because the ensemble simply won the max().
+    # That is a false-positive generator, and false positives are what a
+    # client sees as bad mapping quality -- a wrong map ships, whereas a
+    # missed map only costs a steward review.
+    #
+    # The asymmetry that remains is deliberate and unchanged in spirit:
+    # LLM confidence may only PROMOTE a row the ensemble already scored
+    # respectably (>= LLM_PROMOTE_SCORE_FLOOR), because the judge's
+    # confidence is its certainty in its own conclusion, graded from the same
+    # candidate list the ensemble ranked -- not independent evidence. But it
+    # may always DEMOTE, because a confident "these are different products"
+    # is exactly the signal worth trusting downward.
     if final_score is None:
         final_score = ensemble_score
-    elif ensemble_score is not None and ensemble_score > final_score:
-        final_score = ensemble_score
+    elif ensemble_score is not None:
+        if ensemble_score < C.LLM_PROMOTE_SCORE_FLOOR:
+            # Ensemble too weak for the judge's confidence to carry it.
+            final_score = ensemble_score
+        # else: the ensemble is respectable, so the judge's confidence
+        # stands as the final score in BOTH directions -- promotion when it
+        # is higher, demotion when it is lower. final_score is already
+        # llm_confidence here, so there is nothing to do.
 
+    # Same bands as stage_disposition._tier_and_method(), read from the same
+    # constants, so mapping_status and confidence_level can never disagree.
+    # These were hardcoded 0.86/0.61 here while the tier used TIER_HIGH=0.87
+    # and TIER_REVIEW=0.50 -- two banding systems on one row.
     if final_score is None:
         return "NoHimalayaEquivalent"
-    if final_score >= 0.86:
+    if final_score >= C.TIER_HIGH:
         return "AutoMatch"
-    if final_score >= 0.61:
+    if final_score >= C.TIER_REVIEW:
         return "StewardReview"
     return "LowConfidence"
 

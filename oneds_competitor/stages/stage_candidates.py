@@ -13,11 +13,85 @@ Three retrieval channels, merged and de-duplicated:
 """
 from __future__ import annotations
 
+import re
+
 from rank_bm25 import BM25Okapi
 
 import common.config as C
 from common import db
 from common.models import MasterProduct, SourceProduct
+
+# The pipeline that builds staging.himalaya_products.search_text
+# (sha-pipelines/pipelines/staging/processors/himalaya_product_processor.py::
+# build_search_text) deduplicates on whitespace-split tokens only, so a
+# multipack notation like "2x10g" stays glued as one token while pack_size/
+# uom are appended separately as "10 gm" -- neither form contains a bare
+# "10g" token. A listing that says "10g (Pack of 2)" then gets a lexical
+# score of exactly 0.0 against the one master row that is actually the
+# 2-pack, so BM25 starves the correct candidate before scoring ever sees it
+# (measured: LIP BALM 2x10g BLISTER, product_code 7000999, ranked #5 behind
+# four plain singles it should have beaten).
+#
+# Fixed here rather than in the ingest pipeline: this runs at BM25-index-build
+# time on every batch run, so it applies to already-ingested rows with no
+# re-embed, and it is symmetric with parse_pack_count() in stage_attributes.py
+# reading the same "NxSIZEunit" shape out of listing titles.
+_MULTIPACK_TOKEN_RE = re.compile(r"\b(\d+)\s*[x×]\s*(\d+(?:\.\d+)?)(g|gm|ml|kg|l)\b")
+
+# The mirror notation: SIZE-first, "125gx4N" / "75gx6". The master writes 51
+# active rows this way, and BM25 tokenizes "125gx4n" as one unsplittable
+# string -- so a listing that says "4x125g" shares NO token with it, while a
+# row that happens to spell it "4x125g" scores an exact hit.
+#
+# Measured on B00YTUG0PG ("Himalaya Herbals Soap - Almond and Rose, 4x125g
+# Pack"): the correct 7001720 "ALMOND & ROSE SOAP 125gx4N INDIA VALUE PACK"
+# took lexical 0.6235 while the promo row 7003118 "BUY 4X125G & GET 2X75G
+# FREE" took 0.8790 -- purely because "4x125g" appears in its text (twice)
+# and not in the correct row's. Every other signal was identical between the
+# two: overlap 0.5556, pack 1.000, type 1.00, count 4, semantic ~0.80. The
+# 0.26 lexical gap alone decided the mapping.
+_MULTIPACK_SIZE_FIRST_RE = re.compile(
+    r"\b(\d+(?:\.\d+)?)\s*(g|gm|ml|kg|l)\s*[x×]\s*(\d{1,4})\s*n?\b",
+    re.IGNORECASE,
+)
+
+
+def _expand_multipack_tokens(text: str) -> str:
+    """Appends ONE bridge token for "NxSIZEunit" -- the glued unit-size
+    ("10g") -- so BM25 can match a bare "10g" query against a "2x10g"
+    master row. Additive only: the original text is never altered, so a
+    row with no multipack notation is untouched.
+
+    Deliberately narrow. An earlier version also emitted the bare count and
+    the split unit/number as separate tokens, which let a WRONG-size
+    candidate win: "5g - Pack of 24" matched "LIP BALM 24x10g" (a 10g
+    product) at a perfect lexical score, because "24" and "10g" both
+    became free-floating tokens and out-scored the correct 5g row's exact
+    size but lower lexical hit. Emitting only the glued "10g" form fixes
+    the missing-token case without creating a second way to fake a size
+    match: pack_score() still sees the true master size (10g vs the
+    listing's 5g) and penalizes it, since the size stored in
+    MasterProduct.pack_value is untouched by this -- only the BM25 text
+    changes.
+    """
+    extra: list[str] = []
+    for _count, size, unit in _MULTIPACK_TOKEN_RE.findall(text):
+        extra.append(f"{size}{unit}")   # "10g" -- the common listing form
+
+    # SIZE-first rows get the same two bridges, in the forms a listing writes:
+    # the glued unit size ("125g") and the count-first notation ("4x125g").
+    #
+    # Emitting "4x125g" is safe in a way the rejected bare-count experiment
+    # was not: it is a single glued token carrying BOTH the count and the
+    # size, so it can only match a listing that states that exact
+    # combination. A "5g Pack of 24" listing cannot match "24x10g" through
+    # it, because "24x5g" and "24x10g" are different tokens -- which is
+    # precisely the failure that made emitting a free-floating "24" wrong.
+    for size, unit, count in _MULTIPACK_SIZE_FIRST_RE.findall(text):
+        extra.append(f"{size}{unit}")            # "125g"
+        extra.append(f"{count}x{size}{unit}")    # "4x125g"
+
+    return f"{text} {' '.join(extra)}" if extra else text
 
 
 def rows_needing_embedding(conn: db.Connection, master: list[MasterProduct]) -> list[MasterProduct]:
@@ -43,7 +117,7 @@ def semantic_search(conn: db.Connection, query_vector: list[float], k: int = C.S
 
 
 def build_bm25_index(master_rows: list[MasterProduct]) -> BM25Okapi:
-    corpus = [row.text.lower().split() for row in master_rows]
+    corpus = [_expand_multipack_tokens(row.text.lower()).split() for row in master_rows]
     return BM25Okapi(corpus)
 
 
