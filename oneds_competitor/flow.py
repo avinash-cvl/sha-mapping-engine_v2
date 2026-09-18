@@ -32,7 +32,7 @@ import common.config as C
 from common import db
 from common import db_models
 from common import embedder
-import sha_observability_sdk
+import observability_sdk
 from oneds_competitor.stages import stage_attributes
 from oneds_competitor.stages import stage_candidates
 from oneds_competitor.stages import stage_deterministic
@@ -46,7 +46,7 @@ from common.models import MasterProduct, MatchResult, ScoreBreakdown, SourceProd
 # ============================================================
 # Import sh_sdk correctly – both initializer and decorator
 # ============================================================
-from sha_observability_sdk import (
+from observability_sdk import (
     init_client,          # ← correct initializer
     observe,              # ← decorator
     get_current_trace, set_context,
@@ -74,7 +74,7 @@ init_client(
 # ============================================================
 # Optional debug print – verify token and project
 # ============================================================
-from sha_observability_sdk import _config
+from observability_sdk import _config
 # Log only WHETHER a token is configured, never any part of its value --
 # a prefix in a log file is still credential material in something that
 # gets shared and attached to tickets.
