@@ -7,13 +7,10 @@ is the import below. PACKS is the importable form of V2's rules -- the
 `sys.path.insert(0, "..")` and (for the four pilots) call load_master() at
 module import time, so they cannot be used as a library.
 
-PACKS covers 21 of V2's 25 categories. The four hand-audited ones --
-lip_makeup, pet_care, oral_healthcare and vitamins_supplements -- carry logic
-the declarative model cannot express (pack-size parsing, brand-line tables,
-segment mapping) and are a later port, not part of this change. Rows in those
-categories get no category gating and fall through to V1's existing
-config.oneds_master_category_mapping behaviour untouched; they DO still get
-their per-category judge prompt, since agents/prompts/ has all 25.
+PACKS now covers all 25 of V2's categories. The four hand-audited ones --
+lip_makeup, pet_care, oral_healthcare and vitamins_supplements -- were the
+late port at the end of this file; see the block comment there for what was
+and was not reproduced from V2's scripts.
 
 Rules are ordered; first match wins. Targets are taken verbatim from the
 Material Master, and batch_flow.main() asserts at startup that every one
@@ -70,6 +67,15 @@ OTX_PORG = "OTX - PURE HERBS - ORGANIC"
 PH_F = "PHARMA - FORMULATIONS"
 PH_O = "PHARMA - OTHERS"
 PH_PH = "PHARMA - PURE HERBS - OTHERS"
+# Added with the four late ports at the end of this file. Spelled exactly as
+# the live master spells them -- resolve.pack_targets() asserts at startup that
+# every target exists, so a typo here fails the run rather than silently
+# gating every row in the category down to nothing.
+LIP = "LIP CARE"
+ORAL = "ORAL CARE"
+PET_FOOD = "COMPANION CARE - FOODS"
+PET_GROOM = "COMPANION CARE - GROOMING"
+PET_SUPP = "COMPANION CARE - SUPPLEMENTS"
 
 ORGANIC = r"\borganic\b|\bcertified organic\b|\busda\b"
 MENS_CUE = r"\bfor men\b|\bmen'?s\b|\bmens\b|\bhomme\b|\bbeard\b"
@@ -419,6 +425,223 @@ PACKS["sexual wellness"] = CategoryPack(
         Rule("personal lubricant — not in the Himalaya range", NO_EQ, NO_EQ, 0.86,
              subcats=("lubes",)),
         Rule("topical gel", PH_F, "HIMCOLIN", 0.70, subcats=("gel & spray",)),
+    ],
+    default=(UNRES, UNRES, 0.40, "not identified"),
+)
+
+# ---------------------------------------------------- the four late ports
+# lip makeup, pet care, oral healthcare and vitamins & supplements were the
+# four categories V2 hand-audited and this module's header called "a later
+# port". They had no pack at all, so every row in them skipped the category
+# gate entirely: measured, 638 of 3,600 sampled competitor rows and 104 of the
+# 793 oneds_master QC misses.
+#
+# V2's scripts for these four cannot be vendored as they stand -- each calls
+# load_master() at import time and derives its constants from the dataframe
+# (lip_makeup.py computes CHAP_MAX/TUBE_MIN from a groupby). The thresholds
+# those scripts derive are reproduced here as literals, each verified against
+# the live master rather than copied on trust:
+#
+#   LIP CARE / LIP BALM CHAPSTICKS   pack sizes [4.5]                -> CHAP_MAX 4.5
+#   LIP CARE / LIP BALM TUBES        pack sizes [5, 6, 10, 12]       -> TUBE_MIN 5.0
+#   LIP CARE / LIP BUTTER            pack sizes [10]
+#
+# What is NOT reproduced is V2's size-threshold branch (size/npack < TUBE_MIN
+# -> chapstick, else tube). The declarative Rule matches a title regex and a
+# 1DS sub-category; it cannot divide a parsed size by a pack count. Rather
+# than widen Rule for one category, the size-ambiguous rows route to LIP CARE
+# at a confidence BELOW CATEGORY_GATE_MIN_CONF (0.80) -- the gate then leaves
+# the candidate pool alone and V1's scoring picks the SKU, which is exactly
+# what it did before these packs existed. The gain is that the clearly-formed
+# rows (butter, tube words, stick words) now gate correctly.
+
+PACKS["lip makeup"] = CategoryPack(
+    name="lip makeup",
+    him_lookup=_scoped(LIP),
+    rules=[
+        # Level 1 -- is it lip CARE at all? Himalaya sells balms only, so the
+        # colour-cosmetic lines are genuine white space and must not be forced
+        # onto a balm. Ordered first: a "tinted lip balm" is still a balm, so
+        # the tinted-balm exception is spelled into the veto rather than
+        # relying on rule order alone.
+        Rule("colour cosmetic, not lip care", NO_EQ, NO_EQ, 0.90,
+             title=r"\bliquid lip(stick| colou?r)?\b|\blip ?stick\b|"
+                   r"\blip colou?r\b|\blip crayon\b|\blip liner\b|"
+                   r"\blip pencil\b|\blip gloss\b|\blip st[ae]in\b|"
+                   r"\bmatte lip cream\b|\blip mousse\b|\blip pigment\b|"
+                   r"\blip.{0,8}cheek\b|\bmulti ?pot\b|\bsindoor\b|\bbindi\b",
+             not_title=r"tinted lip ?balm|lip ?balm.{0,25}tint|"
+                       r"tinted.{0,20}balm|colou?r changing lip ?balm"),
+        Rule("lip treatment form Himalaya does not sell", NO_EQ, NO_EQ, 0.88,
+             title=r"\blip scrub\b|\blip buff\b|\blip (sleeping )?mask\b|"
+                   r"\blip oil\b|\blip serum\b|\blip plump"),
+
+        # Level 2 -- which sub-category? Form words are decisive and are read
+        # before any size reasoning, exactly as V2 orders them.
+        Rule("lip butter", LIP, "LIP BUTTER", 0.95, title=r"\blip butter\b"),
+        Rule("tube / jar / pot format", LIP, "LIP BALM TUBES", 0.92,
+             title=r"\btube\b|\bjars?\b|\bpots?\b|\btubs?\b|\btins?\b|\bsquee?ze\b"),
+        Rule("stick format", LIP, "LIP BALM CHAPSTICKS", 0.93,
+             title=r"\bchap ?stick\b|\bbalm stick\b|\bcrayon balm\b|\bcare stick\b",
+             not_title=r"\blip ?stick\b"),
+
+        # Level 3 -- a balm with no format word, which is the COMMON case:
+        # measured, 22% of Himalaya lip rows and 77% of competitor ones state
+        # no size at all, and of those that do the split is roughly even (46%
+        # under 5g, 33% at or above). So the sub-category genuinely cannot be
+        # decided here and V2 only decided it by dividing a parsed size by a
+        # pack count, which Rule cannot express.
+        #
+        # The CATEGORY is still worth gating: it narrows the pool from the
+        # whole master to LIP CARE. The sub-category is a guess, so this names
+        # the larger of the two (chapsticks, 46% against 33%) and hands the
+        # real choice to V1's scoring -- which sees the parsed pack_value and
+        # can separate 4.5g from 10g far better than a regex.
+        #
+        # Confidence is above CATEGORY_GATE_MIN_CONF deliberately. An earlier
+        # draft put it at 0.70 to "stay safe"; measured, that left 65 of 79
+        # Himalaya lip rows ungated -- the rule matched and was then discarded,
+        # which is the same as having no pack at all.
+        Rule("lip balm, format not stated", LIP, "LIP BALM CHAPSTICKS", 0.84,
+             title=r"\blip ?balms?\b|\blipbalms?\b|\blips? balms?\b|"
+                   r"\blip care\b|\blip therapy\b|\blip bomb\b|"
+                   r"\blip moist\w*\b|\blip treatment\b|\blip nourish\w*\b|"
+                   r"\blip protect\w*\b|\blip repair\b|\blip conditioner\b|"
+                   r"\bpetroleum jelly\b|\baloe lips\b|\blip hydrat\w*\b|"
+                   r"\bbaby lips\b|\bballms?\b|\bbalms?\b"),
+    ],
+    default=(UNRES, UNRES, 0.40, "no lip-care form word"),
+)
+
+PACKS["pet care"] = CategoryPack(
+    name="pet care",
+    him_lookup=_scoped(PET_FOOD, PET_GROOM, PET_SUPP),
+    rules=[
+        # The 1DS sub-category is the strongest signal here and the three
+        # master nodes map onto it almost one-to-one, so these are subcat
+        # rules rather than title regexes.
+        Rule("pet grooming", PET_GROOM, "ERINA", 0.86,
+             subcats=("pet shampoos",)),
+        Rule("pet supplement", PET_SUPP, "LIV.52", 0.72,
+             subcats=("supplements",)),
+        # COMPANION CARE - FOODS splits HEALTHY PET FOOD from HEALTHY TREATS,
+        # and the title is the only thing that separates them.
+        Rule("pet treat", PET_FOOD, "HEALTHY TREATS", 0.84,
+             subcats=("pet food",),
+             title=r"\btreats?\b|\bbiscuits?\b|\bcookies?\b|\bchew\b|\bstick\b"),
+        Rule("pet food", PET_FOOD, "HEALTHY PET FOOD", 0.86,
+             subcats=("pet food",)),
+    ],
+    default=(UNRES, UNRES, 0.40, "not identified"),
+)
+
+PACKS["oral healthcare"] = CategoryPack(
+    name="oral healthcare",
+    him_lookup=_scoped(ORAL),
+    rules=[
+        # A brush, floss or irrigator is hardware, not a formulation. V2's
+        # oral_healthcare.py gates on this first and so does core.NOT_PRODUCT;
+        # repeated here because NOT_PRODUCT only covers part of the vocabulary.
+        Rule("oral device, not a formulation", NO_EQ, NO_EQ, 0.90,
+             title=r"\btooth ?brush\b|\bfloss\b|\birrigator\b|\bwater ?pik\b|"
+                   r"\btongue (cleaner|scraper)\b|\bdenture\b|\bbrush head\b|"
+                   r"\bwhitening (strip|pen|kit)\b|\bmouth ?guard\b"),
+        # HiOra is Himalaya's THERAPEUTIC oral line and the master files it
+        # under PHARMA - FORMULATIONS / HIORA, not ORAL CARE. Measured on the
+        # QC sheet: 29 of 150 oral rows (19%) want a pharma-formulations node,
+        # and the HiOra listings were the whole of it -- gating them to ORAL
+        # CARE removed the correct row from the pool entirely. Ordered before
+        # both the mouthwash and toothpaste rules because a HiOra row names
+        # its form too ("HiOra-K Toothpaste", "HiOra-K mouthwash").
+        Rule("hiora therapeutic oral line", PH_F, "HIORA", 0.90,
+             title=r"\bhi ?ora\b"),
+        # Oro-T is the second therapeutic oral line and sits in the same place:
+        # PHARMA - FORMULATIONS / ORO-T, 3 master rows. Same failure as HiOra
+        # on the QC sheet -- an "Oro-T ORAL RINSE" reads as a mouthwash and was
+        # gated to ORAL CARE, which does not hold it.
+        Rule("oro-t therapeutic oral line", PH_F, "ORO-T", 0.90,
+             title=r"\boro ?-? ?t\b"),
+        Rule("mouthwash", ORAL, "MOUTHWASH", 0.92, subcats=("mouthwashes",)),
+        # BOTANIQUE is Himalaya's own line name -- a competitor toothpaste must
+        # not claim it, so it is keyed on the word, not the sub-category.
+        Rule("botanique toothpaste", ORAL, "BOTANIQUE TOOTHPASTE", 0.90,
+             subcats=("toothpastes",), title=r"\bbotanique\b"),
+        Rule("dental cream", ORAL, "DENTAL CREAM", 0.88,
+             subcats=("toothpastes",), title=r"\bdental cream\b"),
+        Rule("toothpaste", ORAL, "TOOTHPASTE", 0.90, subcats=("toothpastes",)),
+    ],
+    default=(UNRES, UNRES, 0.40, "not identified"),
+)
+
+PACKS["vitamins & supplements"] = CategoryPack(
+    name="vitamins & supplements",
+    # This category is carried almost entirely by him_lookup, not by rules.
+    # The master splits PURE HERBS into 43 sub-categories keyed on the HERB
+    # ("AMALAKI", "SHATAVARI - ASPARAGUS", "VRIKSHAMLA - GARCINIA"), which is a
+    # lookup, not a rule ladder -- 129 generated phrases already cover it, and
+    # hand-writing 43 regexes would be a second, drifting copy of the same
+    # table.
+    # OTX_F is deliberately NOT scoped in. Its only phrase reachable from this
+    # category is VITANATURE - NUTRACEUTICALS, which the live master does not
+    # carry -- the four pre-existing packs that do scope it already trip the
+    # startup validator on it, and adding a fifth would widen a known gap
+    # rather than close one.
+    him_lookup=_scoped(OTX_PO, OTX_PORG, PH_PH),
+    rules=[
+        # Himalaya's range is single-herb ayurvedic. Synthetic vitamins,
+        # protein and the sports-nutrition adjacencies are real white space,
+        # and 1DS files them under this category in volume (vitamin c 4,155
+        # rows, biotin 2,398, fat burners 2,301).
+        Rule("synthetic vitamin / mineral — not in the Himalaya range",
+             NO_EQ, NO_EQ, 0.86,
+             subcats=("vitamin c", "vitamin d", "vitamin b12", "vitamin e",
+                      "vitamin b7 (biotin)", "multivitamins", "vitamin gummies",
+                      "calcium", "iron", "zinc", "magnesium", "omega 3")),
+        Rule("weight / sports supplement — not in the Himalaya range",
+             NO_EQ, NO_EQ, 0.84,
+             subcats=("fat burners", "pre workout", "creatine", "bcaa",
+                      "weight gainers", "meal replacement")),
+        Rule("probiotic — not in the Himalaya range", NO_EQ, NO_EQ, 0.82,
+             subcats=("acidophilus", "probiotics")),
+
+        # The rest of this category is named after the HERB, and 1DS uses the
+        # same names the master does. him_lookup resolves these for Himalaya's
+        # own rows, but it is gated behind is_him -- so a competitor "Brahmi
+        # tablets" listing got nothing. These route the 1DS sub-category
+        # straight to its master node.
+        #
+        # NOT gated to one node, and that is the whole point. Measured on the
+        # 189 QC rows in this category, the reviewer's answers are spread
+        # across FOUR master categories:
+        #     pharma - pure herbs - others   93  (49%)
+        #     otx - pure herbs - others      72  (38%)
+        #     otx - formulations             13  ( 7%)
+        #     otx - pure herbs - organic      8  ( 4%)
+        # The same herb appears on both sides (ASHWAGANDHA under OTX,
+        # ASHVAGANDHA under PHARMA), so no rule reading the 1DS name can pick
+        # the right one -- an earlier draft sent all of them to PH_PH and would
+        # have removed the correct row for 51% of them.
+        #
+        # So these rows are deliberately left UNGATED: confidence is below
+        # CATEGORY_GATE_MIN_CONF (0.80), which records the herb as evidence for
+        # a steward and in the judge's prompt while leaving the candidate pool
+        # exactly as it was. him_lookup above still resolves the Himalaya rows
+        # at 0.97 from a confirmed phrase, which is the only signal here that
+        # actually knows which side of the split a herb sits on.
+        Rule("single-herb supplement (evidence only, pool left open)",
+             PH_PH, "TRIPHALA", 0.55,
+             subcats=("neem", "brahmi", "gokshura", "punarnava", "garlic",
+                      "bael", "shuddha guggulu", "kapikachhu mucuna",
+                      "boswellia serrata", "hadjod", "ashwagandha",
+                      "ashvagandha", "triphala", "amalaki", "arjuna",
+                      "shatavari", "guduchi", "tulasi", "holy basil",
+                      "turmeric", "haridra", "karela", "lasuna", "manjistha",
+                      "methi", "fenugreek", "moringa", "shigru", "vasaka",
+                      "yashtimadhu", "licorice", "trikatu", "harataki",
+                      "haritaki", "ashoka", "tagara", "valerian",
+                      "meshashringi", "gymnema", "vrikshamla", "garcinia",
+                      "berberine", "mandukaparni", "ginger", "sunthi",
+                      "shilajit", "herbals", "sleep supplements")),
     ],
     default=(UNRES, UNRES, 0.40, "not identified"),
 )
