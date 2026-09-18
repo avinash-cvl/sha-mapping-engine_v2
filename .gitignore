@@ -22,5 +22,25 @@ out/
 *.pkl
 *.xlsx
 
+# eval OUTPUT -- derived, regenerable, and specific to one machine's database.
+# The scripts that produce these ARE tracked (eval/consolidate_qc.py builds the
+# ground truth from D:/Himalaya/QC_data, eval/score_against_qc.py measures the
+# engine against it), so anyone with the QC workbooks can rebuild the lot:
+#
+#     python -m eval.consolidate_qc --qc-dir "D:/Himalaya/QC_data"
+#     python -m eval.score_against_qc
+#
+# Deliberately ignoring the data and not the tooling: the CSVs are ~1MB of
+# derived rows that go stale the moment the database changes, while the two
+# scripts are the only way to reproduce the 62.8% top-1 / 78.0% top-3 baseline.
+# Note: six older snapshots (baseline.json, scored_lip_makeup.csv and friends)
+# were committed before this rule existed. git keeps tracking what is already
+# in the index, so they are unaffected -- the rule only stops NEW output being
+# added. Remove them with `git rm --cached` if they are ever not wanted.
+eval/qc_ground_truth.csv
+eval/qc_ground_truth_simple.xlsx
+eval/snapshots/*.csv
+eval/snapshots/*.json
+
 .claude/*
 cache
