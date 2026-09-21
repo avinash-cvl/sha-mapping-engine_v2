@@ -86,7 +86,10 @@ PACKS = {}
 # ---------------------------------------------------------------- face care
 PACKS["face care"] = CategoryPack(
     name="face care",
-    him_lookup=_scoped(FACE_WSH, FACE_CLN, FACE_MOI, FACE_SER, FACE_OTH, MENS, PH_F),
+    # BODY_MOI is scoped in for the NOURISHING SKIN CREAM line: 1DS files it
+    # as face care/face creams, the master as BODY MOISTURISERS / GP CREAMS.
+    him_lookup=_scoped(FACE_WSH, FACE_CLN, FACE_MOI, FACE_SER, FACE_OTH, MENS, PH_F,
+                       BODY_MOI),
     rules=[
         # Clarina and Bleminor ship as creams and washes only, so the
         # therapeutic route is restricted to those forms. Applying it to every
@@ -111,7 +114,17 @@ PACKS["face care"] = CategoryPack(
              subcats=("facial scrubs & polishes",)),
         Rule("facial wipes", FACE_CLN, "FACIAL WIPES", 0.93,
              subcats=("facial wipes",)),
-        Rule("serum", FACE_SER, "FACE SERUMS", 0.91, subcats=("face serums",)),
+        # Routed to FACE MOISTURISERS, not FACE_SER. The master files 22 of
+        # its 23 face serums under ('FACE MOISTURISERS', 'FACE SERUMS'); the
+        # ('FACE SERUMS', 'FACE SERUMS') node holds exactly one row, the
+        # DARK SPOT CLEARING TURMERIC *SERUM FLUID*. Targeting FACE_SER gated
+        # every serum listing down to that single decoy, which then won by
+        # default -- 5 QC misses, and 6 more listings pinned to it besides.
+        # him_lookup agrees: every NAMED serum phrase there resolves to
+        # FACE MOISTURISERS, and only the generic 'face serums' key points
+        # here (a 2-vs-2 tie the generator broke the wrong way, see
+        # him_lookup.AMBIGUOUS).
+        Rule("serum", FACE_MOI, "FACE SERUMS", 0.91, subcats=("face serums",)),
         Rule("face wash", FACE_WSH, "FACE WASH", 0.94, subcats=("face wash",)),
         Rule("eye cream -> treatment creams", FACE_MOI, "TREATMENT CREAMS", 0.84,
              subcats=("eye creams",)),
@@ -119,6 +132,16 @@ PACKS["face care"] = CategoryPack(
              subcats=("night creams",)),
         Rule("face gel", FACE_MOI, "FACE GELS", 0.86,
              subcats=("face creams",), title=r"\bgel\b", not_title=r"\bcream\b"),
+        # Two sibling nodes the bare "face cream" rule used to swallow.
+        # Serum-creams and gel-creams are filed as PREMIUM CREAMS (24 rows),
+        # and the NOURISHING SKIN CREAM line is a body/GP product filed
+        # under BODY MOISTURISERS / GP CREAMS -- not FACE CREAMS. Both are
+        # ordered before "face cream", which matches on sub-category alone
+        # and would otherwise win.
+        Rule("serum cream / gel cream -> premium creams", FACE_MOI, "PREMIUM CREAMS", 0.88,
+             subcats=("face creams",), title=r"\bserum cream\b|\bgel cream\b"),
+        Rule("nourishing skin cream -> GP creams", BODY_MOI, "GP CREAMS", 0.88,
+             subcats=("face creams",), title=r"\bnourishing skin cream\b"),
         Rule("face cream", FACE_MOI, "FACE CREAMS", 0.90, subcats=("face creams",)),
         Rule("multi-step kit", FACE_OTH, "FACE CARE - OTHERS", 0.70,
              subcats=("facial kit",)),
@@ -129,7 +152,11 @@ PACKS["face care"] = CategoryPack(
 # ---------------------------------------------------------------- skin care
 PACKS["skin care"] = CategoryPack(
     name="skin care",
-    him_lookup=_scoped(PERS, BODY_MOI, SUN, OTX_O, FACE_CLN),
+    # FACE_MOI is scoped in because 1DS files face gels/creams under
+    # skin care/moisturizers while the master keeps them in FACE
+    # MOISTURISERS -- without it those phrases are filtered out of
+    # him_lookup and the row falls through to a BODY node.
+    him_lookup=_scoped(PERS, BODY_MOI, SUN, OTX_O, FACE_CLN, FACE_MOI),
     rules=[
         # Himalaya sells bar soap and hand wash, but no shower gel / body wash.
         Rule("body wash / shower gel", NO_EQ, NO_EQ, 0.90,
@@ -138,6 +165,15 @@ PACKS["skin care"] = CategoryPack(
              title=r"\bsanitis?er\b|\bsanitizer\b"),
         Rule("hand wash", PERS, "HAND WASH", 0.93, subcats=("hand wash",)),
         Rule("bar soap", PERS, "BAR SOAPS", 0.93, subcats=("soaps",)),
+        # The legacy "PROTECTIVE SUNSCREEN LOTION" line is filed under
+        # BODY MOISTURISERS / BODY LOTIONS (183 rows), NOT under SUN CARE --
+        # only the newer Sun Protect+ line sits in SUN CARE, and
+        # SUN CARE / SUNSCREEN LOTION holds exactly one row. Without this
+        # rule every legacy listing gated onto that single row and lost.
+        # Ordered before the generic sunscreen rule: both match on
+        # subcat='sunscreen' + "lotion", and first match wins.
+        Rule("protective sunscreen lotion (legacy line)", BODY_MOI, "BODY LOTIONS", 0.90,
+             subcats=("sunscreen",), title=r"\bprotective sunscreen\b"),
         Rule("sunscreen", SUN, "SUNSCREEN LOTION", 0.88,
              subcats=("sunscreen",), title=r"\blotion\b|\bfluid\b|\bmilk\b"),
         Rule("sunscreen cream", SUN, "SUNSCREEN CREAM", 0.88, subcats=("sunscreen",)),
@@ -146,6 +182,13 @@ PACKS["skin care"] = CategoryPack(
         Rule("cleansing milk", FACE_CLN, "TONER / MILK", 0.86,
              subcats=("cleansing creams & milks",)),
         Rule("body lotion", BODY_MOI, "BODY LOTIONS", 0.92, subcats=("body lotions",)),
+        # A listing that says "FACE gel" is a face product even when 1DS
+        # files it under skin care/moisturizers. The master keeps those in
+        # FACE MOISTURISERS / FACE GELS, which this pack does not otherwise
+        # reach, so they used to gate to BODY GELS and miss. Ordered before
+        # "body gel", which would otherwise claim them on the bare "gel".
+        Rule("face gel (face-named, inside skin care)", FACE_MOI, "FACE GELS", 0.88,
+             subcats=("moisturizers",), title=r"\bface gel\b"),
         Rule("body gel", BODY_MOI, "BODY GELS", 0.84,
              subcats=("moisturizers",), title=r"\bgel\b", not_title=r"\bcream\b|\blotion\b"),
         Rule("body cream", BODY_MOI, "GP CREAMS", 0.88,
@@ -376,7 +419,11 @@ PACKS["health & wellness"] = CategoryPack(
 
 PACKS["medication & remedies"] = CategoryPack(
     name="medication & remedies",
-    him_lookup=_scoped(OTX_F, PH_F),
+    # BABY_TOI is scoped in for the baby rubs: him_lookup already knows
+    # 'soothing baby rub' -> BABY TOILETRIES / BABY RUB, but scoping it to
+    # (OTX_F, PH_F) filtered that entry out, so a baby rub listed under
+    # cough & cold fell through to the generic KOFLET rule below.
+    him_lookup=_scoped(OTX_F, PH_F, BABY_TOI),
     rules=[
         Rule("cough formulation", OTX_F, "KOFLET", 0.80, subcats=("cough & cold",)),
         # 'syrups' names a dosage form and nothing else. Ten unrelated Himalaya
@@ -537,7 +584,9 @@ PACKS["pet care"] = CategoryPack(
 
 PACKS["oral healthcare"] = CategoryPack(
     name="oral healthcare",
-    him_lookup=_scoped(ORAL),
+    # BABY_TOI is scoped in for kids toothpaste, which the master files
+    # under BABY TOILETRIES even when 1DS calls it oral healthcare.
+    him_lookup=_scoped(ORAL, BABY_TOI),
     rules=[
         # A brush, floss or irrigator is hardware, not a formulation. V2's
         # oral_healthcare.py gates on this first and so does core.NOT_PRODUCT;
@@ -564,6 +613,13 @@ PACKS["oral healthcare"] = CategoryPack(
         Rule("mouthwash", ORAL, "MOUTHWASH", 0.92, subcats=("mouthwashes",)),
         # BOTANIQUE is Himalaya's own line name -- a competitor toothpaste must
         # not claim it, so it is keyed on the word, not the sub-category.
+        # Kids toothpaste is filed under BABY TOILETRIES / KIDS TOOTHPASTE
+        # (9 rows), not ORAL CARE / TOOTHPASTE (101). The baby care pack
+        # already carries this rule, but a kids toothpaste that arrives as
+        # 1DS oral healthcare/toothpastes never reaches that pack, so it
+        # gated to the adult node and could not match.
+        Rule("kids toothpaste", BABY_TOI, "KIDS TOOTHPASTE", 0.93,
+             subcats=("toothpastes",), title=KIDS_CUE),
         Rule("botanique toothpaste", ORAL, "BOTANIQUE TOOTHPASTE", 0.90,
              subcats=("toothpastes",), title=r"\bbotanique\b"),
         Rule("dental cream", ORAL, "DENTAL CREAM", 0.88,
