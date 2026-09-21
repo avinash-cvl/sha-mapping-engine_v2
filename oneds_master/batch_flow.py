@@ -100,6 +100,45 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================
+# MASTER NODE POPULATION
+# ============================================================
+
+# Cached per master_by_code identity: every worker in a run shares the one
+# master_by_code dict built in step 3, so this is computed once per run and
+# then read from the cache, rather than recounted for every SKU. Keyed by
+# id() with the dict itself held alongside, so the entry cannot be
+# invalidated by the id being reused after a garbage collection.
+_NODE_POP_CACHE: dict[int, tuple[dict, dict[tuple[str, str], int]]] = {}
+
+
+def master_node_population(master_by_code):
+    """{(category, subcategory) -> how many master rows sit in that node}.
+
+    Both key parts are stripped/lower-cased, matching how the category gate
+    builds its target, so the two are directly comparable.
+    """
+    cached = _NODE_POP_CACHE.get(id(master_by_code))
+
+    if cached is not None and cached[0] is master_by_code:
+        return cached[1]
+
+    population: dict[tuple[str, str], int] = {}
+
+    for master in master_by_code.values():
+
+        key = (
+            (master.category or "").strip().lower(),
+            (master.subcategory or "").strip().lower(),
+        )
+
+        population[key] = population.get(key, 0) + 1
+
+    _NODE_POP_CACHE[id(master_by_code)] = (master_by_code, population)
+
+    return population
+
+
+# ============================================================
 # PROCESS ONE SOURCE SKU
 # ============================================================
 
@@ -306,7 +345,36 @@ def process_one_sku(
                 == target
             }
 
-            if gated:
+            # A node holding one or two master rows cannot be a meaningful
+            # gate: narrowing to it hands scoring a near-empty shortlist and
+            # silently discards the populated sibling node the right answer
+            # usually lives in. That row then wins by default at a high
+            # lexical score, because nothing was left to outscore it.
+            # Declining to gate here costs only precision on a node too small
+            # to trust, and is what makes a mis-pointed rule self-correcting
+            # instead of a silent wrong answer. See
+            # config.CATEGORY_GATE_MIN_TARGET_POP for the measurements.
+            target_pop = master_node_population(master_by_code).get(target, 0)
+            target_starved = (
+                C.CATEGORY_GATE_MIN_TARGET_POP > 0
+                and target_pop < C.CATEGORY_GATE_MIN_TARGET_POP
+            )
+
+            if target_starved:
+
+                logger.warning(
+                    "SKU=%r category gate target %r holds only %d master "
+                    "row(s) (< %d) -- not gating, scoring all %d retrieved "
+                    "candidates instead (evidence=%r)",
+                    sku,
+                    target,
+                    target_pop,
+                    C.CATEGORY_GATE_MIN_TARGET_POP,
+                    len(ungated),
+                    decision.evidence,
+                )
+
+            elif gated:
 
                 # Rebuild rather than mutate -- the caller's dict is
                 # shared with nothing here, but step 12 reads it back by

@@ -226,6 +226,34 @@ PACK_COUNT_MISMATCH_PENALTY = float(os.environ.get("PACK_COUNT_MISMATCH_PENALTY"
 # rank-1 for every row the gate did not fire on.
 CATEGORY_GATE_MIN_CONF = float(os.environ.get("CATEGORY_GATE_MIN_CONF", "0.80"))
 
+# ---------------------------------------------------------------------------
+# Minimum master population a resolved node must have before the gate is
+# allowed to narrow a row down to it.
+#
+# The gate already refuses to gate a row down to NOTHING (see batch_flow.py's
+# "never gate a row down to nothing" fallback). The subtler trap is a node
+# that holds one or two rows: the gate "succeeds", hands scoring those rows,
+# and the correct answer -- sitting in a populated sibling node -- is never
+# scored at all. It then wins by default, at a high lexical score, because it
+# was the only thing to compare against.
+#
+# Two real instances, both found from QC misses:
+#   ('FACE SERUMS','FACE SERUMS')      1 row  vs 22 in FACE MOISTURISERS
+#   ('SUN CARE','SUNSCREEN LOTION')    1 row  vs 183 in BODY MOISTURISERS
+# Both trapped every serum / legacy-sunscreen listing routed to them.
+#
+# Measured on 849 amazon SKUs against the pre-fix rules: this recovered 7 of
+# the 15 gate misses with no rule changes at all, and RAISED the number of
+# already-accepted rank-1 answers still in the top 3 (744 -> 747). Values of
+# 2, 3 and 5 all scored identically, so 3 is the middle of a flat optimum
+# rather than a tuned edge. At 8 the gate starts declining on legitimately
+# small nodes and the accepted count falls back to 744.
+#
+# Set to 0 to disable and restore the previous behaviour exactly.
+CATEGORY_GATE_MIN_TARGET_POP = int(
+    os.environ.get("CATEGORY_GATE_MIN_TARGET_POP", "3")
+)
+
 # Paused for now -- when False, flow.py/flow_without_prefect.py's run_persist()
 # never writes to app.*_crosswalk on its own, no matter the confidence tier.
 # Every result (including Matched-tier, rank=1 "best match" rows) lands only
