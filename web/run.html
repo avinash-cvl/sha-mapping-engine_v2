@@ -930,7 +930,8 @@ function resultRow(r) {
     ? '<span class="pill p-cat"><i class="sq"></i>Himalaya</span>'
     : '<span class="pill p-comp"><i class="sq"></i>Competitor</span>';
   const matched = r.product_code
-    ? `<div class="t-title">${esc(r.product_name || "")}<div class="t-sub m">${esc(r.product_code)}</div></div>`
+    ? `<div class="t-title">${esc(r.product_name || "(no name recorded)")}` +
+      `<div class="t-sub m">${esc(r.product_code)}</div></div>`
     : '<span style="color:var(--ink-3)">—</span>';
   const bar = r.score == null ? "—"
     : `<span class="conf"><span class="meter"><i style="width:${Math.round(r.score * 100)}%;
@@ -939,7 +940,7 @@ function resultRow(r) {
   return `<tr>
     <td>${side}</td>
     <td class="cell-cat">${esc(r.category || "")}<div class="sc">${esc(r.subcategory || "")}</div></td>
-    <td class="t-title">${esc(r.title || r.sku)}<div class="t-sub m">${esc(r.brand || "")}${r.pack ? " · " + esc(r.pack) : ""}</div></td>
+    <td class="t-title">${esc(r.title || r.sku)}<div class="t-sub m">${esc(r.sku)}</div></td>
     <td>${matched}</td>
     <td>${pill(r.status)}</td>
     <td class="num">${bar}</td>

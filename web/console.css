@@ -256,11 +256,23 @@
 
 
 /* ---------------- pagination ---------------- */
-.pager{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:12px 0 0}
+/* One group, right-aligned. pg-size previously carried margin-left:auto,
+   which pushed it to the far edge of whatever container it sat in -- on a
+   wide table that left the row-count control stranded a screen away from the
+   row count it controls. */
+.pager{display:flex;align-items:center;justify-content:flex-end;gap:8px;
+  flex-wrap:wrap;padding:12px 0 0}
 .pager .pg-count{font-family:var(--mono);font-size:12px;color:var(--ink-3);
-  font-variant-numeric:tabular-nums}
+  font-variant-numeric:tabular-nums;margin-right:auto}
 .pager .pg-page{font-size:12px;color:var(--ink-2);font-variant-numeric:tabular-nums;
   margin-inline:2px}
 .pager .btn{padding:5px 11px;font-size:12px;font-weight:500}
-.pager .pg-size{margin-left:auto;font:inherit;font-size:12px;color:var(--ink);
-  background:var(--surface-2);border:1px solid var(--line);border-radius:7px;padding:5px 8px}
+.pager .pg-size{font:inherit;font-size:12px;color:var(--ink);width:auto;
+  background:var(--surface-2);border:1px solid var(--line);border-radius:7px;
+  padding:5px 8px}
+@media(max-width:620px){
+  /* Wrapped onto its own line, the count keeps the left edge and the
+     controls keep the right, instead of the select stretching across. */
+  .pager{justify-content:space-between}
+  .pager .pg-count{margin-right:0}
+}
