@@ -466,7 +466,15 @@ def results(
     src = db_models.get_table(conn.engine, "staging", f"{channel}_products")
     mapping = db_models.get_table(conn.engine, "staging", f"{channel}_product_mapping")
 
-    join = sa.join(src, mapping, mapping.c.source_sku == src.c.sku)
+    # Join on the SOURCE ROW id, not on source_sku.
+    #
+    # A SKU can have more than one source row -- the 1,093 Himalaya rows kept
+    # deliberately when the duplicate August ingest was cleared have an
+    # unreviewed September twin apiece. Joining on sku matched each mapping
+    # row to every twin, so a 359-row result set returned 447 rows with 88
+    # silent duplicates: the same product listed twice, and a page count that
+    # never reconciled with what was on screen.
+    join = sa.join(src, mapping, mapping.c[f"{channel}_product_id"] == src.c.id)
     where = [mapping.c.match_rank == 1]
     if category:
         where.append(src.c.category == category)

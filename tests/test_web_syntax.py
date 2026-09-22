@@ -52,3 +52,37 @@ def test_console_js_leaks_nothing_global():
         if re.match(r"^(const|let|var|function|async function)\s", line)
     ]
     assert not leaked, f"console.js leaks globals: {leaked}"
+
+
+@pytest.mark.parametrize("page", PAGES)
+def test_page_destructures_every_console_helper_it_calls(page):
+    """A helper used but not destructured is a ReferenceError at runtime.
+
+    `node --check` cannot catch it -- the file parses fine -- and neither can
+    an API test, because every endpoint is healthy. It surfaces only as a
+    blank panel and "pill is not defined" in the browser console, which is
+    exactly how it was found.
+    """
+    helpers = {
+        "api", "fmt", "duration", "pill", "esc", "showError",
+        "clearError", "streamRun", "pager", "whoami", "mountUser",
+    }
+    html = (WEB / f"{page}.html").read_text(encoding="utf-8")
+
+    m = re.search(r"const \{ ([^}]+) \} = window\.Console;", html)
+    destructured = {x.strip() for x in m.group(1).split(",")} if m else set()
+
+    # Names the page defines itself are not Console's problem.
+    local = set(re.findall(r"function (\w+)\s*\(", html))
+    local |= set(re.findall(r"const (\w+) = \(", html))
+
+    called = set(re.findall(r"\b(" + "|".join(helpers) + r")\s*\(", html))
+    qualified = {h for h in helpers if f"Console.{h}(" in html}
+
+    missing = (called - local - destructured) | (qualified - destructured - local)
+    # A Console.x() call is always fine -- it reaches through the namespace.
+    missing -= {h for h in helpers if f"Console.{h}(" in html}
+    assert not missing, (
+        f"{page}.html calls {sorted(missing)} without destructuring them "
+        f"from window.Console"
+    )

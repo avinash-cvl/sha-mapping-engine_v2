@@ -159,6 +159,7 @@
               </tbody>
             </table>
           </div>
+          <div id="rows-pager"></div>
         </div>
         <div class="panel-b" id="tab-groups" hidden>
           <div class="tw"><table>
@@ -223,7 +224,7 @@
 
 <script src="/static/console.js"></script>
 <script>
-const { api, fmt, duration, esc, showError, clearError, streamRun } = window.Console;
+const { api, clearError, duration, esc, fmt, mountUser, pager, pill, showError, streamRun } = window.Console;
 const $ = (id) => document.getElementById(id);
 
 let TAXONOMY = {};
@@ -594,7 +595,11 @@ $("btn-confirm").addEventListener("click", async () => {
 
 
 /* ---------------- results ---------------- */
-async function loadResults() {
+let RES_OFFSET = 0;
+let RES_LIMIT = 100;
+
+async function loadResults(offset = RES_OFFSET, limit = RES_LIMIT) {
+  RES_OFFSET = offset; RES_LIMIT = limit;
   const base = `channel=${encodeURIComponent($("channel").value)}`
     + ($("category").value ? `&category=${encodeURIComponent($("category").value)}` : "")
     + ($("subcategory").value ? `&subcategory=${encodeURIComponent($("subcategory").value)}` : "")
@@ -606,13 +611,24 @@ async function loadResults() {
                   + (q ? `&q=${encodeURIComponent(q)}` : "");
 
   try {
-    const d = await api(`/results?${qs}&limit=100`);
+    const d = await api(`/results?${qs}&limit=${RES_LIMIT}&offset=${RES_OFFSET}`);
     $("cnt-rows").textContent = fmt(d.total);
-    $("f-count").textContent = `${fmt(d.rows.length)} of ${fmt(d.total)}`;
+    $("f-count").textContent = `${fmt(d.rows.length)} shown`;
     $("rows-body").innerHTML = d.rows.length
       ? d.rows.map(resultRow).join("")
       : `<tr><td colspan="6" style="padding:28px;text-align:center;color:var(--ink-3)">
-           No results for this scope yet. Run the engine to populate it.</td></tr>`;
+           ${RES_OFFSET ? "No rows on this page." :
+             "No results for this scope yet. Run the engine to populate it."}</td></tr>`;
+
+    const pg = $("rows-pager");
+    pg.innerHTML = "";
+    if (d.total > d.limit) {
+      pg.appendChild(Console.pager({
+        total: d.total, offset: d.offset, limit: d.limit,
+        onGo: (off, lim) => { loadResults(off, lim);
+          $("rows-body").scrollIntoView({ behavior: "smooth", block: "nearest" }); },
+      }));
+    }
   } catch (e) { showError($("errors"), e.message); }
 
   try {
@@ -689,9 +705,9 @@ document.querySelectorAll(".tab[data-tab]").forEach((tab) => {
 let searchTimer;
 $("f-q").addEventListener("input", () => {
   clearTimeout(searchTimer);
-  searchTimer = setTimeout(loadResults, 300);   // debounce; 151k rows server-side
+  searchTimer = setTimeout(() => loadResults(0, RES_LIMIT), 300);  // debounce; 151k rows server-side
 });
-$("f-status").addEventListener("change", loadResults);
+$("f-status").addEventListener("change", () => loadResults(0, RES_LIMIT));
 
 
 Console.mountUser(document.getElementById('who'));

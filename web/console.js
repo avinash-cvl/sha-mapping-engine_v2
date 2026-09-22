@@ -150,6 +150,49 @@
     return user;
   }
 
-  window.Console = { whoami, mountUser, api, fmt, duration, pill, esc, showError, clearError, streamRun, STATUS };
+  /* Page controls for a server-paged table.
+   *
+   * Offset paging, not cursor: these tables are ordered by stable columns
+   * and the depth anyone actually reaches is small. A cursor would be the
+   * right answer for an export walking all 151k rows, and the wrong kind of
+   * complexity for a person clicking Next.
+   */
+  function pager({ total, offset, limit, onGo }) {
+    const from = total ? offset + 1 : 0;
+    const to = Math.min(offset + limit, total);
+    const page = Math.floor(offset / limit) + 1;
+    const pages = Math.max(1, Math.ceil(total / limit));
+
+    const wrap = document.createElement("div");
+    wrap.className = "pager";
+    wrap.innerHTML =
+      '<span class="pg-count">' + fmt(from) + "\u2013" + fmt(to) +
+        " of " + fmt(total) + "</span>" +
+      '<button class="btn pg-btn" data-go="first"' + (offset ? "" : " disabled") + ">First</button>" +
+      '<button class="btn pg-btn" data-go="prev"' + (offset ? "" : " disabled") + ">Previous</button>" +
+      '<span class="pg-page">Page ' + fmt(page) + " of " + fmt(pages) + "</span>" +
+      '<button class="btn pg-btn" data-go="next"' + (to < total ? "" : " disabled") + ">Next</button>" +
+      '<button class="btn pg-btn" data-go="last"' + (to < total ? "" : " disabled") + ">Last</button>" +
+      '<select class="pg-size" aria-label="Rows per page">' +
+        [50, 100, 250, 500].map((n) =>
+          '<option value="' + n + '"' + (n === limit ? " selected" : "") + ">" +
+          n + " per page</option>").join("") +
+      "</select>";
+
+    wrap.querySelectorAll(".pg-btn").forEach((b) =>
+      b.addEventListener("click", () => {
+        const go = b.dataset.go;
+        const next = go === "first" ? 0
+          : go === "prev" ? Math.max(0, offset - limit)
+          : go === "next" ? offset + limit
+          : (pages - 1) * limit;
+        onGo(next, limit);
+      }));
+    wrap.querySelector(".pg-size").addEventListener("change", (e) =>
+      onGo(0, +e.target.value));   // new page size restarts at the top
+    return wrap;
+  }
+
+  window.Console = { pager, whoami, mountUser, api, fmt, duration, pill, esc, showError, clearError, streamRun, STATUS };
 
 })();

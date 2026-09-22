@@ -82,6 +82,7 @@
         </tr></thead>
         <tbody id="rows"><tr><td colspan="8" style="padding:20px;color:var(--ink-3)">Loading…</td></tr></tbody>
       </table></div>
+      <div style="padding:0 16px 14px"><div id="runs-pager"></div></div>
     </section>
 
     <section class="panel" id="cmp" hidden>
@@ -106,7 +107,7 @@
 
 <script src="/static/console.js"></script>
 <script>
-const { api, fmt, pill, esc, showError, clearError } = window.Console;
+const { api, clearError, esc, fmt, mountUser, pager, pill, showError } = window.Console;
 const $ = (id) => document.getElementById(id);
 const picked = new Set();
 
@@ -145,7 +146,11 @@ function renderStaleBanner() {
   });
 }
 
-function applyFilters() {
+let PAGE_OFFSET = 0;
+let PAGE_LIMIT = 50;
+
+function applyFilters(offset = 0, limit = PAGE_LIMIT) {
+  PAGE_OFFSET = offset; PAGE_LIMIT = limit;
   const ch = $("f-channel").value, pl = $("f-pipeline").value;
   const oc = $("f-outcome").value, q = $("f-q").value.trim().toLowerCase();
   const runs = ALL.filter((r) =>
@@ -157,12 +162,24 @@ function applyFilters() {
 
   try {
     $("count").textContent = `${runs.length} of ${ALL.length}`;
+    if (PAGE_OFFSET >= runs.length) PAGE_OFFSET = 0;   // filter shrank the set
     if (!runs.length) {
       $("rows").innerHTML = `<tr><td colspan="8" style="padding:28px;text-align:center;color:var(--ink-3)">
         ${ALL.length ? "No runs match these filters." : "No runs recorded yet. Launch one from the Run page."}</td></tr>`;
       return;
     }
-    $("rows").innerHTML = runs.map(renderRow).join("");
+    const page = runs.slice(PAGE_OFFSET, PAGE_OFFSET + PAGE_LIMIT);
+    $("rows").innerHTML = page.map(renderRow).join("");
+
+    const pg = $("runs-pager");
+    pg.innerHTML = "";
+    if (runs.length > PAGE_LIMIT) {
+      pg.appendChild(Console.pager({
+        total: runs.length, offset: PAGE_OFFSET, limit: PAGE_LIMIT,
+        onGo: (off, lim) => applyFilters(off, lim),
+      }));
+    }
+
     document.querySelectorAll(".pick").forEach((el) => {
       el.checked = picked.has(el.value);
       el.addEventListener("change", onPick);
@@ -171,10 +188,11 @@ function applyFilters() {
 }
 
 ["f-channel", "f-pipeline", "f-outcome"].forEach((id) =>
-  $(id).addEventListener("change", applyFilters));
+  $(id).addEventListener("change", () => applyFilters(0, PAGE_LIMIT)));
 let histTimer;
 $("f-q").addEventListener("input", () => {
-  clearTimeout(histTimer); histTimer = setTimeout(applyFilters, 250);
+  clearTimeout(histTimer);
+  histTimer = setTimeout(() => applyFilters(0, PAGE_LIMIT), 250);
 });
 
 function renderRow(r) {
