@@ -100,9 +100,34 @@
    * says it lost the connection. */
   function streamRun(runId, { onProgress, onDone, onError }) {
     const es = new EventSource(`${API}/runs/${runId}/stream`);
+    let finished = false;
+
     es.addEventListener("progress", (e) => onProgress(JSON.parse(e.data)));
-    es.addEventListener("done", (e) => { onDone(JSON.parse(e.data)); es.close(); });
-    es.addEventListener("error", () => onError?.("Connection lost — retrying…"));
+    es.addEventListener("waiting", (e) => onProgress(JSON.parse(e.data)));
+
+    es.addEventListener("done", (e) => {
+      finished = true;                    // set BEFORE close(), which fires error
+      onDone(JSON.parse(e.data));
+      es.close();
+    });
+
+    es.addEventListener("error", () => {
+      /* EventSource fires `error` whenever the stream ends -- including the
+       * normal close after the server sends `done`. Reporting that as a lost
+       * connection told the operator something had gone wrong on a run that
+       * had just completed successfully. Only a drop while the run is still
+       * live is worth surfacing.
+       *
+       * readyState CLOSED after a clean finish is expected; CONNECTING means
+       * the browser is already retrying on its own. */
+      if (finished) return;
+      if (es.readyState === EventSource.CONNECTING) {
+        onError?.("Reconnecting to the run…");
+      } else {
+        onError?.("Lost connection to the run. Its progress is still recorded — reload to catch up.");
+      }
+    });
+
     return es;
   }
 

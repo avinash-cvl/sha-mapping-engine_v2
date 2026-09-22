@@ -337,6 +337,9 @@ def _spawn(req: RunRequest, pipeline: str, overrides: dict[str, str]) -> Run:
         "--master-table", "staging.himalaya_products",
         "--max-workers", str(req.workers),
         "--log-file", log_path,
+        # The engine must adopt this id, not mint its own: the console
+        # streams progress against it from the moment the subprocess starts.
+        "--run-id", run_id,
     ]
     if req.category:
         cmd += ["--category", req.category]
@@ -449,12 +452,30 @@ async def stream(run_id: str) -> EventSourceResponse:
 
     async def events():
         last = None
+        # A run row appears only once the subprocess has started and written
+        # it. Wait briefly rather than declaring the run unknown on the first
+        # poll -- the console opens this stream the instant it launches.
+        waited = 0.0
         while True:
             row = conn.execute(
                 sa.select(run).where(run.c.execution_id == run_id)
             ).first()
+
             if row is None:
-                yield {"event": "error", "data": json.dumps({"error": "unknown run"})}
+                if waited < 30.0:
+                    waited += 1.0
+                    yield {"event": "waiting",
+                           "data": json.dumps({"run_id": run_id, "status": "starting"})}
+                    await asyncio.sleep(1.0)
+                    continue
+                # Give up, and end the stream in a way the browser will not
+                # retry. EventSource reconnects on any dropped connection, so
+                # a stream that simply stops re-requests forever -- which is
+                # what filled the server log with the same GET. `done` tells
+                # the client to close it.
+                yield {"event": "done", "data": json.dumps(
+                    {"run_id": run_id, "status": "unknown",
+                     "error": "No run with that id was recorded."})}
                 return
 
             payload = {

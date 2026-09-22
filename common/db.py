@@ -50,13 +50,25 @@ def _inserted_id(result: sa.CursorResult[Any]) -> int:
 # notes' "track with batch id").
 # ---------------------------------------------------------------------------
 
-def create_run(conn: Connection, pipeline_name: str, source_file_path: str) -> str:
+def create_run(
+    conn: Connection,
+    pipeline_name: str,
+    source_file_path: str,
+    run_id: str | None = None,
+) -> str:
     """Generates the run_id client-side (rather than SELECTing back a
     server-generated NEWID()) so the SAME value can be used as both
     execution_id and batch_id in one INSERT -- "one flow run = one batch",
     per the meeting notes' "track with batch id", with a single id to
-    thread through checkpoint.py and every raw/staging/crosswalk write."""
-    run_id = str(uuid.uuid4())
+    thread through checkpoint.py and every raw/staging/crosswalk write.
+
+    A caller may supply the id instead. The console needs it: it has to know
+    the run's identity at launch to stream progress, and generating one at
+    each end left it polling an execution_id the engine never wrote --
+    /stream 404s, EventSource reconnects, and the server logs the same
+    request forever.
+    """
+    run_id = run_id or str(uuid.uuid4())
     table = db_models.get_table(conn.engine, "audit", "pipeline_execution_log")
     conn.execute(
         table.insert().values(

@@ -656,6 +656,16 @@ def main() -> None:
     )
 
     match_parser.add_argument(
+        "--run-id",
+        default=None,
+        help=(
+            "Use this execution_id instead of generating one. The console "
+            "passes the id it will stream progress for; a CLI run has no "
+            "reason to and should leave it unset."
+        ),
+    )
+
+    match_parser.add_argument(
         "--no-llm",
         action="store_true",
         help="Skip attribute_fallback/synonyms/mcda_judge LLM calls (same meaning as flow.py's --no-llm)",
@@ -711,7 +721,8 @@ def main() -> None:
         # in that audit table at all. run_id has to exist before logging
         # is configured, since the log filename is scoped to it.
         run_id = db.create_run(
-            conn, "sku-harmonization-batch", args.source_table
+            conn, "sku-harmonization-batch", args.source_table,
+            run_id=getattr(args, "run_id", None),
         )
 
         run_log_file = build_run_log_path(args.log_file, run_id)
