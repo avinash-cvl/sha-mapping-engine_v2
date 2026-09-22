@@ -11,7 +11,7 @@ from concurrent.futures import (
 from dataclasses import replace
 
 import common.config as C
-from common import db
+from common import db, run_record, scope
 from oneds_master.stages import stage_disposition
 from oneds_master.category.resolve import pack_targets, resolve_batch
 from oneds_master.category.rules import PACKS
@@ -97,6 +97,12 @@ def configure_logging(debug: bool, log_file: str) -> None:
 
 
 logger = logging.getLogger(__name__)
+
+# Which side of the brand filter this module runs. Mirrors the
+# HIMALAYA_BRANDS membership test in batch_flow_steps.py's selection,
+# and is what common.scope resolves counts against so a preview and a
+# run can never disagree about what is in scope.
+PIPELINE = "himalaya"
 
 
 # ============================================================
@@ -694,6 +700,10 @@ def main() -> None:
 
         conn = db.get_connection()
 
+        # staging.zepto_products -> zepto. Same derivation
+        # batch_flow_steps.get_channel_from_source_table() uses.
+        CHANNEL = args.source_table.split('.')[-1].removesuffix('_products')
+
         # db.create_run() writes to audit.pipeline_execution_log (same
         # table flow.py's runs show up in) and returns the run_id to use
         # as execution_id/batch_id everywhere below. batch_flow.py used
@@ -706,6 +716,34 @@ def main() -> None:
 
         run_log_file = build_run_log_path(args.log_file, run_id)
         configure_logging(debug=args.debug, log_file=run_log_file)
+
+        # Open the aggregate history row for this run. The scope is resolved
+        # with the same code the console previews with, so the counts recorded
+        # here are the counts an operator was shown before confirming.
+        #
+        # staging.*_product_mapping holds only the LATEST answer per SKU --
+        # persist_sku_disposition() deletes and re-inserts on every run -- so
+        # without this row there is nothing left to compare a re-run against.
+        # Best-effort by design: a bookkeeping failure must not take down a
+        # run that is matching SKUs correctly (see common/run_record.py).
+        run_counts = scope.resolve(
+            conn,
+            channel=CHANNEL,
+            pipeline=PIPELINE,
+            category=args.category,
+            subcategory=args.subcategory,
+            skus=args.sku,
+        )
+        run_record.start(
+            conn,
+            run_id,
+            run_counts,
+            workers=args.max_workers,
+            use_llm=use_llm,
+            explicit_sku_count=len(args.sku) if args.sku else None,
+            triggered_by=os.environ.get("ENGINE_TRIGGERED_BY"),
+            trigger_type=os.environ.get("ENGINE_TRIGGER_TYPE", "cli"),
+        )
 
         # total_processed feeds db.finish_run()'s rows_processed count.
         # No separate checkpoint file is kept: each SKU's mapping_status
@@ -1481,6 +1519,21 @@ def main() -> None:
 
             db.finish_run(conn, run_id, "completed", total_processed)
 
+            # Outcome mix is read back off the source table rather than
+            # tallied in memory: the table is the authority on where each SKU
+            # ended up, and an in-process counter drifts from it the moment a
+            # worker dies mid-persist.
+            run_record.finish(
+                conn,
+                run_id,
+                status="completed",
+                processed=total_processed,
+                failed=0,
+                outcome=run_record.outcome_for(
+                    conn, CHANNEL, PIPELINE, args.category, args.subcategory
+                ),
+            )
+
         except Exception as exc:
 
             logger.exception(
@@ -1490,6 +1543,15 @@ def main() -> None:
 
             db.finish_run(
                 conn, run_id, "failed", total_processed, error=str(exc)
+            )
+
+            run_record.finish(
+                conn,
+                run_id,
+                status="failed",
+                processed=total_processed,
+                failed=0,
+                error_message=str(exc),
             )
 
             raise
