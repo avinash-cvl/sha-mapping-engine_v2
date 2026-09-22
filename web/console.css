@@ -342,3 +342,42 @@
 .flow .msg mark{background:var(--warn-soft);color:var(--ink);padding:1px 4px;border-radius:3px}
 .sec-t{font-size:12px;font-weight:600;margin:16px 0 8px}
 .sec-t:first-child{margin-top:0}
+
+/* ---------------- history grid, to the enterprise mockup ---------------- */
+.hsum{display:grid;grid-template-columns:repeat(5,1fr);
+  border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--surface)}
+@media(max-width:900px){.hsum{grid-template-columns:1fr 1fr}}
+.hsum > div{padding:14px 16px;border-right:1px solid var(--line-soft)}
+.hsum > div:last-child{border-right:0}
+.hsum label{display:block;font-size:10px;letter-spacing:.055em;text-transform:uppercase;
+  color:var(--ink-3);font-weight:600}
+.hsum b{display:block;font-size:21px;font-weight:700;margin-top:2px;
+  font-variant-numeric:tabular-nums;letter-spacing:-.01em}
+.hsum small{display:block;font-size:11px;color:var(--ink-3)}
+.hsum .ok{color:var(--ok)} .hsum .warn{color:var(--warn)} .hsum .crit{color:var(--crit)}
+
+/* Run cell: icon tile, name, mono id -- the id is what gets pasted into a
+   query, so it is present but subordinate to the human-readable scope. */
+.run-main{display:flex;align-items:center;gap:9px}
+.run-icon{width:30px;height:30px;flex:none;border:1px solid var(--line);border-radius:7px;
+  display:grid;place-items:center;background:var(--surface-2);color:var(--ink-3);font-size:11px}
+.run-name{font-weight:600;font-size:12.5px}
+.run-id{font-family:var(--mono);font-size:10px;color:var(--ink-3);margin-top:2px}
+
+.tag{display:inline-flex;align-items:center;border-radius:5px;padding:3px 7px;
+  background:var(--mute-soft);color:var(--ink-2);font-size:11px;font-weight:600}
+
+/* Progress: the ratio, the percentage and the bar together. A bare
+   "471/485" makes the reader do the division. */
+.prog{width:118px}
+.prog-top{display:flex;justify-content:space-between;font-size:10px;
+  color:var(--ink-3);margin-bottom:4px;font-variant-numeric:tabular-nums}
+.prog-bar{height:5px;background:var(--sunken);border-radius:999px;overflow:hidden}
+.prog-bar i{display:block;height:100%;background:var(--accent)}
+.prog-bar i.ok{background:var(--ok)} .prog-bar i.warn{background:var(--warn)}
+.prog-bar i.crit{background:var(--crit)}
+
+tbody tr:hover{background:var(--accent-soft)}
+tbody tr.stale:hover{background:var(--surface-2)}
+.btn.open{height:29px;padding:0 10px;font-size:12px;font-weight:600}
+.btn.open:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}

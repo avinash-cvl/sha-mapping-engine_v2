@@ -47,6 +47,8 @@
   <div class="stack" style="margin-top:20px">
     <div id="errors"></div>
 
+    <div class="hsum" id="hsum" style="margin-bottom:20px"></div>
+
     <div class="tabs" role="tablist" style="margin-bottom:20px">
       <button class="tab" role="tab" aria-selected="true" data-view="runs">
         Runs <span class="cnt" id="tab-runs-count"></span></button>
@@ -83,11 +85,13 @@
           <option value="running">Running</option>
         </select>
         <input type="search" id="f-q" placeholder="Category or run id" aria-label="Search runs">
+        <button class="btn" id="f-clear" style="padding:6px 12px;font-size:12.5px">Clear</button>
       </div>
       <div class="tw"><table>
         <thead><tr>
-          <th style="width:34px"></th><th>Run</th><th>Scope</th><th>Outcome</th>
-          <th class="num">Processed</th><th class="num">Failed</th><th>By</th><th class="m">Code</th><th></th>
+          <th style="width:34px"></th><th>Run</th><th>Channel</th><th>Category</th>
+          <th>Started</th><th class="num">Duration</th><th>Result</th>
+          <th>Processing</th><th></th>
         </tr></thead>
         <tbody id="rows"><tr><td colspan="9" style="padding:20px;color:var(--ink-3)">Loading…</td></tr></tbody>
       </table></div>
@@ -199,6 +203,7 @@ let ALL = [];
 async function load() {
   try {
     ALL = await api("/runs?limit=200");
+    renderSummary();
     renderStaleBanner();
     applyFilters();
   } catch (e) { showError($("errors"), e.message); }
@@ -207,6 +212,27 @@ async function load() {
 /* A crashed run cannot close its own row, so it sits in "running" forever and
    every count that includes it is wrong. Offer the fix where the problem is
    visible rather than leaving it to a scheduled job nobody can see. */
+
+/* Counted over what is loaded rather than queried separately: one source of
+   numbers means the tiles and the table can never disagree. */
+function renderSummary() {
+  const ok = ALL.filter((r) => r.status === "completed" && !r.failed).length;
+  const partial = ALL.filter((r) => r.failed > 0).length;
+  const failed = ALL.filter((r) => r.status === "failed" || r.status === "stale").length;
+  const skus = ALL.reduce((a, r) => a + (r.processed || 0), 0);
+  const channels = new Set(ALL.map((r) => r.channel)).size;
+
+  $("hsum").innerHTML = [
+    ["Runs recorded", fmt(ALL.length), `Across ${channels} channel${channels === 1 ? "" : "s"}`, ""],
+    ["Successful", fmt(ok), "Completed without failures", "ok"],
+    ["Partial failures", fmt(partial), "Require retry or review", "warn"],
+    ["Failed or stale", fmt(failed), "Execution stopped", "crit"],
+    ["SKUs processed", fmt(skus), "Across all recorded runs", ""],
+  ].map(([k, v, note, cls]) =>
+    `<div><label>${esc(k)}</label><b class="${cls}">${v}</b><small>${esc(note)}</small></div>`
+  ).join("");
+}
+
 function renderStaleBanner() {
   const stale = ALL.filter((r) => r.status === "stale").length;
   const running = ALL.filter((r) => r.status === "running").length;
@@ -287,23 +313,40 @@ $("f-q").addEventListener("input", () => {
 
 function renderRow(r) {
   const stale = r.status === "stale";
-  const scope = [r.category || "all categories", r.subcategory].filter(Boolean).join(" · ");
-  const side = r.engine === "himalaya"
+  const started = r.started_at ? new Date(r.started_at) : null;
+  const secs = (r.started_at && r.ended_at)
+    ? Math.round((new Date(r.ended_at) - new Date(r.started_at)) / 1000) : null;
+
+  /* Percentage against what was actually attempted. to_run is the figure the
+     operator confirmed, so a run that processed 471 of 485 reads as 97% --
+     not as a fraction of a scope that included rows the crosswalk closed. */
+  const target = r.to_run || r.processed || 0;
+  const pct = target ? Math.round((r.processed / target) * 100) : 0;
+  const barClass = r.failed ? (r.processed ? "warn" : "crit") : "ok";
+
+  const engine = r.engine === "himalaya"
     ? '<span class="pill p-cat"><i class="sq"></i>Himalaya</span>'
     : '<span class="pill p-comp"><i class="sq"></i>Competitor</span>';
+
   return `<tr class="${stale ? "stale" : ""}" data-id="${esc(r.execution_id)}">
     <td><input type="checkbox" class="pick" value="${esc(r.execution_id)}" ${stale ? "disabled" : ""}
-        aria-label="Select run ${esc(r.execution_id.slice(0,8))}"></td>
-    <td><span class="m">${esc(r.execution_id.slice(0, 8))}</span>
-        <div class="t-sub">${new Date(r.started_at).toLocaleString()}</div></td>
-    <td>${side}<div class="t-sub">${esc(r.channel)} · ${esc(scope)}</div></td>
+        aria-label="Select run ${esc(r.execution_id.slice(0, 8))}"></td>
+    <td><div class="run-main">
+      <div class="run-icon">${stale ? "!" : "&#9654;"}</div>
+      <div><div class="run-name">${esc(r.channel)} &middot; ${esc(r.category || "all categories")}</div>
+        <div class="run-id">${esc(r.execution_id)}</div></div>
+    </div></td>
+    <td><span class="tag">${esc(r.channel)}</span></td>
+    <td><b style="font-size:12.5px">${esc(r.category || "all")}</b>
+      <div class="t-sub">${esc(r.subcategory || "all sub-categories")}</div></td>
+    <td class="t-sub" style="margin:0">${started ? started.toLocaleString() : "—"}</td>
+    <td class="num">${secs == null ? "—" : Console.duration(secs)}</td>
     <td>${pill(r.status)}</td>
-    <td class="num">${fmt(r.processed)}</td>
-    <td class="num" ${r.failed ? 'style="color:var(--crit)"' : ""}>${fmt(r.failed)}</td>
-    <td class="m">${esc(r.triggered_by || "—")}</td>
-    <td class="m">${esc(r.git_sha || "—")}</td>
-    <td><button class="btn rd-open" data-run="${esc(r.execution_id)}"
-          style="padding:4px 10px;font-size:12px">View details</button></td>
+    <td>${stale ? '<span class="t-sub">unknown</span>' : `<div class="prog">
+        <div class="prog-top"><span>${fmt(r.processed)}/${fmt(target)}</span><b>${pct}%</b></div>
+        <div class="prog-bar"><i class="${barClass}" style="width:${pct}%"></i></div>
+      </div>`}</td>
+    <td><button class="btn open rd-open" data-run="${esc(r.execution_id)}">View details</button></td>
   </tr>`;
 }
 
