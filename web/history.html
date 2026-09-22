@@ -86,9 +86,9 @@
       <div class="tw"><table>
         <thead><tr>
           <th style="width:34px"></th><th>Run</th><th>Scope</th><th>Outcome</th>
-          <th class="num">Processed</th><th class="num">Failed</th><th>By</th><th class="m">Code</th>
+          <th class="num">Processed</th><th class="num">Failed</th><th>By</th><th class="m">Code</th><th></th>
         </tr></thead>
-        <tbody id="rows"><tr><td colspan="8" style="padding:20px;color:var(--ink-3)">Loading…</td></tr></tbody>
+        <tbody id="rows"><tr><td colspan="9" style="padding:20px;color:var(--ink-3)">Loading…</td></tr></tbody>
       </table></div>
       <div style="padding:0 16px 14px"><div id="runs-pager"></div></div>
     </section>
@@ -119,45 +119,6 @@
       </table></div>
       <div style="padding:0 16px 14px"><div id="logs-pager"></div></div>
 
-      <div id="log-detail" hidden style="border-top:1px solid var(--line)">
-        <div class="panel-h">
-          <span class="panel-t" id="log-detail-name">Log</span>
-          <span class="stale" id="log-detail-meta"></span>
-          <button class="btn" id="log-close" style="margin-left:auto;padding:5px 11px;font-size:12px">Close</button>
-        </div>
-        <div class="panel-b">
-          <div id="log-detail-summary"></div>
-          <div class="tabs" role="tablist" style="margin-top:14px">
-            <button class="tab" role="tab" aria-selected="true" data-ld="groups">Groups</button>
-            <button class="tab" role="tab" aria-selected="false" data-ld="failures">
-              Failures <span class="cnt bad" id="ld-fail-count">0</span></button>
-            <button class="tab" role="tab" aria-selected="false" data-ld="warnings">
-              Warnings <span class="cnt" id="ld-warn-count">0</span></button>
-          </div>
-          <div class="tw" id="ldtab-groups">
-            <table>
-              <thead><tr>
-                <th>Category</th><th>Sub-category</th><th class="num">SKUs</th>
-                <th class="num">OK</th><th class="num">Failed</th>
-                <th class="num">Pool</th><th class="num">Time</th>
-              </tr></thead>
-              <tbody id="log-detail-groups"></tbody>
-            </table>
-          </div>
-          <div class="tw" id="ldtab-failures" hidden>
-            <table>
-              <thead><tr><th>SKU</th><th>Group</th><th>Reason</th><th class="num">Retry?</th></tr></thead>
-              <tbody id="log-detail-failures"></tbody>
-            </table>
-          </div>
-          <div class="tw" id="ldtab-warnings" hidden>
-            <table>
-              <thead><tr><th style="width:90px">Level</th><th>Group</th><th>Message</th></tr></thead>
-              <tbody id="log-detail-warnings"></tbody>
-            </table>
-          </div>
-        </div>
-      </div>
     </section>
 
     </div>
@@ -179,6 +140,50 @@
         <tbody id="cmp-rows"></tbody>
       </table></div>
     </section>
+  </div>
+</div>
+
+
+<div class="rd-backdrop" id="rd" hidden role="dialog" aria-modal="true" aria-labelledby="rd-title">
+  <div class="rd">
+    <div class="rd-head">
+      <div>
+        <h2 id="rd-title">Run</h2>
+        <div class="sub" id="rd-sub"></div>
+      </div>
+      <span id="rd-status"></span>
+      <button class="rd-close" id="rd-close" aria-label="Close">&times;</button>
+    </div>
+
+    <div class="rd-meta" id="rd-meta"></div>
+    <div class="rd-metrics" id="rd-metrics"></div>
+
+    <div class="rd-tabs" role="tablist">
+      <button class="tab" role="tab" aria-selected="true" data-rd="overview">Overview</button>
+      <button class="tab" role="tab" aria-selected="false" data-rd="groups">
+        Groups <span class="cnt" id="rd-c-groups">0</span></button>
+      <button class="tab" role="tab" aria-selected="false" data-rd="failures">
+        Failures <span class="cnt bad" id="rd-c-failures">0</span></button>
+      <button class="tab" role="tab" aria-selected="false" data-rd="console">
+        Console <span class="cnt" id="rd-c-console">0</span></button>
+      <button class="tab" role="tab" aria-selected="false" data-rd="config">Configuration</button>
+    </div>
+
+    <div class="rd-body">
+      <div id="rd-overview"></div>
+      <div id="rd-groups" hidden></div>
+      <div id="rd-failures" hidden></div>
+      <div id="rd-console" hidden></div>
+      <div id="rd-config" hidden></div>
+    </div>
+
+    <div class="rd-foot">
+      <span class="m" id="rd-file"></span>
+      <span style="display:flex;gap:8px">
+        <button class="btn" id="rd-copy">Copy run ID</button>
+        <button class="btn" id="rd-raw">Raw log</button>
+      </span>
+    </div>
   </div>
 </div>
 
@@ -242,7 +247,7 @@ function applyFilters(offset = 0, limit = PAGE_LIMIT) {
     $("tab-runs-count").textContent = fmt(ALL.length);
     if (PAGE_OFFSET >= runs.length) PAGE_OFFSET = 0;   // filter shrank the set
     if (!runs.length) {
-      $("rows").innerHTML = `<tr><td colspan="8" style="padding:28px;text-align:center;color:var(--ink-3)">
+      $("rows").innerHTML = `<tr><td colspan="9" style="padding:28px;text-align:center;color:var(--ink-3)">
         ${ALL.length ? "No runs match these filters." : "No runs recorded yet. Launch one from the Run page."}</td></tr>`;
       return;
     }
@@ -257,6 +262,12 @@ function applyFilters(offset = 0, limit = PAGE_LIMIT) {
         onGo: (off, lim) => applyFilters(off, lim),
       }));
     }
+
+    document.querySelectorAll(".rd-open").forEach((b) =>
+      b.addEventListener("click", () => {
+        const run = ALL.find((x) => x.execution_id === b.dataset.run);
+        openRunDetail({ runId: b.dataset.run, run });
+      }));
 
     document.querySelectorAll(".pick").forEach((el) => {
       el.checked = picked.has(el.value);
@@ -290,6 +301,8 @@ function renderRow(r) {
     <td class="num" ${r.failed ? 'style="color:var(--crit)"' : ""}>${fmt(r.failed)}</td>
     <td class="m">${esc(r.triggered_by || "—")}</td>
     <td class="m">${esc(r.git_sha || "—")}</td>
+    <td><button class="btn rd-open" data-run="${esc(r.execution_id)}"
+          style="padding:4px 10px;font-size:12px">View details</button></td>
   </tr>`;
 }
 
@@ -395,6 +408,10 @@ function logFileRow(f) {
 }
 
 async function openLog(name) {
+  return openRunDetail({ logName: name });
+}
+
+async function openLogLegacy(name) {
   try {
     const d = await api(`/logs/${encodeURIComponent(name)}`);
     const t = d.totals, c = d.counts;
@@ -494,6 +511,255 @@ document.querySelectorAll(".tab[data-view]").forEach((tab) => {
     if (tab.dataset.view !== "runs") $("cmp").hidden = true;
   });
 });
+
+
+/* ---------------- run detail modal ---------------- */
+let RD = null;            // parsed log for the open run
+let RD_RUN = null;        // audit.engine_run row, when there is one
+
+function rdOpen() { $("rd").hidden = false; document.body.style.overflow = "hidden"; }
+function rdClose() { $("rd").hidden = true; document.body.style.overflow = ""; RD = null; RD_RUN = null; }
+
+$("rd-close").addEventListener("click", rdClose);
+$("rd").addEventListener("click", (e) => { if (e.target === $("rd")) rdClose(); });
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("rd").hidden) rdClose();
+});
+$("rd-copy").addEventListener("click", () => {
+  const id = RD_RUN?.execution_id || RD?.setup?.config?.run_id || "";
+  if (id) navigator.clipboard?.writeText(id);
+});
+$("rd-raw").addEventListener("click", async () => {
+  const name = RD?.path;
+  if (!name) return;
+  const d = await api(`/logs/${encodeURIComponent(name)}?raw=true`);
+  $("rd-console").innerHTML =
+    `<div class="sec-t">Raw log — last ${fmt((d.raw_tail || []).length)} lines</div>
+     <div class="log" style="max-height:none">${esc((d.raw_tail || []).join("\n"))}</div>`;
+  rdTab("console");
+});
+
+function rdTab(name) {
+  document.querySelectorAll(".tab[data-rd]").forEach((t) =>
+    t.setAttribute("aria-selected", String(t.dataset.rd === name)));
+  ["overview", "groups", "failures", "console", "config"].forEach((v) =>
+    ($("rd-" + v).hidden = v !== name));
+}
+document.querySelectorAll(".tab[data-rd]").forEach((t) =>
+  t.addEventListener("click", () => rdTab(t.dataset.rd)));
+
+/* Opened from a recorded run (history row) or from a bare log file. The
+   parser returns the same shape either way, so the run row is optional
+   context rather than a second source of truth. */
+async function openRunDetail({ runId = null, logName = null, run = null }) {
+  try {
+    RD_RUN = run;
+    RD = runId
+      ? await api(`/runs/${runId}/log/structured`)
+      : await api(`/logs/${encodeURIComponent(logName)}`);
+    renderRunDetail();
+    rdTab("overview");
+    rdOpen();
+  } catch (e) {
+    showError($("errors"), e.message);
+  }
+}
+
+function renderRunDetail() {
+  const d = RD, t = d.totals, cfg = d.setup.config || {}, r = RD_RUN;
+
+  const scope = r
+    ? `${r.channel} · ${r.category || "all categories"}`
+    : (d.groups[0]
+        ? `${d.groups[0].category} · ${d.groups[0].subcategory}`
+        : d.path);
+  $("rd-title").textContent = scope;
+  $("rd-sub").textContent = r
+    ? `${r.engine === "himalaya" ? "Himalaya" : "Competitor"} engine · run execution details`
+    : "Log file · run execution details";
+
+  const state = t.failed
+    ? (t.successful ? "partial" : "failed")
+    : "ok";
+  $("rd-status").innerHTML = state === "ok"
+    ? '<span class="pill p-ok"><i class="sq"></i>Success</span>'
+    : state === "partial"
+      ? '<span class="pill p-rev"><i class="sq"></i>Partial failure</span>'
+      : '<span class="pill p-fail"><i class="sq"></i>Failed</span>';
+
+  const when = (v) => v ? new Date(v).toLocaleString() : "—";
+  $("rd-meta").innerHTML = [
+    ["Run ID", r?.execution_id || cfg.run_id || "—"],
+    ["Source", cfg.source_table || (r ? `staging.${r.channel}_products` : "—")],
+    ["Master", cfg.master_table || "staging.himalaya_products"],
+    ["Scope", r ? `${r.category || "all"} / ${r.subcategory || "all"}`
+                : (d.groups[0] ? `${d.groups[0].category} / ${d.groups[0].subcategory}` : "—")],
+    ["Started", when(r?.started_at)],
+    ["Completed", when(r?.ended_at)],
+  ].map(([k, v]) => `<div><label>${esc(k)}</label><b title="${esc(v)}">${esc(v)}</b></div>`).join("");
+
+  /* Submitted is the sum of the per-group batches, which is what actually
+     reached the worker pool -- not the scope, which still counts rows the
+     crosswalk short-circuited away before any work happened. */
+  const submitted = d.groups.reduce((a, g) => a + g.batch_size, 0);
+  const shorted = d.groups.reduce((a, g) => a + g.crosswalk_resolved, 0);
+  const pct = submitted ? Math.round((t.successful / submitted) * 100) : 0;
+
+  $("rd-metrics").innerHTML = [
+    ["Scoped records", fmt(r?.scoped_total ?? submitted), "Initial scope"],
+    ["Auto-closed", fmt(shorted), "Crosswalk short-circuit", "var(--ok)"],
+    ["Submitted to workers", fmt(submitted), "After short-circuit"],
+    ["Successful", fmt(t.successful), `${pct}% of submitted`, "var(--ok)"],
+    ["Failed", fmt(t.failed), t.failed ? "Remain PENDING" : "None", t.failed ? "var(--crit)" : null],
+  ].map(([k, v, note, colour]) =>
+    `<div class="rd-metric"><label>${esc(k)}</label>
+       <b${colour ? ` style="color:${colour}"` : ""}>${v}</b>
+       <small>${esc(note)}</small></div>`).join("");
+
+  $("rd-c-groups").textContent = fmt(d.groups.length);
+  $("rd-c-failures").textContent = fmt(d.failures.length);
+  $("rd-c-console").textContent = fmt(d.warnings.length);
+  $("rd-file").textContent = `Log file: ${d.path} · ${fmt(d.counts.lines)} lines`
+    + (d.counts.unparsed ? ` · ${fmt(d.counts.unparsed)} unrecognised` : "");
+
+  renderRdOverview(d, t);
+  renderRdGroups(d);
+  renderRdFailures(d);
+  renderRdConsole(d);
+  renderRdConfig(d, r);
+}
+
+function renderRdOverview(d, t) {
+  const banner = t.failed
+    ? `<div class="note" style="margin:0 0 14px;background:var(--crit-soft);
+         border:1px solid color-mix(in srgb,var(--crit) 32%,transparent)">
+         <div><b>Partial failure:</b> ${fmt(t.successful)} SKUs completed,
+           ${fmt(t.failed)} failed across ${fmt(t.groups_with_failures)} group${
+             t.groups_with_failures === 1 ? "" : "s"} and remain PENDING.
+           ${t.all_failures_retryable
+             ? " All are SQL&nbsp;40001 deadlocks — transient, retryable at fewer workers."
+             : ""}</div></div>`
+    : `<div class="note" style="margin:0 0 14px;background:var(--ok-soft);
+         border:1px solid color-mix(in srgb,var(--ok) 30%,transparent)">
+         <div><b>Completed:</b> ${fmt(t.successful)} SKUs processed across
+           ${fmt(t.groups)} group${t.groups === 1 ? "" : "s"}, none failed.</div></div>`;
+
+  /* The execution flow, in the order it happened: setup steps, then a line
+     per group, then the errors. This is the log's own narrative, filtered to
+     the lines that carry a decision. */
+  const rows = [];
+  d.setup.steps.forEach((s) =>
+    rows.push(["info", "STEP " + s.step, s.detail || "completed"]));
+  d.groups.slice(0, 40).forEach((g) => {
+    rows.push([g.failed ? "warn" : "info",
+      "GROUP",
+      `<mark>${esc(g.category)} / ${esc(g.subcategory)}</mark> — ${fmt(g.batch_size)} submitted, `
+      + `${fmt(g.successful)} ok${g.failed ? `, <b>${fmt(g.failed)} failed</b>` : ""}`
+      + (g.eligible_master != null ? ` · pool ${fmt(g.eligible_master)}` : "")]);
+  });
+  d.warnings.filter((w) => w.level === "ERROR").slice(0, 10).forEach((w) =>
+    rows.push(["err", "ERROR", esc(w.message)]));
+
+  $("rd-overview").innerHTML = banner
+    + `<div class="sec-t">Execution flow</div><div class="flow">`
+    + rows.map(([lvl, tag, msg]) =>
+        `<div class="flow-row"><div class="lvl ${lvl}">${esc(tag)}</div>
+           <div class="at"></div><div class="msg">${msg}</div></div>`).join("")
+    + `</div>`
+    + (d.groups.length > 40
+        ? `<p class="hint" style="margin-top:8px">Showing the first 40 groups — see the
+             Groups tab for all ${fmt(d.groups.length)}.</p>` : "");
+}
+
+function renderRdGroups(d) {
+  const groups = [...d.groups].sort((a, b) => b.failed - a.failed);
+  $("rd-groups").innerHTML = `<div class="tw tw-short"><table>
+      <thead><tr><th>Category</th><th>Sub-category</th><th class="num">Submitted</th>
+        <th class="num">OK</th><th class="num">Failed</th><th class="num">Pool</th>
+        <th class="num">Time</th></tr></thead>
+      <tbody>${groups.length ? groups.map((g) => `<tr>
+        <td class="cell-cat">${esc(g.category || "")}</td>
+        <td class="cell-cat">${esc(g.subcategory || "")}</td>
+        <td class="num">${fmt(g.batch_size)}</td>
+        <td class="num">${fmt(g.successful)}</td>
+        <td class="num" ${g.failed ? 'style="color:var(--crit);font-weight:600"' : ""}>${fmt(g.failed)}</td>
+        <td class="num">${g.eligible_master == null ? "—" : fmt(g.eligible_master)}</td>
+        <td class="num">${g.seconds == null ? "—" : Console.duration(Math.round(g.seconds))}</td>
+      </tr>`).join("")
+      : `<tr><td colspan="7" style="padding:22px;text-align:center;color:var(--ink-3)">
+           No groups completed.</td></tr>`}</tbody></table></div>`;
+}
+
+function renderRdFailures(d) {
+  if (!d.failures.length) {
+    $("rd-failures").innerHTML =
+      `<p style="padding:24px;text-align:center;color:var(--ink-3)">No SKUs failed.</p>`;
+    return;
+  }
+  /* One error text usually explains every failure in the run. Leading with
+     the pattern turns 95 rows into one finding plus its evidence. */
+  const byError = {};
+  d.failures.forEach((f) => {
+    const key = (f.error || "No error recorded").replace(/\(Process ID \d+\)/, "(Process ID N)");
+    (byError[key] ||= []).push(f);
+  });
+  const patterns = Object.entries(byError).sort((a, b) => b[1].length - a[1].length);
+
+  $("rd-failures").innerHTML = patterns.map(([err, list]) =>
+    `<div class="note" style="margin:0 0 12px;background:var(--crit-soft);
+       border:1px solid color-mix(in srgb,var(--crit) 32%,transparent);display:block">
+       <b>${fmt(list.length)} SKU${list.length === 1 ? "" : "s"} —
+         ${list[0].retryable ? "SQL 40001 deadlock, retryable" : "needs investigating"}</b>
+       <div class="m" style="font-size:11px;line-height:1.6;margin-top:6px;
+            color:var(--ink-2);overflow-wrap:anywhere">${esc(err)}</div>
+     </div>`).join("")
+    + `<div class="sec-t">Failed SKUs</div>
+       <div class="tw tw-short"><table>
+         <thead><tr><th>Source ID</th><th>SKU</th><th>Group</th><th class="num">Disposition</th></tr></thead>
+         <tbody>${d.failures.map((f) => `<tr>
+           <td class="m">${esc(f.source_id || "—")}</td>
+           <td class="m">${esc(f.sku)}</td>
+           <td class="cell-cat">${esc(f.category || "—")}
+             <div class="sc">${esc(f.subcategory || "")}</div></td>
+           <td class="num">${f.retryable
+             ? '<span class="pill p-rev"><i class="sq"></i>Retry</span>'
+             : '<span class="pill p-fail"><i class="sq"></i>Investigate</span>'}</td>
+         </tr>`).join("")}</tbody></table></div>`;
+}
+
+function renderRdConsole(d) {
+  $("rd-console").innerHTML = d.warnings.length
+    ? `<div class="sec-t">Warnings and errors</div><div class="flow">`
+      + d.warnings.map((w) => `<div class="flow-row">
+          <div class="lvl ${w.level === "ERROR" ? "err" : "warn"}">${esc(w.level)}</div>
+          <div class="at">${esc((w.subcategory || w.category || "").slice(0, 10))}</div>
+          <div class="msg">${esc(w.message)}</div></div>`).join("")
+      + `</div>`
+    : `<p style="padding:24px;text-align:center;color:var(--ink-3)">
+         No warnings — every group resolved cleanly.</p>`;
+}
+
+function renderRdConfig(d, r) {
+  const cfg = d.setup.config || {};
+  const rows = [
+    ["Source table", cfg.source_table || (r ? `staging.${r.channel}_products` : "—")],
+    ["Master table", cfg.master_table || "staging.himalaya_products"],
+    ["Batch size", cfg.batch_size || "—"],
+    ["Max workers", cfg.max_workers || "—"],
+    ["Category", r?.category || cfg.category || "all"],
+    ["Sub-category", r?.subcategory || cfg.subcategory || "all"],
+    ["SKU filter", cfg["sku filter"] || (r?.explicit_sku_count ? `${r.explicit_sku_count} SKUs` : "none (all)")],
+    ["Engine", r ? (r.engine === "himalaya" ? "Himalaya (oneds_master)" : "Competitor (oneds_competitor)") : "—"],
+    ["Triggered by", r?.triggered_by || "—"],
+    ["Code version", r?.git_sha || "—"],
+    ["Input population", r?.source_row_count ? fmt(r.source_row_count) + " rows" : "—"],
+  ];
+  $("rd-config").innerHTML = `<div class="tw tw-short"><table><tbody>${
+    rows.map(([k, v]) =>
+      `<tr><th style="width:190px;text-transform:none;letter-spacing:0;font-size:12px">${esc(k)}</th>
+         <td class="m">${esc(String(v))}</td></tr>`).join("")}</tbody></table></div>`;
+}
+
 
 Console.mountUser(document.getElementById('who'));
 load();
