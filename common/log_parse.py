@@ -73,8 +73,14 @@ VERBOSE = re.compile(
     r"Filter \||All source records|No PENDING source records)"
 )
 WORKER_END = re.compile(r"^WORKER (END|START)\b")
-RUN_HEADER = re.compile(r"^(?P<key>run_id|source_table|master_table|category|subcategory|"
-                        r"batch_size|max_workers|sku filter|log_file)\s*=\s*(?P<value>.*)$")
+# The run banner writes "key       = value" with padding. Step 6 writes
+# "category=X | subcategory=Y | batch_size=N" on one line, so the value is
+# anchored to stop at a pipe -- otherwise the banner absorbs a group's scope
+# and reports it as the whole run's.
+RUN_HEADER = re.compile(
+    r"^(?P<key>run_id|source_table|master_table|category|subcategory|"
+    r"batch_size|max_workers|sku filter|log_file)\s+=\s*(?P<value>[^|]*)$"
+)
 
 # A deadlock is transient and retryable; a genuine fault is not. Saying so is
 # the difference between "retry this" and "investigate this", and the console

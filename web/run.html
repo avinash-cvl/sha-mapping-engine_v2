@@ -201,15 +201,57 @@
         <div class="panel-b" id="log-structured">
           <div id="log-summary"></div>
           <div id="log-setup"></div>
-          <div class="tw" style="margin-top:14px">
-            <table>
-              <thead><tr>
-                <th>Category</th><th>Sub-category</th>
-                <th class="num">SKUs</th><th class="num">OK</th><th class="num">Failed</th>
-                <th class="num">Pool</th><th class="num">Time</th><th></th>
-              </tr></thead>
-              <tbody id="log-groups"></tbody>
-            </table>
+
+          <div class="tabs" role="tablist" style="margin-top:16px">
+            <button class="tab" role="tab" aria-selected="true" data-log="groups">
+              Groups <span class="cnt" id="lc-groups">0</span></button>
+            <button class="tab" role="tab" aria-selected="false" data-log="failures">
+              Failures <span class="cnt bad" id="lc-failures">0</span></button>
+            <button class="tab" role="tab" aria-selected="false" data-log="warnings">
+              Warnings <span class="cnt" id="lc-warnings">0</span></button>
+          </div>
+
+          <div id="logtab-groups">
+            <div class="tw">
+              <table>
+                <thead><tr>
+                  <th>Category</th><th>Sub-category</th>
+                  <th class="num">SKUs</th><th class="num">OK</th><th class="num">Failed</th>
+                  <th class="num">Pool</th><th class="num">Time</th><th></th>
+                </tr></thead>
+                <tbody id="log-groups"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div id="logtab-failures" hidden>
+            <div class="fbar">
+              <select id="fail-kind" aria-label="Filter failures">
+                <option value="">All failures</option>
+                <option value="retryable">Retryable — deadlocks</option>
+                <option value="real">Needs investigating</option>
+              </select>
+              <span class="sp" id="fail-count"></span>
+            </div>
+            <div class="tw">
+              <table>
+                <thead><tr>
+                  <th>SKU</th><th>Group</th><th>Reason</th><th class="num">Retry?</th>
+                </tr></thead>
+                <tbody id="log-failures"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div id="logtab-warnings" hidden>
+            <div class="tw">
+              <table>
+                <thead><tr>
+                  <th style="width:90px">Level</th><th>Group</th><th>Message</th>
+                </tr></thead>
+                <tbody id="log-warnings"></tbody>
+              </table>
+            </div>
           </div>
         </div>
         <div class="panel-b" id="log-raw" hidden style="padding:14px">
@@ -501,6 +543,42 @@ function toggleRawView() {
   $("btn-raw").textContent = RAW_MODE ? "Structured" : "Raw";
 }
 
+
+let LOG_FAILURES = [];
+
+function renderFailures() {
+  const kind = $("fail-kind").value;
+  const rows = LOG_FAILURES.filter((f) =>
+    !kind || (kind === "retryable" ? f.retryable : !f.retryable));
+
+  $("fail-count").textContent = `${fmt(rows.length)} of ${fmt(LOG_FAILURES.length)}`;
+  $("log-failures").innerHTML = rows.length
+    ? rows.map((f) => `<tr>
+        <td class="m">${esc(f.sku)}<div class="t-sub">id ${esc(f.source_id || "—")}</div></td>
+        <td class="cell-cat">${esc(f.category || "—")}
+          <div class="sc">${esc(f.subcategory || "")}</div></td>
+        <td class="t-title" style="max-width:none">
+          <div class="m" style="font-size:11.5px;line-height:1.6">${
+            esc(f.error || "No error recorded for this SKU.")}</div></td>
+        <td class="num">${f.retryable
+          ? '<span class="pill p-rev"><i class="sq"></i>Retry</span>'
+          : '<span class="pill p-fail"><i class="sq"></i>Investigate</span>'}</td>
+      </tr>`).join("")
+    : `<tr><td colspan="4" style="padding:24px;text-align:center;color:var(--ink-3)">
+         ${LOG_FAILURES.length ? "No failures of this kind." : "No SKUs failed."}</td></tr>`;
+}
+
+$("fail-kind").addEventListener("change", renderFailures);
+
+document.querySelectorAll(".tab[data-log]").forEach((tab) => {
+  tab.addEventListener("click", () => {
+    document.querySelectorAll(".tab[data-log]").forEach((t) =>
+      t.setAttribute("aria-selected", String(t === tab)));
+    ["groups", "failures", "warnings"].forEach((v) =>
+      ($("logtab-" + v).hidden = v !== tab.dataset.log));
+  });
+});
+
 function renderStructuredLog(d) {
   const t = d.totals;
   const c = d.counts;
@@ -546,6 +624,27 @@ function renderStructuredLog(d) {
     ? groups.map(logGroupRow).join("")
     : `<tr><td colspan="8" style="padding:24px;text-align:center;color:var(--ink-3)">
          No groups processed yet.</td></tr>`;
+
+  LOG_FAILURES = d.failures || [];
+  $("lc-groups").textContent = fmt(groups.length);
+  $("lc-failures").textContent = fmt(LOG_FAILURES.length);
+  $("lc-warnings").textContent = fmt((d.warnings || []).length);
+  renderFailures();
+
+  /* Warnings carry the reasoning behind a decision -- which gate target
+     rejected a SKU, which rule matched -- so they are the trail back to why
+     a match looks wrong, not just noise above the errors. */
+  $("log-warnings").innerHTML = (d.warnings || []).length
+    ? d.warnings.map((w) => `<tr>
+        <td>${w.level === "ERROR"
+              ? '<span class="pill p-fail"><i class="sq"></i>Error</span>'
+              : '<span class="pill p-rev"><i class="sq"></i>Warning</span>'}</td>
+        <td class="cell-cat">${esc(w.category || "—")}
+          <div class="sc">${esc(w.subcategory || "")}</div></td>
+        <td class="t-title" style="max-width:none">${esc(w.message)}</td>
+      </tr>`).join("")
+    : `<tr><td colspan="3" style="padding:24px;text-align:center;color:var(--ink-3)">
+         No warnings — every group resolved cleanly.</td></tr>`;
 
   document.querySelectorAll(".grp-toggle").forEach((b) =>
     b.addEventListener("click", () => {
