@@ -77,40 +77,20 @@
           <textarea id="skus" rows="2" placeholder="Paste SKUs, one per line"></textarea>
         </div>
 
-        <details>
-          <summary>Advanced</summary>
-          <div class="row2">
-            <div class="field"><label for="workers">Workers</label>
-              <select id="workers">
-                <option>1</option><option>2</option><option selected>4</option>
-                <option>6</option><option>8</option>
-              </select></div>
-            <div class="field"><label for="llm-state">LLM judge</label>
-              <select id="llm-state"><option value="1" selected>Enabled</option><option value="0">Disabled</option></select></div>
-          </div>
-          <p class="hint" style="margin:8px 0 0">Above 4 workers this instance has produced SQL&nbsp;40001 deadlocks.</p>
-
-          <div style="border-top:1px solid var(--line-soft);margin-top:12px;padding-top:12px">
-            <p class="hint" style="margin:0 0 10px"><b style="color:var(--ink-2)">Config overrides</b><br>
-              Apply to this run only, passed to the process as environment
-              variables. Recorded against the run so a later comparison shows them.</p>
-            <div class="row2">
-              <div class="field"><label for="ov-pop">Gate min pop</label>
-                <input id="ov-pop" type="number" min="0" max="10" placeholder="default"></div>
-              <div class="field"><label for="ov-sem">Semantic topK</label>
-                <input id="ov-sem" type="number" min="10" max="500" placeholder="default"></div>
-            </div>
-            <div class="row2">
-              <div class="field"><label for="ov-lex">Lexical topK</label>
-                <input id="ov-lex" type="number" min="10" max="500" placeholder="default"></div>
-              <div class="field"><label for="ov-conf">Gate min conf</label>
-                <input id="ov-conf" type="number" step="0.01" min="0" max="1.1" placeholder="default"></div>
-            </div>
-            <p class="hint" style="margin:0">Scoring weights are not editable here: they must sum
-              to 1.00, and changing one silently reweights every other signal.
-              <a href="/configuration" style="color:var(--accent)">See configuration</a>.</p>
-          </div>
-        </details>
+        <div class="row2">
+          <div class="field"><label for="workers">Workers</label>
+            <select id="workers">
+              <option>1</option><option>2</option><option selected>4</option>
+              <option>6</option><option>8</option>
+            </select></div>
+          <div class="field"><label for="llm-state">LLM judge</label>
+            <select id="llm-state">
+              <option value="1" selected>Enabled</option>
+              <option value="0">Disabled</option>
+            </select></div>
+        </div>
+        <p class="hint" style="margin:-6px 0 0">Above 4 workers this instance has
+          produced SQL&nbsp;40001 deadlocks.</p>
       </div>
     </form>
 
@@ -144,6 +124,70 @@
         <div class="panel-h"><span class="panel-t">Active runs</span>
           <span class="live" style="margin-left:auto"><i></i>Streaming</span></div>
         <div class="panel-b"><div class="q" id="queue"></div></div>
+      </section>
+
+
+      <section class="panel" id="results-panel">
+        <div class="tabs" role="tablist">
+          <button class="tab" role="tab" aria-selected="true" data-tab="rows">
+            Results <span class="cnt" id="cnt-rows">0</span></button>
+          <button class="tab" role="tab" aria-selected="false" data-tab="groups">
+            By group</button>
+          <button class="tab" role="tab" aria-selected="false" data-tab="gate">
+            Gate warnings <span class="cnt bad" id="cnt-gate">0</span></button>
+        </div>
+        <div class="panel-b" id="tab-rows">
+          <div class="fbar">
+            <select id="f-status" aria-label="Filter by status">
+              <option value="">Any status</option>
+              <option>AutoMatch</option><option>StewardReview</option>
+              <option>LowConfidence</option><option>NoHimalayaEquivalent</option>
+              <option>Failed</option><option>PENDING</option>
+            </select>
+            <input type="search" id="f-q" placeholder="SKU, title or product code"
+                   aria-label="Search results">
+            <span class="sp" id="f-count">—</span>
+          </div>
+          <div class="tw">
+            <table>
+              <thead><tr>
+                <th>Pipeline</th><th>Category</th><th>Source listing</th>
+                <th>Matched to</th><th>Status</th><th class="num">Confidence</th>
+              </tr></thead>
+              <tbody id="rows-body">
+                <tr><td colspan="6" style="padding:22px;color:var(--ink-3)">Loading…</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="panel-b" id="tab-groups" hidden>
+          <div class="tw"><table>
+            <thead><tr>
+              <th>Category</th><th>Sub-category</th><th class="num">SKUs</th>
+              <th class="num">AutoMatch</th><th class="num">Review</th>
+              <th class="num">No equiv.</th><th class="num">Failed</th>
+              <th class="num">Pending</th><th style="width:110px">Mix</th>
+            </tr></thead>
+            <tbody id="groups-body"></tbody>
+          </table></div>
+        </div>
+        <div class="panel-b" id="tab-gate" hidden>
+          <div class="note" style="margin:0 0 14px">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M12 8.5v4.5M12 16.5v.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              <path d="M10.3 3.9 2.6 17.2A2 2 0 0 0 4.3 20.2h15.4a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" stroke="currentColor" stroke-width="1.7"/>
+            </svg>
+            <div>A rule pointing at a near-empty master node traps every listing
+              routed to it — the node's one product wins whatever the listing says.
+              The backstop widens the pool and logs a warning, but the rule still
+              needs fixing.</div>
+          </div>
+          <div class="tw"><table>
+            <thead><tr><th>Master node</th><th class="num">Rows</th>
+              <th>Reached from</th><th>State</th></tr></thead>
+            <tbody id="gate-body"></tbody>
+          </table></div>
+        </div>
       </section>
 
       <section class="panel" id="log-panel" hidden>
@@ -233,10 +277,28 @@ async function resolve() {
   $("btn-run").disabled = true;
   $("btn-run").textContent = "Resolving…";
   try {
-    const body = { ...scopeBody(), pipeline: null };   // always price both
+    /* Price whichever side is selected. Asking for both regardless meant
+       picking "Himalaya" still showed a Competitor column, so the panel
+       described a run that was not the one about to start. */
+    const body = scopeBody();
     const data = await api("/scope", { method: "POST", body: JSON.stringify(body) });
     LAST = data;
+
+    /* Keep the picker's own counts honest even when the preview is narrowed
+       to one side. */
+    if (selectedPipeline()) {
+      const both = await api("/scope", {
+        method: "POST",
+        body: JSON.stringify({ ...scopeBody(), pipeline: null }),
+      });
+      const by = Object.fromEntries(both.legs.map((l) => [l.pipeline, l]));
+      $("n-him").textContent = fmt(by.himalaya.to_run);
+      $("n-comp").textContent = fmt(by.competitor.to_run);
+      $("n-both").textContent = fmt(by.himalaya.to_run + by.competitor.to_run);
+    }
+
     renderLegs(data);
+    loadResults();
     $("resolved-at").textContent = "Resolved " + new Date().toLocaleTimeString();
   } catch (e) {
     showError($("errors"), e.message);
@@ -248,9 +310,11 @@ function renderLegs(data) {
   const by = Object.fromEntries(data.legs.map((l) => [l.pipeline, l]));
   const him = by.himalaya, comp = by.competitor;
 
-  $("n-him").textContent = fmt(him.to_run);
-  $("n-comp").textContent = fmt(comp.to_run);
-  $("n-both").textContent = fmt(him.to_run + comp.to_run);
+  /* The scope picker always shows both counts -- that is how you choose --
+     but the preview below shows only what will actually run. */
+  if (him) $("n-him").textContent = fmt(him.to_run);
+  if (comp) $("n-comp").textContent = fmt(comp.to_run);
+  if (him && comp) $("n-both").textContent = fmt(him.to_run + comp.to_run);
 
   const leg = (l, cls, title) => `
     <div class="leg ${cls}">
@@ -262,10 +326,14 @@ function renderLegs(data) {
         <div><span class="k">Failed — resettable</span><span class="v ${l.failed_resettable ? "bad" : ""}">${fmt(l.failed_resettable)}</span></div>
       </div>
     </div>`;
-  $("legs").innerHTML = leg(him, "cat", "Himalaya") + leg(comp, "comp", "Competitor");
-
   const p = selectedPipeline();
   const active = p ? [by[p]] : [him, comp];
+
+  $("legs").style.gridTemplateColumns = active.length > 1 ? "" : "1fr";
+  $("legs").innerHTML = active
+    .map((l) => leg(l, l.pipeline === "himalaya" ? "cat" : "comp",
+                    l.pipeline === "himalaya" ? "Himalaya" : "Competitor"))
+    .join("");
   const toRun = active.reduce((a, l) => a + l.to_run, 0);
   const approved = active.reduce((a, l) => a + l.approved_skipped, 0);
   const failed = active.reduce((a, l) => a + l.failed_resettable, 0);
@@ -322,7 +390,7 @@ function watch(run) {
   renderQueue();
   streamRun(run.run_id, {
     onProgress: (p) => { Object.assign(LIVE.get(run.run_id), p); renderQueue(); },
-    onDone: (p) => { Object.assign(LIVE.get(run.run_id), p); renderQueue(); resolve(); refreshLog(run.run_id); },
+    onDone: (p) => { Object.assign(LIVE.get(run.run_id), p); renderQueue(); resolve(); loadResults(); refreshLog(run.run_id); },
     onError: (msg) => showError($("errors"), msg),
   });
   refreshLog(run.run_id);
@@ -359,7 +427,7 @@ $("category").addEventListener("change", () => { fillSubcategories(); resolve();
 $("subcategory").addEventListener("change", resolve);
 $("skus").addEventListener("change", resolve);
 document.querySelectorAll('input[name="t"]').forEach((el) =>
-  el.addEventListener("change", () => LAST && renderLegs(LAST)));
+  el.addEventListener("change", resolve));
 $("btn-run").addEventListener("click", openConfirm);
 $("btn-refresh-log").addEventListener("click", () => refreshLog());
 $("btn-reset").addEventListener("click", async () => {
@@ -380,15 +448,12 @@ $("btn-reset").addEventListener("click", async () => {
 let PLAN = null;
 let LAUNCHING = false;
 
+/* No per-run config overrides from this screen. They were a way to change
+   scoring behaviour mid-flight, and scoring behaviour should be a deliberate,
+   audited change rather than a field someone fills in on the way to a run.
+   Settings live on the Configuration page. */
 function collectOverrides() {
-  const out = {};
-  const pairs = { "ov-pop": "CATEGORY_GATE_MIN_TARGET_POP", "ov-sem": "SEMANTIC_TOPK",
-                  "ov-lex": "LEXICAL_TOPK", "ov-conf": "CATEGORY_GATE_MIN_CONF" };
-  for (const [id, key] of Object.entries(pairs)) {
-    const el = $(id);
-    if (el && el.value.trim() !== "") out[key] = el.value.trim();
-  }
-  return out;
+  return {};
 }
 
 function planBody() {
@@ -525,6 +590,108 @@ $("btn-confirm").addEventListener("click", async () => {
     $("btn-cancel").disabled = false;
   }
 });
+
+
+
+/* ---------------- results ---------------- */
+async function loadResults() {
+  const base = `channel=${encodeURIComponent($("channel").value)}`
+    + ($("category").value ? `&category=${encodeURIComponent($("category").value)}` : "")
+    + ($("subcategory").value ? `&subcategory=${encodeURIComponent($("subcategory").value)}` : "")
+    + (selectedPipeline() ? `&pipeline=${selectedPipeline()}` : "");
+
+  const status = $("f-status").value;
+  const q = $("f-q").value.trim();
+  const qs = base + (status ? `&status=${encodeURIComponent(status)}` : "")
+                  + (q ? `&q=${encodeURIComponent(q)}` : "");
+
+  try {
+    const d = await api(`/results?${qs}&limit=100`);
+    $("cnt-rows").textContent = fmt(d.total);
+    $("f-count").textContent = `${fmt(d.rows.length)} of ${fmt(d.total)}`;
+    $("rows-body").innerHTML = d.rows.length
+      ? d.rows.map(resultRow).join("")
+      : `<tr><td colspan="6" style="padding:28px;text-align:center;color:var(--ink-3)">
+           No results for this scope yet. Run the engine to populate it.</td></tr>`;
+  } catch (e) { showError($("errors"), e.message); }
+
+  try {
+    const g = await api(`/results/groups?${base}`);
+    $("groups-body").innerHTML = g.length
+      ? g.map(groupRow).join("")
+      : `<tr><td colspan="9" style="padding:28px;text-align:center;color:var(--ink-3)">
+           Nothing processed yet.</td></tr>`;
+  } catch { /* groups are secondary; the rows above still stand */ }
+
+  try {
+    const w = await api("/gate-warnings?limit=40");
+    $("cnt-gate").textContent = fmt(w.length);
+    $("gate-body").innerHTML = w.map((x) =>
+      `<tr><td class="m">${esc(x.node)}</td>
+        <td class="num" style="color:${x.rows === 0 ? "var(--crit)" : "var(--warn)"};font-weight:600">${x.rows}</td>
+        <td class="t-sub" style="margin:0">${esc(x.reached_from.join(", "))}</td>
+        <td>${x.rows === 0
+              ? '<span class="pill p-fail"><i class="sq"></i>Does not exist</span>'
+              : '<span class="pill p-rev"><i class="sq"></i>Backstop active</span>'}</td></tr>`
+    ).join("");
+  } catch { /* non-fatal */ }
+}
+
+function resultRow(r) {
+  const side = r.pipeline === "himalaya"
+    ? '<span class="pill p-cat"><i class="sq"></i>Himalaya</span>'
+    : '<span class="pill p-comp"><i class="sq"></i>Competitor</span>';
+  const matched = r.product_code
+    ? `<div class="t-title">${esc(r.product_name || "")}<div class="t-sub m">${esc(r.product_code)}</div></div>`
+    : '<span style="color:var(--ink-3)">—</span>';
+  const bar = r.score == null ? "—"
+    : `<span class="conf"><span class="meter"><i style="width:${Math.round(r.score * 100)}%;
+        background:${r.score >= 0.85 ? "var(--ok)" : r.score >= 0.7 ? "var(--warn)" : "var(--mute)"}"></i></span>
+        ${r.score.toFixed(2)}</span>`;
+  return `<tr>
+    <td>${side}</td>
+    <td class="cell-cat">${esc(r.category || "")}<div class="sc">${esc(r.subcategory || "")}</div></td>
+    <td class="t-title">${esc(r.title || r.sku)}<div class="t-sub m">${esc(r.brand || "")}${r.pack ? " · " + esc(r.pack) : ""}</div></td>
+    <td>${matched}</td>
+    <td>${pill(r.status)}</td>
+    <td class="num">${bar}</td>
+  </tr>`;
+}
+
+function groupRow(g) {
+  const seg = (n, colour) => n ? `<i style="width:${(n / g.total) * 100}%;background:${colour}"></i>` : "";
+  return `<tr>
+    <td class="cell-cat">${esc(g.category || "")}</td>
+    <td class="cell-cat">${esc(g.subcategory || "")}</td>
+    <td class="num">${fmt(g.total)}</td>
+    <td class="num">${fmt(g.AutoMatch)}${g.automatch_rate != null
+        ? `<div class="t-sub">${Math.round(g.automatch_rate * 100)}%</div>` : ""}</td>
+    <td class="num">${fmt(g.StewardReview)}</td>
+    <td class="num">${fmt(g.NoHimalayaEquivalent)}</td>
+    <td class="num" ${g.Failed ? 'style="color:var(--crit)"' : ""}>${fmt(g.Failed)}</td>
+    <td class="num" style="color:var(--ink-3)">${fmt(g.PENDING)}</td>
+    <td><span class="grp-bar">
+      ${seg(g.AutoMatch, "var(--ok)")}${seg(g.StewardReview, "var(--warn)")}
+      ${seg(g.NoHimalayaEquivalent, "var(--mute)")}${seg(g.Failed, "var(--crit)")}
+    </span></td>
+  </tr>`;
+}
+
+document.querySelectorAll(".tab[data-tab]").forEach((tab) => {
+  tab.addEventListener("click", () => {
+    document.querySelectorAll(".tab[data-tab]").forEach((t) =>
+      t.setAttribute("aria-selected", String(t === tab)));
+    ["rows", "groups", "gate"].forEach((name) =>
+      ($("tab-" + name).hidden = name !== tab.dataset.tab));
+  });
+});
+
+let searchTimer;
+$("f-q").addEventListener("input", () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(loadResults, 300);   // debounce; 151k rows server-side
+});
+$("f-status").addEventListener("change", loadResults);
 
 
 Console.mountUser(document.getElementById('who'));

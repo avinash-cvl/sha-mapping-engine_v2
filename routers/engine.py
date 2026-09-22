@@ -411,6 +411,215 @@ def _spawn(req: RunRequest, pipeline: str, overrides: dict[str, str]) -> Run:
     return r
 
 
+@router.get("/results")
+def results(
+    channel: str,
+    category: str | None = None,
+    subcategory: str | None = None,
+    pipeline: str | None = None,
+    status: str | None = None,
+    q: str | None = None,
+    limit: int = Query(100, le=1000),
+    offset: int = Query(0, ge=0),
+) -> dict:
+    """Rank-1 match per SKU, filtered.
+
+    Server-side throughout: amazon competitor alone is 151k rows, so a client
+    that fetched everything and filtered in the browser would be unusable on
+    the one channel that matters most.
+
+    Category and sub-category come back per row because a run spans one
+    category but many sub-category groups -- 14 of them in a single 51-SKU
+    run -- so without them a row cannot be placed.
+    """
+    _validate(channel, pipeline)
+    conn = db.get_connection()
+
+    src = db_models.get_table(conn.engine, "staging", f"{channel}_products")
+    mapping = db_models.get_table(conn.engine, "staging", f"{channel}_product_mapping")
+
+    join = sa.join(src, mapping, mapping.c.source_sku == src.c.sku)
+    where = [mapping.c.match_rank == 1]
+    if category:
+        where.append(src.c.category == category)
+    if subcategory:
+        where.append(src.c.subcategory == subcategory)
+    if pipeline:
+        where.append(scope._brand_clause(src, pipeline))
+    if status:
+        where.append(src.c.mapping_status == status)
+    if q:
+        like = f"%{q}%"
+        where.append(
+            sa.or_(
+                src.c.sku.like(like),
+                src.c.title.like(like),
+                mapping.c.product_code.like(like),
+                mapping.c.product_name.like(like),
+            )
+        )
+
+    total = conn.execute(
+        sa.select(sa.func.count()).select_from(join).where(*where)
+    ).scalar() or 0
+
+    rows = conn.execute(
+        sa.select(
+            src.c.sku, src.c.title, src.c.brand, src.c.category, src.c.subcategory,
+            src.c.mapping_status, src.c.pack_size, src.c.uom,
+            mapping.c.product_code, mapping.c.product_name, mapping.c.final_score,
+            mapping.c.confidence_level, mapping.c.llm_reasoning,
+        )
+        .select_from(join)
+        .where(*where)
+        .order_by(src.c.category, src.c.subcategory, src.c.sku)
+        .offset(offset)
+        .limit(limit)
+    ).mappings().all()
+
+    himalaya = [b.lower() for b in C.HIMALAYA_BRANDS]
+    return {
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "rows": [
+            {
+                "sku": r["sku"],
+                "title": r["title"],
+                "brand": r["brand"],
+                "category": r["category"],
+                "subcategory": r["subcategory"],
+                "status": r["mapping_status"],
+                "pack": (
+                    f'{r["pack_size"]}{r["uom"]}'
+                    if r["pack_size"] is not None else None
+                ),
+                "product_code": r["product_code"],
+                "product_name": r["product_name"],
+                "score": float(r["final_score"]) if r["final_score"] is not None else None,
+                "confidence": r["confidence_level"],
+                "reasoning": r["llm_reasoning"],
+                "pipeline": (
+                    "himalaya"
+                    if (r["brand"] or "").strip().lower() in himalaya
+                    else "competitor"
+                ),
+            }
+            for r in rows
+        ],
+    }
+
+
+@router.get("/results/groups")
+def result_groups(
+    channel: str,
+    category: str | None = None,
+    pipeline: str | None = None,
+) -> list[dict]:
+    """Outcome mix per (category, sub-category).
+
+    The unit worth reporting against: AutoMatch rate ranged 78-100% across
+    categories in one run, and that spread is the finding -- it says where the
+    engine is weak. No amount of scrolling a flat row list surfaces it.
+    """
+    _validate(channel, pipeline)
+    conn = db.get_connection()
+    src = db_models.get_table(conn.engine, "staging", f"{channel}_products")
+
+    statuses = ("AutoMatch", "StewardReview", "LowConfidence",
+                "NoHimalayaEquivalent", "Failed", "PENDING")
+
+    q = (
+        sa.select(
+            src.c.category,
+            src.c.subcategory,
+            sa.func.count().label("total"),
+            *[
+                sa.func.sum(sa.case((src.c.mapping_status == st, 1), else_=0)).label(st)
+                for st in statuses
+            ],
+        )
+        .where(src.c.mapping_status.isnot(None))
+        .group_by(src.c.category, src.c.subcategory)
+        .order_by(sa.func.count().desc())
+    )
+    if category:
+        q = q.where(src.c.category == category)
+    if pipeline:
+        q = q.where(scope._brand_clause(src, pipeline))
+
+    out = []
+    for r in conn.execute(q).all():
+        counts = {st: (r[3 + i] or 0) for i, st in enumerate(statuses)}
+        decided = sum(
+            counts[st] for st in
+            ("AutoMatch", "StewardReview", "LowConfidence", "NoHimalayaEquivalent")
+        )
+        out.append({
+            "category": r[0],
+            "subcategory": r[1],
+            "total": r[2],
+            **counts,
+            # Share of DECIDED rows, not of everything: counting PENDING in
+            # the denominator makes a half-finished category look weak when
+            # it is merely unfinished.
+            "automatch_rate": (
+                round(counts["AutoMatch"] / decided, 3) if decided else None
+            ),
+        })
+    return out
+
+
+@router.get("/gate-warnings")
+def gate_warnings(limit: int = Query(50, le=200)) -> list[dict]:
+    """Master nodes rules.py can target that hold too few rows to be a
+    shortlist.
+
+    A gate onto a node holding one product returns that product whatever the
+    listing says -- which is how every serum listing came back as the same
+    SERUM FLUID. 86 of 191 targets hold three rows or fewer, so this is a
+    standing queue rather than a one-off audit.
+    """
+    conn = db.get_connection()
+    master = db_models.get_table(conn.engine, "staging", "himalaya_products")
+
+    pop = {
+        ((r[0] or "").strip().lower(), (r[1] or "").strip().lower()): r[2]
+        for r in conn.execute(
+            sa.select(
+                master.c.normalized_category,
+                master.c.normalized_subcategory,
+                sa.func.count(),
+            )
+            .where(master.c.is_active == True)  # noqa: E712 - SQL, not Python
+            .group_by(master.c.normalized_category, master.c.normalized_subcategory)
+        ).all()
+    }
+
+    from oneds_master.category.resolve import pack_targets
+    from oneds_master.category.rules import PACKS
+
+    seen: dict[tuple[str, str], set[str]] = {}
+    for name, pack in PACKS.items():
+        for cat, sub in pack_targets(pack):
+            seen.setdefault(
+                (cat.strip().lower(), sub.strip().lower()), set()
+            ).add(name)
+
+    rows = []
+    for key, packs in seen.items():
+        n = pop.get(key, 0)
+        if n < C.CATEGORY_GATE_MIN_TARGET_POP:
+            rows.append({
+                "node": f"{key[0].upper()} / {key[1].upper()}",
+                "rows": n,
+                "reached_from": sorted(packs),
+                "state": "does not exist" if n == 0 else "starved",
+            })
+    rows.sort(key=lambda r: (r["rows"], r["node"]))
+    return rows[:limit]
+
+
 @router.post("/plan")
 def plan(req: RunRequest, user: auth.User = Depends(auth.current_user)) -> dict:
     """Everything the confirmation dialog must show, resolved server-side.
