@@ -15,10 +15,11 @@ from dotenv import load_dotenv
 
 load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
-from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
+from common import auth
 from routers import engine, session
 
 BASE = os.path.dirname(os.path.abspath(__file__))
@@ -45,18 +46,42 @@ def health() -> dict:
 if os.path.isdir(WEB):
     app.mount("/static", StaticFiles(directory=WEB), name="static")
 
-    @app.get("/")
-    def index() -> FileResponse:
-        return FileResponse(os.path.join(WEB, "run.html"))
+    def _page(request: Request, filename: str):
+        """Serve a console page, or redirect to sign-in.
 
-    @app.get("/login")
-    def login_page() -> FileResponse:
-        return FileResponse(os.path.join(WEB, "login.html"))
+        The check belongs here rather than in the page's own JavaScript. A
+        page served to a signed-out browser renders its empty shell first and
+        only redirects once the script has run and a fetch has come back 401
+        -- which looks exactly like a broken screen that loads no data. The
+        server knows before a byte is sent.
+
+        `next` carries the requested path so a deep link survives an expired
+        session instead of dumping the user on the run page.
+        """
+        try:
+            auth.current_user(request)
+        except Exception:
+            return RedirectResponse(f"/login?next={request.url.path}", status_code=303)
+        return FileResponse(os.path.join(WEB, filename))
+
+    @app.get("/")
+    def index(request: Request):
+        return _page(request, "run.html")
 
     @app.get("/configuration")
-    def configuration() -> FileResponse:
-        return FileResponse(os.path.join(WEB, "configuration.html"))
+    def configuration(request: Request):
+        return _page(request, "configuration.html")
 
     @app.get("/history")
-    def history() -> FileResponse:
-        return FileResponse(os.path.join(WEB, "history.html"))
+    def history(request: Request):
+        return _page(request, "history.html")
+
+    @app.get("/login")
+    def login_page(request: Request):
+        """Already signed in? Don't show a sign-in form -- go where they
+        were headed."""
+        try:
+            auth.current_user(request)
+            return RedirectResponse(request.query_params.get("next") or "/", status_code=303)
+        except Exception:
+            return FileResponse(os.path.join(WEB, "login.html"))
