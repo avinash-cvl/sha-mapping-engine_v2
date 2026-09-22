@@ -1,6 +1,15 @@
 """Engine console — FastAPI app.
 
-    uv run uvicorn app:app --reload --port 8000
+    uv run python app.py              # port 8099
+    uv run uvicorn app:app --reload --port 8099
+
+PORT 8099, NOT 8000. sha-mapping-api owns 8000 on this machine, and the two
+have to run side by side. When the console took 8000 the other API's frontend
+reached this app instead and every one of its routes answered
+{"detail":"Not Found"} -- a 404 that reads exactly like a broken login and
+sends you hunting through auth code. Running `uvicorn app:app` with no --port
+would silently default to 8000 again, so app.py is runnable directly and
+binds CONSOLE_PORT (default 8099) itself.
 
 Serves the three console pages and the API behind them. The CLI is unaffected
 by anything here: this process launches `python -m <pkg>.batch_flow match ...`
@@ -85,3 +94,14 @@ if os.path.isdir(WEB):
             return RedirectResponse(request.query_params.get("next") or "/", status_code=303)
         except Exception:
             return FileResponse(os.path.join(WEB, "login.html"))
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(
+        "app:app",
+        host=os.environ.get("CONSOLE_HOST", "127.0.0.1"),
+        port=int(os.environ.get("CONSOLE_PORT", "8099")),
+        reload=os.environ.get("CONSOLE_RELOAD", "true").lower() == "true",
+    )
