@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>History · Harmonization Engine</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="/static/console.css">
+<style>
+  .sel-row{background:var(--accent-soft)}
+  .flags{display:flex;gap:8px;flex-wrap:wrap;padding:12px 16px;background:var(--sunken);border-bottom:1px solid var(--line-soft)}
+  .flag{display:inline-flex;align-items:center;gap:7px;font-size:12px;padding:5px 11px;border-radius:999px;background:var(--surface);border:1px solid var(--line)}
+  .flag.bad{background:var(--crit-soft);border-color:color-mix(in srgb,var(--crit) 30%,transparent);color:var(--crit);font-weight:600}
+  .delta{font-family:var(--mono);font-weight:600;font-variant-numeric:tabular-nums}
+  .d-up{color:var(--ok)} .d-dn{color:var(--crit)} .d-0{color:var(--ink-3);font-weight:400}
+  input[type=checkbox]{width:15px;height:15px;accent-color:var(--accent);cursor:pointer}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="topbar">
+    <div class="mark">
+      <svg width="19" height="19" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <rect x="2.5" y="3.5" width="7" height="7" rx="1.6" stroke="currentColor" stroke-width="1.7"/>
+        <rect x="14.5" y="13.5" width="7" height="7" rx="1.6" stroke="currentColor" stroke-width="1.7"/>
+        <path d="M9.5 7h4.2a2.3 2.3 0 0 1 2.3 2.3V13" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+        <circle cx="18" cy="17" r="1.4" fill="currentColor"/>
+      </svg>
+      Harmonization Engine
+    </div>
+    <nav class="nav">
+      <a href="/">Run</a>
+      <a href="/configuration">Configuration</a>
+      <a href="/history" aria-current="page">History</a>
+    </nav>
+    <span class="env"><i></i>LOCAL</span>
+  </div>
+
+  <div class="stack" style="margin-top:20px">
+    <div id="errors"></div>
+
+    <section class="panel">
+      <div class="panel-h">
+        <span class="panel-t">Runs</span>
+        <span class="stale" id="count">loading…</span>
+        <button class="btn primary" id="btn-compare" style="margin-left:auto" disabled>Compare selected (0)</button>
+      </div>
+      <div class="tw"><table>
+        <thead><tr>
+          <th style="width:34px"></th><th>Run</th><th>Scope</th><th>Outcome</th>
+          <th class="num">Processed</th><th class="num">Failed</th><th>By</th><th class="m">Code</th>
+        </tr></thead>
+        <tbody id="rows"><tr><td colspan="8" style="padding:20px;color:var(--ink-3)">Loading…</td></tr></tbody>
+      </table></div>
+    </section>
+
+    <section class="panel" id="cmp" hidden>
+      <div class="panel-h"><span class="panel-t">Comparison</span>
+        <span class="m" id="cmp-pair" style="margin-left:auto;font-size:12px"></span></div>
+      <div id="cmp-flags" class="flags"></div>
+      <div class="note" style="border-radius:0;border:none;border-bottom:1px solid var(--line-soft);background:var(--accent-soft)">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true" style="color:var(--accent)">
+          <path d="M12 8v5M12 16.5v.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.8"/></svg>
+        <div><b>Aggregate comparison.</b> Shows how many SKUs landed in each outcome,
+          not which ones moved — a net +5 could be five gained, or eight gained and
+          three lost. Per-SKU drill-down is done against the live mapping table.</div>
+      </div>
+      <div class="tw"><table>
+        <thead><tr><th>Outcome</th><th class="num">Before</th><th class="num">After</th><th class="num">Δ</th></tr></thead>
+        <tbody id="cmp-rows"></tbody>
+      </table></div>
+    </section>
+  </div>
+</div>
+
+<script src="/static/console.js"></script>
+<script>
+const { api, fmt, pill, esc, showError, clearError } = window.Console;
+const $ = (id) => document.getElementById(id);
+const picked = new Set();
+
+async function load() {
+  try {
+    const runs = await api("/runs?limit=60");
+    $("count").textContent = `${runs.length} shown`;
+    if (!runs.length) {
+      $("rows").innerHTML = `<tr><td colspan="8" style="padding:28px;text-align:center;color:var(--ink-3)">
+        No runs recorded yet. Launch one from the Run page.</td></tr>`;
+      return;
+    }
+    $("rows").innerHTML = runs.map(renderRow).join("");
+    document.querySelectorAll(".pick").forEach((el) =>
+      el.addEventListener("change", onPick));
+  } catch (e) { showError($("errors"), e.message); }
+}
+
+function renderRow(r) {
+  const stale = r.status === "stale";
+  const scope = [r.category || "all categories", r.subcategory].filter(Boolean).join(" · ");
+  const side = r.pipeline === "himalaya"
+    ? '<span class="pill p-cat"><i class="sq"></i>Himalaya</span>'
+    : '<span class="pill p-comp"><i class="sq"></i>Competitor</span>';
+  return `<tr class="${stale ? "stale" : ""}" data-id="${esc(r.execution_id)}">
+    <td><input type="checkbox" class="pick" value="${esc(r.execution_id)}" ${stale ? "disabled" : ""}
+        aria-label="Select run ${esc(r.execution_id.slice(0,8))}"></td>
+    <td><span class="m">${esc(r.execution_id.slice(0, 8))}</span>
+        <div class="t-sub">${new Date(r.started_at).toLocaleString()}</div></td>
+    <td>${side}<div class="t-sub">${esc(r.channel)} · ${esc(scope)}</div></td>
+    <td>${pill(r.status)}</td>
+    <td class="num">${fmt(r.processed)}</td>
+    <td class="num" ${r.failed ? 'style="color:var(--crit)"' : ""}>${fmt(r.failed)}</td>
+    <td class="m">${esc(r.triggered_by || "—")}</td>
+    <td class="m">${esc(r.git_sha || "—")}</td>
+  </tr>`;
+}
+
+function onPick(e) {
+  const id = e.target.value;
+  e.target.checked ? picked.add(id) : picked.delete(id);
+  /* Two runs, not more: a comparison is a before and an after. */
+  if (picked.size > 2) {
+    const first = [...picked][0];
+    picked.delete(first);
+    document.querySelector(`.pick[value="${first}"]`).checked = false;
+  }
+  document.querySelectorAll("tr[data-id]").forEach((tr) =>
+    tr.classList.toggle("sel-row", picked.has(tr.dataset.id)));
+  $("btn-compare").disabled = picked.size !== 2;
+  $("btn-compare").textContent = `Compare selected (${picked.size})`;
+}
+
+$("btn-compare").addEventListener("click", async () => {
+  clearError($("errors"));
+  /* Rows are newest-first, so the later-listed of the two is the earlier run. */
+  const ids = [...document.querySelectorAll("tr[data-id]")]
+    .map((tr) => tr.dataset.id).filter((id) => picked.has(id));
+  const [after, before] = ids;
+  try {
+    const d = await api(`/compare?before=${before}&after=${after}`);
+    $("cmp").hidden = false;
+    $("cmp-pair").textContent = `${before.slice(0, 8)} → ${after.slice(0, 8)}`;
+
+    const flags = [];
+    if (d.flags.input_population_changed) {
+      flags.push(`<span class="flag bad">Input population changed
+        <span class="m">${fmt(d.before.source_row_count)} → ${fmt(d.after.source_row_count)}</span></span>`);
+    }
+    if (d.flags.code_changed) {
+      flags.push(`<span class="flag">Code
+        <span class="m">${esc(d.before.git_sha || "?")} → ${esc(d.after.git_sha || "?")}</span></span>`);
+    }
+    $("cmp-flags").innerHTML = flags.join("") ||
+      '<span class="flag">Same code and input population</span>';
+
+    $("cmp-rows").innerHTML = d.rows.map((r) => {
+      /* Direction is not goodness: fewer NoHimalayaEquivalent and fewer
+         Failed are improvements, so colour by meaning, not by sign. */
+      const better = ["NoHimalayaEquivalent", "Failed"].includes(r.status)
+        ? r.delta < 0 : r.delta > 0;
+      const cls = r.delta === 0 ? "d-0" : better ? "d-up" : "d-dn";
+      const sign = r.delta > 0 ? "+" : r.delta < 0 ? "−" : "";
+      return `<tr><td>${pill(r.status)}</td>
+        <td class="num">${fmt(r.before)}</td><td class="num">${fmt(r.after)}</td>
+        <td class="num"><span class="delta ${cls}">${sign}${Math.abs(r.delta) || 0}</span></td></tr>`;
+    }).join("");
+    $("cmp").scrollIntoView({ behavior: "smooth", block: "nearest" });
+  } catch (e) { showError($("errors"), e.message); }
+});
+
+load();
+</script>
+</body>
+</html>

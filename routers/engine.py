@@ -412,3 +412,98 @@ def tail_log(run_id: str, lines: int = Query(200, le=5000)) -> dict:
     with open(path, encoding="utf-8", errors="replace") as fh:
         tail = fh.readlines()[-lines:]
     return {"run_id": run_id, "path": os.path.basename(path), "lines": tail}
+
+
+# ---------------------------------------------------------------- config
+@router.get("/config")
+def get_config() -> dict:
+    """The tunables as this process sees them, grouped by what a change to
+    them risks.
+
+    Read-only for now, and honest about why: config.py is read at import
+    time, so a value written here would not reach a subprocess launched
+    later without an env-var handoff or a restart. Showing the live values
+    with their provenance is useful on its own -- config drift is otherwise
+    invisible -- and is a smaller thing to get right than editing.
+    """
+    import common.config as cfg
+
+    def item(key, group, blurb, locked=False):
+        return {
+            "key": key,
+            "value": str(getattr(cfg, key, "")),
+            "group": group,
+            "description": blurb,
+            "locked": locked,
+            "env_override": key in os.environ,
+        }
+
+    return {
+        "settings": [
+            item("TOP_N_OUTPUT", "Guardrails",
+                 "Candidates handed to the LLM judge. Fixed at 3 -- the contract "
+                 "with the steward review portal, which renders exactly three.",
+                 locked=True),
+            item("CATEGORY_GATE_MIN_TARGET_POP", "Guardrails",
+                 "Decline to gate onto a master node holding fewer products than "
+                 "this. 0 disables the backstop; 86 of 191 gate targets hold 3 rows "
+                 "or fewer."),
+            item("CATEGORY_GATE_MIN_CONF", "Guardrails",
+                 "Minimum resolver confidence before the category gate is trusted "
+                 "to narrow the pool. 1.1 disables gating entirely."),
+            item("SEMANTIC_TOPK", "Retrieval",
+                 "Vector search depth. A candidate never retrieved is scored as "
+                 "dissimilar."),
+            item("LEXICAL_TOPK", "Retrieval", "BM25 search depth."),
+            item("W_SEMANTIC", "Scoring weights", "Embedding similarity."),
+            item("W_TYPE", "Scoring weights",
+                 "Product-type alignment -- a shampoo must not match a conditioner."),
+            item("W_LEXICAL", "Scoring weights", "BM25 token overlap."),
+            item("W_OVERLAP", "Scoring weights", "Shared-keyword bonus."),
+            item("W_PACK", "Scoring weights", "Pack-size agreement."),
+            item("PRODUCT_GROUP_MATCH_BONUS", "Scoring weights",
+                 "Applied when the source title names the master's product group."),
+            item("PACK_TYPE_MISMATCH_PENALTY", "Scoring weights",
+                 "Mild by design -- pack type is weak evidence."),
+        ],
+        "llm": {
+            "deployment": os.environ.get("AZURE_LLM_DEPLOYMENT", ""),
+            "embedding": os.environ.get("AZURE_EMBEDDING_DEPLOYMENT", ""),
+        },
+        "note": (
+            "Read-only. config.py is read at import time, so an edit here would "
+            "not reach a run launched afterwards without a restart. Override per "
+            "run with an environment variable, and use the Run page's Advanced "
+            "panel for workers and the LLM toggle."
+        ),
+    }
+
+
+@router.get("/config/history")
+def config_history(limit: int = Query(30, le=200)) -> list[dict]:
+    """Which settings each recent run actually used.
+
+    This is the answer to config drift: not what config.py says today, but
+    what produced a given result. A delta between two runs is only
+    interpretable alongside it.
+    """
+    conn = db.get_connection()
+    rows = conn.execute(
+        sa.text("""
+            SELECT TOP (:n) r.execution_id, r.started_at, r.channel, r.pipeline,
+                   r.git_sha, c.config_key, c.config_value, c.is_override
+            FROM audit.engine_run r
+            JOIN audit.engine_run_config c ON c.execution_id = r.execution_id
+            ORDER BY r.started_at DESC
+        """),
+        {"n": limit * 20},
+    ).all()
+
+    runs: dict[str, dict] = {}
+    for r in rows:
+        entry = runs.setdefault(str(r[0]), {
+            "execution_id": str(r[0]), "started_at": r[1],
+            "channel": r[2], "pipeline": r[3], "git_sha": r[4], "config": {},
+        })
+        entry["config"][r[5]] = {"value": r[6], "is_override": bool(r[7])}
+    return list(runs.values())[:limit]

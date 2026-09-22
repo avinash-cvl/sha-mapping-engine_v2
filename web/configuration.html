@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Configuration · Harmonization Engine</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="/static/console.css">
+<style>
+  .set{display:grid;grid-template-columns:1fr 190px;gap:18px;padding:14px 18px;border-bottom:1px solid var(--line-soft);align-items:start}
+  .set:last-child{border-bottom:none}
+  @media(max-width:620px){.set{grid-template-columns:1fr}}
+  .set.locked{opacity:.66}
+  .set .k{font-family:var(--mono);font-size:12.5px;font-weight:500;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .set .d{font-size:12.5px;color:var(--ink-2);margin-top:3px;max-width:60ch}
+  .val{font-family:var(--mono);font-size:15px;font-weight:600;font-variant-numeric:tabular-nums;text-align:right}
+  .meta{font-size:11.5px;color:var(--ink-3);text-align:right;margin-top:2px}
+  .tag{font-family:var(--mono);font-size:10px;font-weight:600;letter-spacing:.05em;padding:2px 7px;border-radius:999px;text-transform:uppercase}
+  .t-lock{background:var(--mute-soft);color:var(--mute)}
+  .t-env{background:var(--warn-soft);color:var(--warn)}
+  .grp{font-size:11px;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:var(--ink-3);padding:14px 18px 6px;background:var(--sunken)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="topbar">
+    <div class="mark">
+      <svg width="19" height="19" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <rect x="2.5" y="3.5" width="7" height="7" rx="1.6" stroke="currentColor" stroke-width="1.7"/>
+        <rect x="14.5" y="13.5" width="7" height="7" rx="1.6" stroke="currentColor" stroke-width="1.7"/>
+        <path d="M9.5 7h4.2a2.3 2.3 0 0 1 2.3 2.3V13" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+        <circle cx="18" cy="17" r="1.4" fill="currentColor"/>
+      </svg>
+      Harmonization Engine
+    </div>
+    <nav class="nav">
+      <a href="/">Run</a>
+      <a href="/configuration" aria-current="page">Configuration</a>
+      <a href="/history">History</a>
+    </nav>
+    <span class="env"><i></i>LOCAL</span>
+  </div>
+
+  <div class="stack" style="margin-top:20px">
+    <div id="errors"></div>
+    <div id="note"></div>
+    <div id="groups"></div>
+
+    <section class="panel">
+      <div class="panel-h"><span class="panel-t">What recent runs actually used</span>
+        <span class="stale" style="margin-left:auto">config.py today is not evidence of what produced a past result</span></div>
+      <div class="tw"><table>
+        <thead><tr><th>Run</th><th>Scope</th><th class="m">Code</th>
+          <th class="num">Gate pop</th><th class="num">Semantic</th><th class="num">Top N</th><th class="num">Workers</th></tr></thead>
+        <tbody id="hist"><tr><td colspan="7" style="padding:20px;color:var(--ink-3)">Loading…</td></tr></tbody>
+      </table></div>
+    </section>
+  </div>
+</div>
+
+<script src="/static/console.js"></script>
+<script>
+const { api, esc, showError } = window.Console;
+const $ = (id) => document.getElementById(id);
+
+async function load() {
+  try {
+    const cfg = await api("/config");
+
+    $("note").innerHTML = `<div class="note" style="margin:0">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M12 8v5M12 16.5v.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.8"/></svg>
+      <div>${esc(cfg.note)}</div></div>`;
+
+    const groups = {};
+    cfg.settings.forEach((s) => (groups[s.group] ||= []).push(s));
+
+    $("groups").innerHTML = Object.entries(groups).map(([name, items]) => `
+      <section class="panel" style="margin-bottom:20px">
+        <div class="panel-h"><span class="panel-t">${esc(name)}</span></div>
+        ${items.map(renderSetting).join("")}
+      </section>`).join("") + `
+      <section class="panel" style="margin-bottom:20px">
+        <div class="panel-h"><span class="panel-t">Language model</span></div>
+        <div class="set locked">
+          <div><div class="k">AZURE_LLM_DEPLOYMENT <span class="tag t-lock">Locked</span></div>
+            <div class="d">The judge. Changing it makes scores incomparable with every
+              prior run, so it is a deployment change rather than a setting.</div></div>
+          <div><div class="val">${esc(cfg.llm.deployment || "—")}</div></div>
+        </div>
+        <div class="set locked">
+          <div><div class="k">AZURE_EMBEDDING_DEPLOYMENT <span class="tag t-lock">Locked</span></div>
+            <div class="d">Vector embeddings. Changing it invalidates the master
+              embeddings until they are rebuilt.</div></div>
+          <div><div class="val">${esc(cfg.llm.embedding || "—")}</div></div>
+        </div>
+      </section>`;
+
+    renderHistory(await api("/config/history?limit=12"));
+  } catch (e) { showError($("errors"), e.message); }
+}
+
+function renderSetting(s) {
+  const tags = [
+    s.locked ? '<span class="tag t-lock">Locked</span>' : "",
+    s.env_override ? '<span class="tag t-env">Env override</span>' : "",
+  ].join("");
+  return `<div class="set ${s.locked ? "locked" : ""}">
+    <div><div class="k">${esc(s.key)} ${tags}</div>
+      <div class="d">${esc(s.description)}</div></div>
+    <div><div class="val">${esc(s.value)}</div>
+      ${s.env_override ? '<div class="meta">set in environment</div>' : ""}</div>
+  </div>`;
+}
+
+function renderHistory(runs) {
+  if (!runs.length) {
+    $("hist").innerHTML = `<tr><td colspan="7" style="padding:28px;text-align:center;color:var(--ink-3)">
+      No recorded runs yet.</td></tr>`;
+    return;
+  }
+  const get = (r, k) => r.config[k]?.value ?? "—";
+  $("hist").innerHTML = runs.map((r) => {
+    const side = r.pipeline === "himalaya"
+      ? '<span class="pill p-cat"><i class="sq"></i>Himalaya</span>'
+      : '<span class="pill p-comp"><i class="sq"></i>Competitor</span>';
+    return `<tr>
+      <td><span class="m">${esc(r.execution_id.slice(0, 8))}</span>
+        <div class="t-sub">${new Date(r.started_at).toLocaleString()}</div></td>
+      <td>${side}<div class="t-sub">${esc(r.channel)}</div></td>
+      <td class="m">${esc(r.git_sha || "—")}</td>
+      <td class="num">${esc(get(r, "CATEGORY_GATE_MIN_TARGET_POP"))}</td>
+      <td class="num">${esc(get(r, "SEMANTIC_TOPK"))}</td>
+      <td class="num">${esc(get(r, "TOP_N_OUTPUT"))}</td>
+      <td class="num">${esc(get(r, "max_workers"))}</td>
+    </tr>`;
+  }).join("");
+}
+
+load();
+</script>
+</body>
+</html>

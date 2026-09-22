@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Run · Harmonization Engine</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="/static/console.css">
+</head>
+<body>
+<div class="wrap">
+  <div class="topbar">
+    <div class="mark">
+      <svg width="19" height="19" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <rect x="2.5" y="3.5" width="7" height="7" rx="1.6" stroke="currentColor" stroke-width="1.7"/>
+        <rect x="14.5" y="13.5" width="7" height="7" rx="1.6" stroke="currentColor" stroke-width="1.7"/>
+        <path d="M9.5 7h4.2a2.3 2.3 0 0 1 2.3 2.3V13" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+        <circle cx="18" cy="17" r="1.4" fill="currentColor"/>
+      </svg>
+      Harmonization Engine
+    </div>
+    <nav class="nav">
+      <a href="/" aria-current="page">Run</a>
+      <a href="/configuration">Configuration</a>
+      <a href="/history">History</a>
+    </nav>
+    <span class="env" id="env"><i></i>LOCAL</span>
+  </div>
+
+  <div class="grid">
+    <!-- SCOPE -->
+    <form class="panel" id="scope-form" onsubmit="return false">
+      <div class="panel-h"><span class="panel-t">Scope</span></div>
+      <div class="panel-b">
+        <div class="field">
+          <label for="channel">Channel</label>
+          <select id="channel"></select>
+        </div>
+
+        <div class="field">
+          <label>Products to run</label>
+          <div class="seg">
+            <input type="radio" name="t" id="t-cat" value="himalaya">
+            <input type="radio" name="t" id="t-comp" value="competitor">
+            <input type="radio" name="t" id="t-both" value="" checked>
+            <label for="t-cat">
+              <span class="ic"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 7.5 12 3.5l8 4v9l-8 4-8-4v-9Z" stroke="currentColor" stroke-width="2"/></svg></span>
+              <span class="tx"><b>Himalaya</b><span>brand = Himalaya</span></span>
+              <span class="n" id="n-him">—</span>
+            </label>
+            <label for="t-comp">
+              <span class="ic"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="8" cy="12" r="5" stroke="currentColor" stroke-width="2"/><circle cx="16" cy="12" r="5" stroke="currentColor" stroke-width="2"/></svg></span>
+              <span class="tx"><b>Competitor</b><span>brand ≠ Himalaya</span></span>
+              <span class="n" id="n-comp">—</span>
+            </label>
+            <label for="t-both">
+              <span class="ic"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 6h14M5 12h14M5 18h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></span>
+              <span class="tx"><b>Both</b><span>two runs, in parallel</span></span>
+              <span class="n" id="n-both">—</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="category">Category</label>
+          <select id="category"><option value="">— all categories —</option></select>
+        </div>
+        <div class="field">
+          <label for="subcategory">Sub-category</label>
+          <select id="subcategory"><option value="">— all —</option></select>
+        </div>
+        <div class="field">
+          <label for="skus">SKU list <span class="hint">— optional</span></label>
+          <textarea id="skus" rows="2" placeholder="Paste SKUs, one per line"></textarea>
+        </div>
+
+        <details>
+          <summary>Advanced</summary>
+          <div class="row2">
+            <div class="field"><label for="workers">Workers</label>
+              <select id="workers">
+                <option>1</option><option>2</option><option selected>4</option>
+                <option>6</option><option>8</option>
+              </select></div>
+            <div class="field"><label for="llm-state">LLM judge</label>
+              <select id="llm-state"><option value="1" selected>Enabled</option><option value="0">Disabled</option></select></div>
+          </div>
+          <p class="hint" style="margin:8px 0 0">Above 4 workers this instance has produced SQL&nbsp;40001 deadlocks.</p>
+        </details>
+      </div>
+    </form>
+
+    <!-- MAIN -->
+    <div class="stack">
+      <div id="errors"></div>
+
+      <section class="panel">
+        <div class="panel-h">
+          <span class="panel-t">Run preview</span>
+          <span class="stale" style="margin-left:auto" id="resolved-at">not resolved yet</span>
+        </div>
+        <div class="panel-b">
+          <div class="split" id="legs">
+            <div class="leg cat"><div class="leg-h"><b>Himalaya</b></div><div class="leg-n">—</div></div>
+            <div class="leg comp"><div class="leg-h"><b>Competitor</b></div><div class="leg-n">—</div></div>
+          </div>
+
+          <div class="est" id="estimate"></div>
+          <div id="approved-note"></div>
+
+          <div class="actions">
+            <button class="btn primary" id="btn-run" disabled>Resolve scope first</button>
+            <button class="btn" id="btn-reset" hidden></button>
+            <span class="stale">Counts are resolved server-side by the same code the run selects with.</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" id="queue-panel" hidden>
+        <div class="panel-h"><span class="panel-t">Active runs</span>
+          <span class="live" style="margin-left:auto"><i></i>Streaming</span></div>
+        <div class="panel-b"><div class="q" id="queue"></div></div>
+      </section>
+
+      <section class="panel" id="log-panel" hidden>
+        <div class="panel-h"><span class="panel-t">Run log</span>
+          <button class="btn" id="btn-refresh-log" style="margin-left:auto;padding:5px 11px;font-size:12px">Refresh</button></div>
+        <div class="panel-b" style="padding:14px"><div class="log" id="log">—</div></div>
+      </section>
+    </div>
+  </div>
+</div>
+
+<script src="/static/console.js"></script>
+<script>
+const { api, fmt, duration, esc, showError, clearError, streamRun } = window.Console;
+const $ = (id) => document.getElementById(id);
+
+let TAXONOMY = {};
+let LAST = null;
+const LIVE = new Map();
+
+function selectedPipeline() {
+  return document.querySelector('input[name="t"]:checked').value || null;
+}
+function skuList() {
+  const raw = $("skus").value.trim();
+  return raw ? raw.split(/[\s,]+/).filter(Boolean) : null;
+}
+function scopeBody() {
+  return {
+    channel: $("channel").value,
+    pipeline: selectedPipeline(),
+    category: $("category").value || null,
+    subcategory: $("subcategory").value || null,
+    skus: skuList(),
+  };
+}
+
+async function boot() {
+  try {
+    TAXONOMY = await api("/channels");
+    $("channel").innerHTML = Object.keys(TAXONOMY)
+      .map((c) => `<option>${esc(c)}</option>`).join("");
+    fillCategories();
+    await resolve();
+  } catch (e) { showError($("errors"), e.message); }
+}
+
+function fillCategories() {
+  const cats = TAXONOMY[$("channel").value] || {};
+  $("category").innerHTML = '<option value="">— all categories —</option>' +
+    Object.keys(cats).sort().map((c) => `<option>${esc(c)}</option>`).join("");
+  fillSubcategories();
+}
+function fillSubcategories() {
+  const cats = TAXONOMY[$("channel").value] || {};
+  const subs = cats[$("category").value] || [];
+  $("subcategory").innerHTML = '<option value="">— all —</option>' +
+    subs.filter(Boolean).sort().map((s) => `<option>${esc(s)}</option>`).join("");
+}
+
+/* Count before commit. The Run button stays disabled until the server has
+ * said what the scope contains -- the whole point of the screen. */
+async function resolve() {
+  clearError($("errors"));
+  $("btn-run").disabled = true;
+  $("btn-run").textContent = "Resolving…";
+  try {
+    const body = { ...scopeBody(), pipeline: null };   // always price both
+    const data = await api("/scope", { method: "POST", body: JSON.stringify(body) });
+    LAST = data;
+    renderLegs(data);
+    $("resolved-at").textContent = "Resolved " + new Date().toLocaleTimeString();
+  } catch (e) {
+    showError($("errors"), e.message);
+    $("btn-run").textContent = "Resolve scope first";
+  }
+}
+
+function renderLegs(data) {
+  const by = Object.fromEntries(data.legs.map((l) => [l.pipeline, l]));
+  const him = by.himalaya, comp = by.competitor;
+
+  $("n-him").textContent = fmt(him.to_run);
+  $("n-comp").textContent = fmt(comp.to_run);
+  $("n-both").textContent = fmt(him.to_run + comp.to_run);
+
+  const leg = (l, cls, title) => `
+    <div class="leg ${cls}">
+      <div class="leg-h"><b>${title}</b></div>
+      <div class="leg-n">${fmt(l.to_run)}<small>to run</small></div>
+      <div class="bd">
+        <div><span class="k">Approved — skipped</span><span class="v skip">${fmt(l.approved_skipped)}</span></div>
+        <div><span class="k">Already mapped</span><span class="v">${fmt(l.already_mapped)}</span></div>
+        <div><span class="k">Failed — resettable</span><span class="v ${l.failed_resettable ? "bad" : ""}">${fmt(l.failed_resettable)}</span></div>
+      </div>
+    </div>`;
+  $("legs").innerHTML = leg(him, "cat", "Himalaya") + leg(comp, "comp", "Competitor");
+
+  const p = selectedPipeline();
+  const active = p ? [by[p]] : [him, comp];
+  const toRun = active.reduce((a, l) => a + l.to_run, 0);
+  const approved = active.reduce((a, l) => a + l.approved_skipped, 0);
+  const failed = active.reduce((a, l) => a + l.failed_resettable, 0);
+
+  $("estimate").innerHTML = `
+    <div><span class="k">SKUs to run</span><span class="v">${fmt(toRun)}</span></div>
+    <div><span class="k">LLM calls</span><span class="v">≈ ${fmt(toRun * 3)}</span></div>
+    <div><span class="k">Est. duration</span><span class="v">≈ ${duration(Math.round(toRun / 0.34))}</span></div>
+    <div><span class="k">Execution</span><span class="v">${active.length > 1 ? "2 runs, parallel" : "1 run"}</span></div>`;
+
+  $("approved-note").innerHTML = approved
+    ? `<div class="note"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+         <path d="M12 8v5M12 16.5v.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+         <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.8"/></svg>
+         <div><b>${fmt(approved)} approved SKUs will not be touched.</b> A steward has
+         confirmed these; the engine skips retrieval, scoring and the judge for them.
+         This cannot be overridden from this screen.</div></div>` : "";
+
+  const btn = $("btn-run");
+  btn.disabled = toRun === 0;
+  btn.textContent = toRun === 0
+    ? (approved ? "Nothing to run — all approved" : "Nothing to run")
+    : `Run ${fmt(toRun)} SKU${toRun === 1 ? "" : "s"}${active.length > 1 ? " · 2 runs" : ""}`;
+
+  const reset = $("btn-reset");
+  reset.hidden = failed === 0;
+  reset.textContent = `Reset & include ${fmt(failed)} failed`;
+}
+
+async function launch() {
+  clearError($("errors"));
+  const btn = $("btn-run");
+  const original = btn.textContent;
+  btn.disabled = true; btn.textContent = "Launching…";
+  try {
+    const body = { ...scopeBody(), workers: +$("workers").value,
+                   use_llm: $("llm-state").value === "1", triggered_by: "console" };
+    const data = await api("/runs", { method: "POST", body: JSON.stringify(body) });
+    $("queue-panel").hidden = false;
+    $("log-panel").hidden = false;
+    data.runs.forEach(watch);
+  } catch (e) {
+    showError($("errors"), e.message);
+    btn.disabled = false; btn.textContent = original;
+  }
+}
+
+function watch(run) {
+  LIVE.set(run.run_id, { ...run, processed: 0, failed: 0, to_run: 0, status: "running" });
+  renderQueue();
+  streamRun(run.run_id, {
+    onProgress: (p) => { Object.assign(LIVE.get(run.run_id), p); renderQueue(); },
+    onDone: (p) => { Object.assign(LIVE.get(run.run_id), p); renderQueue(); resolve(); refreshLog(run.run_id); },
+    onError: (msg) => showError($("errors"), msg),
+  });
+  refreshLog(run.run_id);
+}
+
+function renderQueue() {
+  $("queue").innerHTML = [...LIVE.values()].map((r, i) => {
+    const pct = r.to_run ? Math.round((r.processed / r.to_run) * 100) : 0;
+    const cls = r.pipeline === "himalaya" ? "p-cat" : "p-comp";
+    const name = r.pipeline === "himalaya" ? "Himalaya" : "Competitor";
+    return `<div class="q-row">
+      <span class="ord">${i + 1}</span>
+      <span class="pill ${cls}"><i class="sq"></i>${name}</span>
+      <span class="nm">${esc($("channel").value)} · ${esc($("category").value || "all")}
+        <span>${r.run_id.slice(0, 8)}</span></span>
+      <span class="q-bar"><i style="width:${pct}%;background:var(--ok)"></i></span>
+      <span class="n">${fmt(r.processed)} / ${fmt(r.to_run)}${r.failed ? ` · ${r.failed} failed` : ""}</span>
+    </div>`;
+  }).join("");
+}
+
+async function refreshLog(runId) {
+  const id = runId || [...LIVE.keys()].slice(-1)[0];
+  if (!id) return;
+  try {
+    const data = await api(`/runs/${id}/log?lines=40`);
+    $("log").textContent = data.lines.join("");
+    $("log").scrollTop = $("log").scrollHeight;
+  } catch { /* log may not exist yet; the run is still the source of truth */ }
+}
+
+$("channel").addEventListener("change", () => { fillCategories(); resolve(); });
+$("category").addEventListener("change", () => { fillSubcategories(); resolve(); });
+$("subcategory").addEventListener("change", resolve);
+$("skus").addEventListener("change", resolve);
+document.querySelectorAll('input[name="t"]').forEach((el) =>
+  el.addEventListener("change", () => LAST && renderLegs(LAST)));
+$("btn-run").addEventListener("click", launch);
+$("btn-refresh-log").addEventListener("click", () => refreshLog());
+$("btn-reset").addEventListener("click", async () => {
+  if (!confirm("Reset failed rows to PENDING so the next run picks them up?")) return;
+  try {
+    await api("/failed/reset?actor=console", { method: "POST", body: JSON.stringify(scopeBody()) });
+    resolve();
+  } catch (e) { showError($("errors"), e.message); }
+});
+
+boot();
+</script>
+</body>
+</html>
