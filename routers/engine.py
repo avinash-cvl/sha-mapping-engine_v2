@@ -28,6 +28,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
+import common.config as C
 from common import auth, db, db_models, recovery, run_record, scope
 
 # Applied to the router rather than to each route: a dependency listed here
@@ -149,6 +150,26 @@ class Run:
 
 
 RUNS: dict[str, Run] = {}
+
+
+
+def _database_name() -> str:
+    """Read the target database out of the DSN, so the dialog names the
+    database that will actually be written to rather than a label someone
+    set once and forgot."""
+    dsn = os.environ.get("SQL_SERVER_DSN", "")
+    for part in dsn.split(";"):
+        if part.strip().lower().startswith("database="):
+            return part.split("=", 1)[1].strip()
+    return "unknown"
+
+
+def _database_server() -> str:
+    dsn = os.environ.get("SQL_SERVER_DSN", "")
+    for part in dsn.split(";"):
+        if part.strip().lower().startswith("server="):
+            return part.split("=", 1)[1].strip()
+    return "unknown"
 
 
 def _validate(channel: str, pipeline: str | None) -> None:
@@ -327,10 +348,14 @@ def failed_reset(
 
 
 # ---------------------------------------------------------------- launch
-def _spawn(req: RunRequest, pipeline: str, overrides: dict[str, str]) -> Run:
-    run_id = str(uuid.uuid4())
-    log_path = os.path.join(REPO_ROOT, "logs", f"console_{run_id}.log")
+def _build_command(req: RunRequest, pipeline: str, run_id: str, log_path: str) -> list[str]:
+    """The argv the subprocess will receive.
 
+    Shared by the confirmation preview and the launch itself, deliberately:
+    a modal that shows a command assembled by different code eventually shows
+    a command that is not the one that runs, and the whole point of asking
+    someone to review it is that what they read is what executes.
+    """
     cmd = [
         sys.executable, "-m", f"{MODULE[pipeline]}.batch_flow", "match",
         "--source-table", f"staging.{req.channel}_products",
@@ -349,6 +374,22 @@ def _spawn(req: RunRequest, pipeline: str, overrides: dict[str, str]) -> Run:
         cmd += ["--sku", *req.skus]
     if not req.use_llm:
         cmd.append("--no-llm")
+    return cmd
+
+
+def _shell_quote(cmd: list[str]) -> str:
+    """Render argv as a copy-pasteable line, quoting only what needs it."""
+    out = []
+    for part in cmd:
+        out.append(f'"{part}"' if (" " in part or "&" in part) else part)
+    return " ".join(out)
+
+
+def _spawn(req: RunRequest, pipeline: str, overrides: dict[str, str]) -> Run:
+    run_id = str(uuid.uuid4())
+    log_path = os.path.join(REPO_ROOT, "logs", f"console_{run_id}.log")
+
+    cmd = _build_command(req, pipeline, run_id, log_path)
 
     env = {
         **os.environ,
@@ -368,6 +409,99 @@ def _spawn(req: RunRequest, pipeline: str, overrides: dict[str, str]) -> Run:
             proc=proc, log_path=log_path)
     RUNS[run_id] = r
     return r
+
+
+@router.post("/plan")
+def plan(req: RunRequest, user: auth.User = Depends(auth.current_user)) -> dict:
+    """Everything the confirmation dialog must show, resolved server-side.
+
+    A run can rewrite mappings for six figures of SKUs and spend real money
+    doing it, so the dialog is not decoration -- it is the last point at which
+    someone can notice that the scope is not what they meant. Every field here
+    is therefore read from the same code the run uses, not reconstructed in
+    the browser from form state: a dialog that describes a different run than
+    the one that executes is worse than no dialog, because it converts a
+    careful reader into a confident one.
+
+    Nothing is launched. This is a read.
+    """
+    _validate(req.channel, req.pipeline)
+    overrides = _validate_overrides(req.overrides)   # fail here, not after the click
+    conn = db.get_connection()
+
+    pipelines = [req.pipeline] if req.pipeline else list(MODULE)
+    legs, commands = [], []
+
+    for pipe in pipelines:
+        counts = scope.resolve(
+            conn, req.channel, pipe, req.category, req.subcategory, req.skus
+        ).as_dict()
+        counts["module"] = MODULE[pipe]
+        counts["brand_filter"] = (
+            f"brand IN {tuple(C.HIMALAYA_BRANDS)}" if pipe == "himalaya"
+            else f"brand NOT IN {tuple(C.HIMALAYA_BRANDS)}"
+        )
+        legs.append(counts)
+        commands.append({
+            "pipeline": pipe,
+            # <run-id> is a placeholder: the real id is minted at launch and
+            # returned then. Showing a fake uuid here would be a lie about
+            # something the user is being asked to verify.
+            "command": _shell_quote(
+                _build_command(req, pipe, "<run-id>", "logs/console_<run-id>.log")
+            ),
+        })
+
+    total = sum(l["to_run"] for l in legs)
+
+    # Conflicts are reported rather than raised: the dialog should say why
+    # the button is disabled, not fail after the user commits.
+    blocked = [
+        {"pipeline": r.pipeline, "run_id": r.run_id}
+        for r in RUNS.values()
+        if r.proc and r.proc.poll() is None
+        and r.channel == req.channel and r.category == req.category
+        and r.pipeline in pipelines
+    ]
+
+    return {
+        "environment": {
+            "label": os.environ.get("ENGINE_ENV", "LOCAL"),
+            "database": _database_name(),
+            "server": _database_server(),
+        },
+        "scope": {
+            "channel": req.channel,
+            "category": req.category or "ALL categories",
+            "subcategory": req.subcategory or "ALL sub-categories",
+            "explicit_skus": len(req.skus) if req.skus else None,
+        },
+        "legs": legs,
+        "totals": {
+            "to_run": total,
+            "approved_skipped": sum(l["approved_skipped"] for l in legs),
+            "already_mapped": sum(l["already_mapped"] for l in legs),
+            "failed_resettable": sum(l["failed_resettable"] for l in legs),
+            "llm_calls": total * 3,
+            "seconds": int(total / 0.34) if total else 0,
+        },
+        "settings": {
+            "use_llm": req.use_llm,
+            "workers": req.workers,
+            "reset_failed_first": req.reset_failed,
+            "overrides": overrides,
+            "top_n_output": C.TOP_N_OUTPUT,
+        },
+        "rules": [
+            "Steward-approved SKUs are skipped. This cannot be overridden here.",
+            "Only PENDING rows are processed; already-mapped rows are left alone.",
+            "Rows left 'Failed' by a dead worker are NOT picked up unless reset first.",
+            "Each SKU's existing mapping rows are deleted and rewritten when it is reprocessed.",
+        ],
+        "commands": commands,
+        "blocked_by": blocked,
+        "triggered_by": user.email,
+    }
 
 
 @router.post("/runs")

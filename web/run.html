@@ -26,8 +26,8 @@
       <a href="/configuration">Configuration</a>
       <a href="/history">History</a>
     </nav>
-    <span class="who" id="who"></span>
     <span class="env" id="env"><i></i>LOCAL</span>
+    <span class="who" id="who"></span>
   </div>
 
   <div class="grid">
@@ -155,6 +155,28 @@
   </div>
 </div>
 
+
+<!-- Confirmation gate. Nothing launches until this is acknowledged. -->
+<div class="backdrop" id="confirm" hidden role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+  <div class="modal">
+    <div class="modal-h">
+      <h2 id="confirm-title">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M12 8.5v4.5M12 16.5v.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+          <path d="M10.3 3.9 2.6 17.2A2 2 0 0 0 4.3 20.2h15.4a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" stroke="currentColor" stroke-width="1.7"/>
+        </svg>
+        Confirm engine run
+      </h2>
+      <p>This writes to the database and spends LLM credit. Review the scope below before starting.</p>
+    </div>
+    <div class="modal-b" id="confirm-body"></div>
+    <div class="modal-f">
+      <button class="btn" id="btn-cancel">Cancel</button>
+      <button class="btn danger" id="btn-confirm" disabled style="margin-left:auto">Confirm &amp; run</button>
+    </div>
+  </div>
+</div>
+
 <script src="/static/console.js"></script>
 <script>
 const { api, fmt, duration, esc, showError, clearError, streamRun } = window.Console;
@@ -274,23 +296,12 @@ function renderLegs(data) {
 }
 
 async function launch() {
-  clearError($("errors"));
   const btn = $("btn-run");
-  const original = btn.textContent;
-  btn.disabled = true; btn.textContent = "Launching…";
+  btn.disabled = true; btn.textContent = "Launching\u2026";
   try {
-    /* Only send what was actually filled in -- an empty field means
-       "inherit", not "set to zero". */
-    const overrides = {};
-    const pairs = { "ov-pop": "CATEGORY_GATE_MIN_TARGET_POP", "ov-sem": "SEMANTIC_TOPK",
-                    "ov-lex": "LEXICAL_TOPK", "ov-conf": "CATEGORY_GATE_MIN_CONF" };
-    for (const [id, key] of Object.entries(pairs)) {
-      const v = $(id).value.trim();
-      if (v !== "") overrides[key] = v;
-    }
-    const body = { ...scopeBody(), workers: +$("workers").value,
-                   use_llm: $("llm-state").value === "1", overrides };
-    const data = await api("/runs", { method: "POST", body: JSON.stringify(body) });
+    /* The same body the plan was built from, so what was confirmed is what
+       runs. */
+    const data = await api("/runs", { method: "POST", body: JSON.stringify(planBody()) });
     $("queue-panel").hidden = false;
     $("log-panel").hidden = false;
     if (Object.keys(data.overrides || {}).length) {
@@ -300,8 +311,9 @@ async function launch() {
     }
     data.runs.forEach(watch);
   } catch (e) {
-    showError($("errors"), e.message);
-    btn.disabled = false; btn.textContent = original;
+    btn.disabled = false;
+    resolve();                 // restores the button label from live counts
+    throw e;                   // let the dialog surface it and stay open
   }
 }
 
@@ -348,7 +360,7 @@ $("subcategory").addEventListener("change", resolve);
 $("skus").addEventListener("change", resolve);
 document.querySelectorAll('input[name="t"]').forEach((el) =>
   el.addEventListener("change", () => LAST && renderLegs(LAST)));
-$("btn-run").addEventListener("click", launch);
+$("btn-run").addEventListener("click", openConfirm);
 $("btn-refresh-log").addEventListener("click", () => refreshLog());
 $("btn-reset").addEventListener("click", async () => {
   if (!confirm("Reset failed rows to PENDING so the next run picks them up?")) return;
@@ -357,6 +369,163 @@ $("btn-reset").addEventListener("click", async () => {
     resolve();
   } catch (e) { showError($("errors"), e.message); }
 });
+
+
+/* ---------------- confirmation gate ----------------
+   The plan is fetched from the server rather than assembled from form state.
+   The command shown has to be the command that runs and the counts have to
+   come from the resolver the engine selects with -- a dialog describing a
+   different run than the one that executes turns a careful reader into a
+   confident one. */
+let PLAN = null;
+let LAUNCHING = false;
+
+function collectOverrides() {
+  const out = {};
+  const pairs = { "ov-pop": "CATEGORY_GATE_MIN_TARGET_POP", "ov-sem": "SEMANTIC_TOPK",
+                  "ov-lex": "LEXICAL_TOPK", "ov-conf": "CATEGORY_GATE_MIN_CONF" };
+  for (const [id, key] of Object.entries(pairs)) {
+    const el = $(id);
+    if (el && el.value.trim() !== "") out[key] = el.value.trim();
+  }
+  return out;
+}
+
+function planBody() {
+  return { ...scopeBody(), workers: +$("workers").value,
+           use_llm: $("llm-state").value === "1", overrides: collectOverrides() };
+}
+
+async function openConfirm() {
+  clearError($("errors"));
+  try {
+    PLAN = await api("/plan", { method: "POST", body: JSON.stringify(planBody()) });
+  } catch (e) { showError($("errors"), e.message); return; }
+
+  $("confirm-body").innerHTML = renderPlan(PLAN);
+  $("confirm").hidden = false;
+
+  const ack = $("ack");
+  const go = $("btn-confirm");
+  const blocked = PLAN.blocked_by.length > 0;
+  const nothing = PLAN.totals.to_run === 0;
+
+  ack.checked = false;                        // never pre-ticked
+  go.disabled = true;
+  go.textContent = blocked ? "Already running"
+                 : nothing ? "Nothing to run"
+                 : "Confirm & run " + fmt(PLAN.totals.to_run) + " SKUs";
+  ack.disabled = blocked || nothing;
+  ack.addEventListener("change", () => { go.disabled = !ack.checked; });
+
+  (blocked || nothing ? $("btn-cancel") : ack).focus();
+}
+
+function renderPlan(p) {
+  const leg = (l) =>
+    '<div><b>' + (l.pipeline === "himalaya" ? "Himalaya catalog" : "Competitive substitute") + '</b>' +
+    '<dl class="kv">' +
+      '<dt>To run</dt><dd class="big">' + fmt(l.to_run) + '</dd>' +
+      '<dt>Brand filter</dt><dd>' + esc(l.brand_filter) + '</dd>' +
+      '<dt>Approved \u2014 skipped</dt><dd>' + fmt(l.approved_skipped) + '</dd>' +
+      '<dt>Already mapped</dt><dd>' + fmt(l.already_mapped) + '</dd>' +
+      '<dt>Failed \u2014 not retried</dt><dd class="' + (l.failed_resettable ? "crit" : "") + '">' +
+        fmt(l.failed_resettable) + '</dd>' +
+      '<dt>Module</dt><dd>' + esc(l.module) + '</dd>' +
+    '</dl></div>';
+
+  const ov = Object.entries(p.settings.overrides);
+
+  return (
+    (p.blocked_by.length
+      ? '<div class="m-sec"><div class="m-block"><b>A run for this scope is already in progress.</b><br>' +
+        p.blocked_by.map((b) => esc(b.pipeline) + " \u00b7 " + esc(b.run_id.slice(0, 8))).join("<br>") +
+        '</div></div>'
+      : "") +
+
+    '<div class="m-sec"><h3>Target</h3><dl class="kv">' +
+      '<dt>Environment</dt><dd class="warn">' + esc(p.environment.label) + '</dd>' +
+      '<dt>Database</dt><dd>' + esc(p.environment.database) + ' on ' + esc(p.environment.server) + '</dd>' +
+      '<dt>Channel</dt><dd>' + esc(p.scope.channel) + '</dd>' +
+      '<dt>Category</dt><dd>' + esc(p.scope.category) + '</dd>' +
+      '<dt>Sub-category</dt><dd>' + esc(p.scope.subcategory) + '</dd>' +
+      (p.scope.explicit_skus
+        ? '<dt>SKU filter</dt><dd>' + fmt(p.scope.explicit_skus) + ' explicit SKUs</dd>' : "") +
+    '</dl></div>' +
+
+    '<div class="m-sec"><h3>Products to process</h3>' +
+      '<div class="m-leg">' + p.legs.map(leg).join("") + '</div>' +
+      '<dl class="kv" style="margin-top:12px">' +
+        '<dt>Total to run</dt><dd class="big">' + fmt(p.totals.to_run) + '</dd>' +
+        '<dt>LLM calls</dt><dd>' +
+          (p.settings.use_llm ? "\u2248 " + fmt(p.totals.llm_calls) : "none \u2014 LLM disabled") + '</dd>' +
+        '<dt>Est. duration</dt><dd>' + duration(p.totals.seconds) + '</dd>' +
+        '<dt>Runs launched</dt><dd>' + p.legs.length +
+          (p.legs.length > 1 ? " \u2014 in parallel" : "") + '</dd>' +
+      '</dl></div>' +
+
+    '<div class="m-sec"><h3>Configuration</h3><dl class="kv">' +
+      '<dt>LLM judge</dt><dd class="' + (p.settings.use_llm ? "" : "warn") + '">' +
+        (p.settings.use_llm ? "Enabled" : "DISABLED") + '</dd>' +
+      '<dt>Workers</dt><dd class="' + (p.settings.workers > 4 ? "warn" : "") + '">' +
+        p.settings.workers + (p.settings.workers > 4 ? " \u2014 deadlock risk above 4" : "") + '</dd>' +
+      '<dt>Candidates to judge</dt><dd>' + p.settings.top_n_output + '</dd>' +
+      '<dt>Reset failed first</dt><dd>' + (p.settings.reset_failed_first ? "Yes" : "No") + '</dd>' +
+      '<dt>Overrides</dt><dd class="' + (ov.length ? "warn" : "") + '">' +
+        (ov.length ? ov.map(([k, v]) => esc(k) + "=" + esc(v)).join(", ")
+                   : "none \u2014 using saved defaults") + '</dd>' +
+      '<dt>Triggered by</dt><dd>' + esc(p.triggered_by) + '</dd>' +
+    '</dl></div>' +
+
+    '<div class="m-sec"><h3>What this run will and will not touch</h3><ul class="m-rules">' +
+      p.rules.map((r) => "<li>" + esc(r) + "</li>").join("") + '</ul></div>' +
+
+    '<div class="m-sec"><h3>Command' + (p.commands.length > 1 ? "s" : "") +
+      ' to be executed</h3>' +
+      p.commands.map((c) => '<div class="m-cmd">' + esc(c.command) + '</div>').join("") + '</div>' +
+
+    '<div class="m-sec"><label class="m-ack" for="ack"><input type="checkbox" id="ack">' +
+      '<span>I understand what will be executed and agree to start the engine run.</span>' +
+    '</label></div>'
+  );
+}
+
+function closeConfirm() {
+  $("confirm").hidden = true;
+  PLAN = null;
+  $("btn-run").focus();
+}
+
+$("btn-cancel").addEventListener("click", closeConfirm);
+$("confirm").addEventListener("click", (e) => {
+  if (e.target === $("confirm") && !LAUNCHING) closeConfirm();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("confirm").hidden && !LAUNCHING) closeConfirm();
+});
+
+$("btn-confirm").addEventListener("click", async () => {
+  if (LAUNCHING) return;                      // double-submit guard
+  LAUNCHING = true;
+  const go = $("btn-confirm");
+  go.disabled = true;
+  go.textContent = "Starting\u2026";
+  $("btn-cancel").disabled = true;
+  $("ack").disabled = true;
+  try {
+    await launch();
+    closeConfirm();
+  } catch (e) {
+    showError($("errors"), e.message);
+    go.textContent = "Confirm & run";
+    $("ack").disabled = false;
+    go.disabled = !$("ack").checked;
+  } finally {
+    LAUNCHING = false;
+    $("btn-cancel").disabled = false;
+  }
+});
+
 
 Console.mountUser(document.getElementById('who'));
 boot();

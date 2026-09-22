@@ -202,3 +202,54 @@
   .lock{opacity:.62}
   .footnote{margin-top:22px;font-size:12px;color:var(--ink-3);text-align:center}
   .footnote code{font-family:var(--mono);font-size:11.5px;background:var(--surface-2);padding:1px 5px;border-radius:4px}
+
+/* ---------------- confirmation modal ----------------
+   A run can rewrite mappings for six figures of SKUs and spend real money.
+   The dialog is the last point at which someone can notice the scope is not
+   what they meant, so it is styled to be read, not dismissed: the destructive
+   action is visually distinct from cancel, and nothing is pre-selected. */
+.backdrop{position:fixed;inset:0;background:rgba(8,11,15,.62);display:grid;
+  place-items:center;padding:20px;z-index:100;overflow-y:auto}
+.backdrop[hidden]{display:none}
+.modal{background:var(--surface);border:1px solid var(--line);border-radius:12px;
+  width:100%;max-width:680px;max-height:92vh;display:flex;flex-direction:column;
+  box-shadow:0 24px 60px -20px rgba(0,0,0,.6)}
+.modal-h{padding:18px 22px 14px;border-bottom:1px solid var(--line-soft)}
+.modal-h h2{margin:0 0 5px;font-size:17px;font-weight:600;letter-spacing:-.01em;
+  display:flex;align-items:center;gap:9px}
+.modal-h h2 svg{color:var(--warn);flex:none}
+.modal-h p{margin:0;font-size:13px;color:var(--ink-2);max-width:60ch}
+.modal-b{padding:0;overflow-y:auto;flex:1}
+.modal-f{padding:14px 22px 18px;border-top:1px solid var(--line-soft);
+  display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.m-sec{padding:14px 22px;border-bottom:1px solid var(--line-soft)}
+.m-sec:last-child{border-bottom:none}
+.m-sec h3{margin:0 0 10px;font-size:11px;font-weight:600;letter-spacing:.08em;
+  text-transform:uppercase;color:var(--ink-3)}
+.kv{display:grid;grid-template-columns:minmax(120px,auto) 1fr;gap:6px 16px;font-size:13px}
+.kv dt{color:var(--ink-3)}
+.kv dd{margin:0;font-family:var(--mono);font-variant-numeric:tabular-nums;
+  font-size:12.5px;overflow-wrap:anywhere}
+.kv dd.big{font-size:15px;font-weight:600}
+.kv dd.warn{color:var(--warn);font-weight:600}
+.kv dd.crit{color:var(--crit);font-weight:600}
+.m-leg{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--line-soft);
+  border:1px solid var(--line-soft);border-radius:8px;overflow:hidden}
+@media(max-width:560px){.m-leg{grid-template-columns:1fr}}
+.m-leg > div{background:var(--surface);padding:11px 13px}
+.m-leg b{font-size:12.5px;display:block;margin-bottom:6px}
+.m-cmd{font-family:var(--mono);font-size:11.5px;line-height:1.7;background:var(--sunken);
+  border:1px solid var(--line-soft);border-radius:8px;padding:11px 13px;
+  overflow-x:auto;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--ink-2)}
+.m-cmd + .m-cmd{margin-top:8px}
+.m-rules{margin:0;padding-left:18px;font-size:12.5px;color:var(--ink-2)}
+.m-rules li{margin-bottom:5px}
+.m-rules li:last-child{margin-bottom:0}
+.m-ack{display:flex;gap:10px;align-items:flex-start;padding:13px 15px;
+  background:var(--warn-soft);border:1px solid color-mix(in srgb,var(--warn) 34%,transparent);
+  border-radius:8px;cursor:pointer;font-size:13px;font-weight:500}
+.m-ack input{width:16px;height:16px;margin-top:1px;accent-color:var(--warn);flex:none;cursor:pointer}
+.btn.danger{background:var(--crit);border-color:var(--crit);color:#fff}
+.btn.danger:disabled{background:var(--mute-soft);border-color:var(--line);color:var(--ink-3)}
+.m-block{padding:11px 13px;border-radius:8px;background:var(--crit-soft);
+  border:1px solid color-mix(in srgb,var(--crit) 32%,transparent);font-size:12.5px}
