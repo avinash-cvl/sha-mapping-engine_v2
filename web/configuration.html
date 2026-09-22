@@ -21,6 +21,13 @@
   .t-lock{background:var(--mute-soft);color:var(--mute)}
   .t-env{background:var(--warn-soft);color:var(--warn)}
   .grp{font-size:11px;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:var(--ink-3);padding:14px 18px 6px;background:var(--sunken)}
+  .layout{display:grid;grid-template-columns:190px 1fr;gap:22px;align-items:start}
+  @media(max-width:880px){.layout{grid-template-columns:1fr}}
+  .side{position:sticky;top:18px;display:flex;flex-direction:column;gap:1px}
+  @media(max-width:880px){.side{position:static;flex-direction:row;overflow-x:auto}}
+  .side a{text-decoration:none;font-size:13px;color:var(--ink-3);padding:8px 11px;
+    border-radius:7px;white-space:nowrap}
+  .side a:hover{background:var(--surface-2);color:var(--ink)}
 </style>
 </head>
 <body>
@@ -44,12 +51,20 @@
     <span class="who" id="who"></span>
   </div>
 
-  <div class="stack" style="margin-top:20px">
+  <div class="layout" style="margin-top:20px">
+    <nav class="side" aria-label="Settings sections">
+      <a href="#guardrails">Guardrails</a>
+      <a href="#retrieval">Retrieval</a>
+      <a href="#weights">Scoring weights</a>
+      <a href="#llm">Language model</a>
+      <a href="#hist">What runs used</a>
+    </nav>
+    <div class="stack">
     <div id="errors"></div>
     <div id="note"></div>
     <div id="groups"></div>
 
-    <section class="panel">
+    <section class="panel" id="hist">
       <div class="panel-h"><span class="panel-t">What recent runs actually used</span>
         <span class="stale" style="margin-left:auto">config.py today is not evidence of what produced a past result</span></div>
       <div class="tw"><table>
@@ -58,6 +73,7 @@
         <tbody id="hist"><tr><td colspan="7" style="padding:20px;color:var(--ink-3)">Loading…</td></tr></tbody>
       </table></div>
     </section>
+    </div>
   </div>
 </div>
 
@@ -80,11 +96,11 @@ async function load() {
     cfg.settings.forEach((s) => (groups[s.group] ||= []).push(s));
 
     $("groups").innerHTML = Object.entries(groups).map(([name, items]) => `
-      <section class="panel" style="margin-bottom:20px">
+      <section class="panel" style="margin-bottom:20px" id="${esc(name.toLowerCase().split(" ")[0])}">
         <div class="panel-h"><span class="panel-t">${esc(name)}</span></div>
         ${items.map(renderSetting).join("")}
       </section>`).join("") + `
-      <section class="panel" style="margin-bottom:20px">
+      <section class="panel" style="margin-bottom:20px" id="llm">
         <div class="panel-h"><span class="panel-t">Language model</span></div>
         <div class="set locked">
           <div><div class="k">AZURE_LLM_DEPLOYMENT <span class="tag t-lock">Locked</span></div>
@@ -100,8 +116,49 @@ async function load() {
         </div>
       </section>`;
 
+    renderWeights(cfg.weights);
     renderHistory(await api("/config/history?limit=12"));
   } catch (e) { showError($("errors"), e.message); }
+}
+
+/* Weights get their own panel with a running total. They are a blend: one
+   raised in isolation silently changes what every other signal is worth, so
+   showing five unrelated rows invites exactly the change that breaks them. */
+function renderWeights(w) {
+  if (!w) return;
+  const colours = ["var(--accent)", "var(--warn)", "var(--ok)", "var(--crit)", "var(--mute)"];
+  const rows = Object.entries(w.values).map(([k, v], i) => `
+    <div class="set">
+      <div><div class="k">${esc(k)}</div></div>
+      <div><div class="val">${v.toFixed(2)}</div>
+        <div class="meta">${Math.round(v * 100)}% of the blend</div></div>
+    </div>`).join("");
+  const bar = Object.values(w.values).map((v, i) =>
+    `<i style="width:${v * 100}%;background:${colours[i % colours.length]}"></i>`).join("");
+  const balanced = Math.abs(w.total - 1) < 0.001;
+
+  $("groups").insertAdjacentHTML("beforeend", `
+    <section class="panel" style="margin-bottom:20px" id="weights">
+      <div class="panel-h"><span class="panel-t">Scoring weights</span></div>
+      <div class="note" style="border-radius:0;border:none;border-bottom:1px solid var(--line-soft)">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M12 8.5v4.5M12 16.5v.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <path d="M10.3 3.9 2.6 17.2A2 2 0 0 0 4.3 20.2h15.4a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" stroke="currentColor" stroke-width="1.7"/>
+        </svg>
+        <div>${esc(w.note)}</div>
+      </div>
+      ${rows}
+      <div style="display:flex;align-items:center;gap:12px;padding:13px 18px;
+                  background:var(--sunken);flex-wrap:wrap">
+        <span style="font-size:13px">Total</span>
+        <span style="font-family:var(--mono);font-size:16px;font-weight:600;
+                     color:${balanced ? "var(--ok)" : "var(--crit)"}">${w.total.toFixed(2)}</span>
+        <span style="flex:1;min-width:120px;height:6px;border-radius:999px;
+                     background:var(--line);overflow:hidden;display:flex">${bar}</span>
+        <span style="font-size:12px;color:var(--ink-3)">
+          ${balanced ? "Balanced — must sum to 1.00" : "NOT balanced: must sum to 1.00"}</span>
+      </div>
+    </section>`);
 }
 
 function renderSetting(s) {

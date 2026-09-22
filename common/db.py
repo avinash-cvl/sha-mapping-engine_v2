@@ -25,6 +25,17 @@ Connection = sa.Connection
 
 
 def get_connection() -> Connection:
+    """Check a connection out of the pool.
+
+    THE CALLER OWNS IT. engine.connect() is a checkout, not a borrow -- an
+    unclosed one is held until garbage collection, and the default pool is
+    5 with 10 overflow, so the sixteenth concurrent holder blocks for thirty
+    seconds and then raises QueuePool limit reached.
+
+    That is fine for the CLI, where one process takes one connection for the
+    length of a run. It is not fine for a web request, which is why the
+    console closes its connection per request (see routers/engine.get_conn).
+    """
     engine = db_models.get_engine()
     return engine.connect()
 

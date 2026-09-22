@@ -16,6 +16,10 @@
   .delta{font-family:var(--mono);font-weight:600;font-variant-numeric:tabular-nums}
   .d-up{color:var(--ok)} .d-dn{color:var(--crit)} .d-0{color:var(--ink-3);font-weight:400}
   input[type=checkbox]{width:15px;height:15px;accent-color:var(--accent);cursor:pointer}
+  .fbar{display:flex;gap:9px;flex-wrap:wrap;align-items:center}
+  .fbar select,.fbar input[type=search]{font:inherit;font-size:12.5px;color:var(--ink);
+    background:var(--surface);border:1px solid var(--line);border-radius:7px;padding:6px 9px}
+  .fbar input[type=search]{min-width:190px}
 </style>
 </head>
 <body>
@@ -42,11 +46,34 @@
   <div class="stack" style="margin-top:20px">
     <div id="errors"></div>
 
+    <div id="stale-banner"></div>
+
     <section class="panel">
       <div class="panel-h">
         <span class="panel-t">Runs</span>
         <span class="stale" id="count">loading…</span>
         <button class="btn primary" id="btn-compare" style="margin-left:auto" disabled>Compare selected (0)</button>
+      </div>
+      <div class="fbar" style="padding:12px 16px;background:var(--sunken);border-bottom:1px solid var(--line-soft)">
+        <select id="f-channel" aria-label="Filter by channel">
+          <option value="">All channels</option>
+          <option>amazon</option><option>blinkit</option>
+          <option>swiggy</option><option>zepto</option>
+        </select>
+        <select id="f-pipeline" aria-label="Filter by pipeline">
+          <option value="">Both pipelines</option>
+          <option value="himalaya">Himalaya</option>
+          <option value="competitor">Competitor</option>
+        </select>
+        <select id="f-outcome" aria-label="Filter by outcome">
+          <option value="">Any outcome</option>
+          <option value="completed">Completed</option>
+          <option value="completed_with_failures">With failures</option>
+          <option value="stale">Stale</option>
+          <option value="failed">Failed</option>
+          <option value="running">Running</option>
+        </select>
+        <input type="search" id="f-q" placeholder="Category or run id" aria-label="Search runs">
       </div>
       <div class="tw"><table>
         <thead><tr>
@@ -83,20 +110,72 @@ const { api, fmt, pill, esc, showError, clearError } = window.Console;
 const $ = (id) => document.getElementById(id);
 const picked = new Set();
 
+let ALL = [];
+
 async function load() {
   try {
-    const runs = await api("/runs?limit=60");
-    $("count").textContent = `${runs.length} shown`;
+    ALL = await api("/runs?limit=200");
+    renderStaleBanner();
+    applyFilters();
+  } catch (e) { showError($("errors"), e.message); }
+}
+
+/* A crashed run cannot close its own row, so it sits in "running" forever and
+   every count that includes it is wrong. Offer the fix where the problem is
+   visible rather than leaving it to a scheduled job nobody can see. */
+function renderStaleBanner() {
+  const stale = ALL.filter((r) => r.status === "stale").length;
+  const running = ALL.filter((r) => r.status === "running").length;
+  if (!stale && !running) { $("stale-banner").innerHTML = ""; return; }
+  $("stale-banner").innerHTML = `<div class="note" style="margin:0 0 20px">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M12 8.5v4.5M12 16.5v.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      <path d="M10.3 3.9 2.6 17.2A2 2 0 0 0 4.3 20.2h15.4a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" stroke="currentColor" stroke-width="1.7"/>
+    </svg>
+    <div><b>${fmt(stale)} stale, ${fmt(running)} still marked running.</b>
+      A run whose heartbeat stopped is not live — until it is reconciled it
+      inflates every "currently running" count.</div>
+    <button class="btn" id="btn-reconcile" style="margin-left:auto;flex:none">Reconcile</button>
+  </div>`;
+  $("btn-reconcile").addEventListener("click", async () => {
+    const b = $("btn-reconcile");
+    b.disabled = true; b.textContent = "Reconciling…";
+    try { await api("/runs/reconcile", { method: "POST" }); await load(); }
+    catch (e) { showError($("errors"), e.message); b.disabled = false; b.textContent = "Reconcile"; }
+  });
+}
+
+function applyFilters() {
+  const ch = $("f-channel").value, pl = $("f-pipeline").value;
+  const oc = $("f-outcome").value, q = $("f-q").value.trim().toLowerCase();
+  const runs = ALL.filter((r) =>
+    (!ch || r.channel === ch) &&
+    (!pl || r.pipeline === pl) &&
+    (!oc || r.status === oc) &&
+    (!q || (r.category || "").toLowerCase().includes(q)
+        || r.execution_id.toLowerCase().includes(q)));
+
+  try {
+    $("count").textContent = `${runs.length} of ${ALL.length}`;
     if (!runs.length) {
       $("rows").innerHTML = `<tr><td colspan="8" style="padding:28px;text-align:center;color:var(--ink-3)">
-        No runs recorded yet. Launch one from the Run page.</td></tr>`;
+        ${ALL.length ? "No runs match these filters." : "No runs recorded yet. Launch one from the Run page."}</td></tr>`;
       return;
     }
     $("rows").innerHTML = runs.map(renderRow).join("");
-    document.querySelectorAll(".pick").forEach((el) =>
-      el.addEventListener("change", onPick));
+    document.querySelectorAll(".pick").forEach((el) => {
+      el.checked = picked.has(el.value);
+      el.addEventListener("change", onPick);
+    });
   } catch (e) { showError($("errors"), e.message); }
 }
+
+["f-channel", "f-pipeline", "f-outcome"].forEach((id) =>
+  $(id).addEventListener("change", applyFilters));
+let histTimer;
+$("f-q").addEventListener("input", () => {
+  clearTimeout(histTimer); histTimer = setTimeout(applyFilters, 250);
+});
 
 function renderRow(r) {
   const stale = r.status === "stale";

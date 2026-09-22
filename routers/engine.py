@@ -153,6 +153,23 @@ RUNS: dict[str, Run] = {}
 
 
 
+
+def get_conn():
+    """Per-request DB connection, returned to the pool when the request ends.
+
+    db.get_connection() hands out a pooled checkout the caller must close.
+    Fifteen endpoints were each opening one and walking away, so the pool
+    (5 + 10 overflow) was exhausted after sixteen requests and everything
+    after that blocked for thirty seconds and failed. Declaring it as a
+    dependency means no endpoint has to remember.
+    """
+    conn = db.get_connection()
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
 def _database_name() -> str:
     """Read the target database out of the DSN, so the dialog names the
     database that will actually be written to rather than a label someone
@@ -181,10 +198,9 @@ def _validate(channel: str, pipeline: str | None) -> None:
 
 # ---------------------------------------------------------------- reads
 @router.get("/channels")
-def channels() -> dict:
+def channels(conn: db.Connection = Depends(get_conn)) -> dict:
     """Channels, and the categories each actually holds. Drives the scope
     pickers without the client hardcoding a taxonomy that changes on ingest."""
-    conn = db.get_connection()
     out = {}
     for ch in CHANNELS:
         src = db_models.get_table(conn.engine, "staging", f"{ch}_products")
@@ -202,7 +218,7 @@ def channels() -> dict:
 
 
 @router.post("/scope")
-def resolve_scope(req: ScopeRequest) -> dict:
+def resolve_scope(req: ScopeRequest, conn: db.Connection = Depends(get_conn)) -> dict:
     """Count what a run WOULD process, before anything is launched.
 
     Returns a breakdown, never one figure. The distinction is not cosmetic:
@@ -210,7 +226,6 @@ def resolve_scope(req: ScopeRequest) -> dict:
     274 to-run / 88 approved-skipped / 0 already-mapped shows the shape.
     """
     _validate(req.channel, req.pipeline)
-    conn = db.get_connection()
     pipelines = [req.pipeline] if req.pipeline else list(MODULE)
     legs = [
         scope.resolve(conn, req.channel, p, req.category, req.subcategory, req.skus).as_dict()
@@ -231,11 +246,10 @@ def resolve_scope(req: ScopeRequest) -> dict:
 
 
 @router.get("/runs")
-def list_runs(limit: int = Query(50, le=500), channel: str | None = None) -> list[dict]:
+def list_runs(limit: int = Query(50, le=500), channel: str | None = None, conn: db.Connection = Depends(get_conn)) -> list[dict]:
     """Run history. reconcile_stale() runs first so a crashed run is reported
     as stale rather than sitting in 'running' forever -- 16 rows in the old
     pipeline_execution_log have done exactly that since 18 August."""
-    conn = db.get_connection()
     run_record.reconcile_stale(conn)
 
     run = db_models.get_table(conn.engine, "audit", "engine_run")
@@ -245,9 +259,23 @@ def list_runs(limit: int = Query(50, le=500), channel: str | None = None) -> lis
     return [dict(r._mapping) for r in conn.execute(q).all()]
 
 
+@router.post("/runs/reconcile")
+def reconcile(
+    max_age_minutes: int = Query(30, ge=1, le=1440),
+    user: auth.User = Depends(auth.current_user),
+    conn: db.Connection = Depends(get_conn),
+) -> dict:
+    """Mark runs whose heartbeat stopped as stale.
+
+    A crashed process cannot close its own row, so without this every such run
+    is indistinguishable from a live one -- 16 have sat in 'running' since
+    18 August, and any "currently running" count includes them.
+    """
+    return {"reconciled": run_record.reconcile_stale(conn, max_age_minutes)}
+
+
 @router.get("/runs/{run_id}")
-def get_run(run_id: str) -> dict:
-    conn = db.get_connection()
+def get_run(run_id: str, conn: db.Connection = Depends(get_conn)) -> dict:
     run = db_models.get_table(conn.engine, "audit", "engine_run")
     row = conn.execute(sa.select(run).where(run.c.execution_id == run_id)).first()
     if row is None:
@@ -271,7 +299,7 @@ def get_run(run_id: str) -> dict:
 
 
 @router.get("/compare")
-def compare(before: str, after: str) -> dict:
+def compare(before: str, after: str, conn: db.Connection = Depends(get_conn)) -> dict:
     """Aggregate before/after between two runs.
 
     Aggregate only, and the response says so. It cannot distinguish +5 net
@@ -279,7 +307,6 @@ def compare(before: str, after: str) -> dict:
     change in source_row_count or git_sha means the delta may not be engine
     behaviour at all.
     """
-    conn = db.get_connection()
     rows = conn.execute(
         sa.text("""
             SELECT status, before_count, after_count, delta,
@@ -319,9 +346,8 @@ def compare(before: str, after: str) -> dict:
 
 # ---------------------------------------------------------------- recovery
 @router.post("/failed/preview")
-def failed_preview(req: ScopeRequest) -> dict:
+def failed_preview(req: ScopeRequest, conn: db.Connection = Depends(get_conn)) -> dict:
     _validate(req.channel, req.pipeline)
-    conn = db.get_connection()
     return recovery.preview(
         conn, req.channel, req.pipeline, req.category, req.subcategory, req.skus
     ).as_dict()
@@ -329,7 +355,9 @@ def failed_preview(req: ScopeRequest) -> dict:
 
 @router.post("/failed/reset")
 def failed_reset(
-    req: ScopeRequest, user: auth.User = Depends(auth.current_user)
+    req: ScopeRequest,
+    user: auth.User = Depends(auth.current_user),
+    conn: db.Connection = Depends(get_conn),
 ) -> dict:
     """Flip Failed rows back to PENDING so the next run picks them up.
 
@@ -515,6 +543,7 @@ def result_groups(
     channel: str,
     category: str | None = None,
     pipeline: str | None = None,
+    conn: db.Connection = Depends(get_conn),
 ) -> list[dict]:
     """Outcome mix per (category, sub-category).
 
@@ -571,7 +600,7 @@ def result_groups(
 
 
 @router.get("/gate-warnings")
-def gate_warnings(limit: int = Query(50, le=200)) -> list[dict]:
+def gate_warnings(limit: int = Query(50, le=200), conn: db.Connection = Depends(get_conn)) -> list[dict]:
     """Master nodes rules.py can target that hold too few rows to be a
     shortlist.
 
@@ -580,7 +609,6 @@ def gate_warnings(limit: int = Query(50, le=200)) -> list[dict]:
     SERUM FLUID. 86 of 191 targets hold three rows or fewer, so this is a
     standing queue rather than a one-off audit.
     """
-    conn = db.get_connection()
     master = db_models.get_table(conn.engine, "staging", "himalaya_products")
 
     pop = {
@@ -621,7 +649,7 @@ def gate_warnings(limit: int = Query(50, le=200)) -> list[dict]:
 
 
 @router.post("/plan")
-def plan(req: RunRequest, user: auth.User = Depends(auth.current_user)) -> dict:
+def plan(req: RunRequest, user: auth.User = Depends(auth.current_user), conn: db.Connection = Depends(get_conn)) -> dict:
     """Everything the confirmation dialog must show, resolved server-side.
 
     A run can rewrite mappings for six figures of SKUs and spend real money
@@ -636,7 +664,6 @@ def plan(req: RunRequest, user: auth.User = Depends(auth.current_user)) -> dict:
     """
     _validate(req.channel, req.pipeline)
     overrides = _validate_overrides(req.overrides)   # fail here, not after the click
-    conn = db.get_connection()
 
     pipelines = [req.pipeline] if req.pipeline else list(MODULE)
     legs, commands = [], []
@@ -714,7 +741,7 @@ def plan(req: RunRequest, user: auth.User = Depends(auth.current_user)) -> dict:
 
 
 @router.post("/runs")
-def launch(req: RunRequest, user: auth.User = Depends(auth.current_user)) -> dict:
+def launch(req: RunRequest, user: auth.User = Depends(auth.current_user), conn: db.Connection = Depends(get_conn)) -> dict:
     """Launch one run per requested pipeline.
 
     "Both" is two runs, never one: the pipelines apply opposite brand filters
@@ -741,7 +768,6 @@ def launch(req: RunRequest, user: auth.User = Depends(auth.current_user)) -> dic
 
     overrides = _validate_overrides(req.overrides)
 
-    conn = db.get_connection()
 
     # Attribution comes from the session, never from the request body. A
     # client-supplied name in an audit trail is a suggestion, not a record.
@@ -790,6 +816,11 @@ async def stream(run_id: str) -> EventSourceResponse:
     event stream would flood the client on a 5,000-SKU run for no extra
     information.
     """
+    # Not the per-request dependency: this generator outlives the request
+    # handler by design, polling for as long as the run lasts. It therefore
+    # owns its checkout and closes it in the generator's finally, or a
+    # long-running stream would hold a pooled connection with nobody to
+    # return it.
     conn = db.get_connection()
     run = db_models.get_table(conn.engine, "audit", "engine_run")
 
@@ -839,7 +870,14 @@ async def stream(run_id: str) -> EventSourceResponse:
 
             await asyncio.sleep(1.0)
 
-    return EventSourceResponse(events())
+    async def guarded():
+        try:
+            async for event in events():
+                yield event
+        finally:
+            conn.close()
+
+    return EventSourceResponse(guarded())
 
 
 @router.get("/runs/{run_id}/log")
@@ -921,6 +959,25 @@ def get_config() -> dict:
             "deployment": os.environ.get("AZURE_LLM_DEPLOYMENT", ""),
             "embedding": os.environ.get("AZURE_EMBEDDING_DEPLOYMENT", ""),
         },
+        # Surfaced as a set, with the total, because they are a blend: one
+        # raised in isolation silently changes what every other signal is
+        # worth, and a page listing five unrelated numbers invites exactly
+        # that change.
+        "weights": {
+            "values": {
+                k: float(getattr(cfg, k))
+                for k in ("W_SEMANTIC", "W_LEXICAL", "W_TYPE", "W_PACK", "W_OVERLAP")
+            },
+            "total": round(sum(
+                float(getattr(cfg, k))
+                for k in ("W_SEMANTIC", "W_LEXICAL", "W_TYPE", "W_PACK", "W_OVERLAP")
+            ), 4),
+            "note": (
+                "Measured on 809 mapped SKUs, every re-weighting tried traded about "
+                "five recovered matches for 12-35 broken accepted mappings. Run a "
+                "regression before trusting a change here."
+            ),
+        },
         "note": (
             "Read-only. config.py is read at import time, so an edit here would "
             "not reach a run launched afterwards without a restart. Override per "
@@ -931,14 +988,13 @@ def get_config() -> dict:
 
 
 @router.get("/config/history")
-def config_history(limit: int = Query(30, le=200)) -> list[dict]:
+def config_history(limit: int = Query(30, le=200), conn: db.Connection = Depends(get_conn)) -> list[dict]:
     """Which settings each recent run actually used.
 
     This is the answer to config drift: not what config.py says today, but
     what produced a given result. A delta between two runs is only
     interpretable alongside it.
     """
-    conn = db.get_connection()
     rows = conn.execute(
         sa.text("""
             SELECT TOP (:n) r.execution_id, r.started_at, r.channel, r.pipeline,
