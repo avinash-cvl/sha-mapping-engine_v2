@@ -10,7 +10,7 @@ def chk(l,g,w):
 chk("plan needs auth", c.post("/api/engine/plan", json={"channel":"zepto"}).status_code, 401)
 c.post("/api/session/login", json={"email":"admin@covalenseglobal.com","password":"Admin@123"})
 
-body = {"channel":"zepto","pipeline":"competitor","category":"lip makeup",
+body = {"channel":"zepto","engine":"competitor","category":"lip makeup",
         "subcategory":"lip balms","workers":4,"use_llm":True}
 p = c.post("/api/engine/plan", json=body).json()
 chk("plan resolves work", p["totals"]["to_run"], 2)

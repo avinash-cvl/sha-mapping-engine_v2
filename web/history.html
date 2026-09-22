@@ -60,8 +60,8 @@
           <option>amazon</option><option>blinkit</option>
           <option>swiggy</option><option>zepto</option>
         </select>
-        <select id="f-pipeline" aria-label="Filter by pipeline">
-          <option value="">Both pipelines</option>
+        <select id="f-engine" aria-label="Filter by engine">
+          <option value="">Both engines</option>
           <option value="himalaya">Himalaya</option>
           <option value="competitor">Competitor</option>
         </select>
@@ -151,11 +151,11 @@ let PAGE_LIMIT = 50;
 
 function applyFilters(offset = 0, limit = PAGE_LIMIT) {
   PAGE_OFFSET = offset; PAGE_LIMIT = limit;
-  const ch = $("f-channel").value, pl = $("f-pipeline").value;
+  const ch = $("f-channel").value, pl = $("f-engine").value;
   const oc = $("f-outcome").value, q = $("f-q").value.trim().toLowerCase();
   const runs = ALL.filter((r) =>
     (!ch || r.channel === ch) &&
-    (!pl || r.pipeline === pl) &&
+    (!pl || r.engine === pl) &&
     (!oc || r.status === oc) &&
     (!q || (r.category || "").toLowerCase().includes(q)
         || r.execution_id.toLowerCase().includes(q)));
@@ -187,7 +187,7 @@ function applyFilters(offset = 0, limit = PAGE_LIMIT) {
   } catch (e) { showError($("errors"), e.message); }
 }
 
-["f-channel", "f-pipeline", "f-outcome"].forEach((id) =>
+["f-channel", "f-engine", "f-outcome"].forEach((id) =>
   $(id).addEventListener("change", () => applyFilters(0, PAGE_LIMIT)));
 let histTimer;
 $("f-q").addEventListener("input", () => {
@@ -198,7 +198,7 @@ $("f-q").addEventListener("input", () => {
 function renderRow(r) {
   const stale = r.status === "stale";
   const scope = [r.category || "all categories", r.subcategory].filter(Boolean).join(" · ");
-  const side = r.pipeline === "himalaya"
+  const side = r.engine === "himalaya"
     ? '<span class="pill p-cat"><i class="sq"></i>Himalaya</span>'
     : '<span class="pill p-comp"><i class="sq"></i>Competitor</span>';
   return `<tr class="${stale ? "stale" : ""}" data-id="${esc(r.execution_id)}">

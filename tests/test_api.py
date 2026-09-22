@@ -15,7 +15,7 @@ def test_scope_returns_a_leg_per_pipeline_never_a_sum(client):
         "channel": "zepto", "category": "lip makeup", "subcategory": "lip balms",
     })
     assert r.status_code == 200
-    legs = {x["pipeline"]: x for x in r.json()["legs"]}
+    legs = {x["engine"]: x for x in r.json()["legs"]}
     assert set(legs) == {"himalaya", "competitor"}
     assert legs["himalaya"]["scoped_total"] == 4
     assert legs["competitor"]["scoped_total"] == 274
@@ -25,8 +25,8 @@ def test_scope_honours_a_selected_pipeline(client):
     """Selecting one side must not price both, or the preview describes a
     run that is not the one about to start."""
     r = client.post("/api/engine/scope",
-                    json={"channel": "zepto", "pipeline": "competitor"})
-    assert [l["pipeline"] for l in r.json()["legs"]] == ["competitor"]
+                    json={"channel": "zepto", "engine": "competitor"})
+    assert [l["engine"] for l in r.json()["legs"]] == ["competitor"]
 
 
 def test_scope_estimate_is_labelled_as_one(client):
@@ -37,7 +37,7 @@ def test_scope_estimate_is_labelled_as_one(client):
 
 @pytest.mark.parametrize("payload,expected", [
     ({"channel": "nope"}, 400),
-    ({"channel": "zepto", "pipeline": "sideways"}, 400),
+    ({"channel": "zepto", "engine": "sideways"}, 400),
 ])
 def test_bad_scope_is_rejected(client, payload, expected):
     assert client.post("/api/engine/scope", json=payload).status_code == expected
@@ -71,7 +71,7 @@ def test_unknown_run_is_404(client):
 
 def test_failed_preview_reads_only(client):
     r = client.post("/api/engine/failed/preview",
-                    json={"channel": "zepto", "pipeline": "competitor"})
+                    json={"channel": "zepto", "engine": "competitor"})
     assert r.status_code == 200
     assert r.json()["rows_reset"] == 0
 
@@ -84,7 +84,7 @@ def test_results_carry_the_group_a_row_belongs_to(client):
         pytest.skip("no results yet")
     row = d["rows"][0]
     assert row["category"] and row["subcategory"]
-    assert row["pipeline"] in ("himalaya", "competitor")
+    assert row["engine"] in ("himalaya", "competitor")
 
 
 def test_results_filter_server_side(client):
@@ -127,7 +127,7 @@ def test_config_locks_the_portal_contract(client):
 
 def test_plan_launches_nothing(client):
     """The confirmation dialog must be a read, or it is not a confirmation."""
-    body = {"channel": "zepto", "pipeline": "competitor",
+    body = {"channel": "zepto", "engine": "competitor",
             "category": "lip makeup", "subcategory": "lip balms", "workers": 4}
     first = client.post("/api/engine/plan", json=body).json()
     second = client.post("/api/engine/plan", json=body).json()
@@ -136,7 +136,7 @@ def test_plan_launches_nothing(client):
 
 def test_plan_shows_the_command_that_will_run(client):
     d = client.post("/api/engine/plan", json={
-        "channel": "zepto", "pipeline": "competitor", "workers": 4,
+        "channel": "zepto", "engine": "competitor", "workers": 4,
     }).json()
     cmd = d["commands"][0]["command"]
     assert "oneds_competitor.batch_flow" in cmd

@@ -41,7 +41,7 @@ router = APIRouter(
 )
 
 CHANNELS = ("amazon", "blinkit", "swiggy", "zepto")
-MODULE = {"himalaya": "oneds_master", "competitor": "oneds_competitor"}
+ENGINE_MODULE = {"himalaya": "oneds_master", "competitor": "oneds_competitor"}
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -49,7 +49,7 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # ---------------------------------------------------------------- models
 class ScopeRequest(BaseModel):
     channel: str
-    pipeline: str | None = None          # None -> both, as two results
+    engine: str | None = None          # None -> both, as two results
     category: str | None = None
     subcategory: str | None = None
     skus: list[str] | None = None
@@ -140,7 +140,7 @@ class Run:
     """
     run_id: str
     channel: str
-    pipeline: str
+    engine: str
     category: str | None
     subcategory: str | None
     proc: subprocess.Popen | None = None
@@ -189,11 +189,11 @@ def _database_server() -> str:
     return "unknown"
 
 
-def _validate(channel: str, pipeline: str | None) -> None:
+def _validate(channel: str, engine: str | None) -> None:
     if channel not in CHANNELS:
         raise HTTPException(400, f"channel must be one of {CHANNELS}")
-    if pipeline is not None and pipeline not in MODULE:
-        raise HTTPException(400, f"pipeline must be one of {tuple(MODULE)}")
+    if engine is not None and engine not in ENGINE_MODULE:
+        raise HTTPException(400, f"engine must be one of {tuple(ENGINE_MODULE)}")
 
 
 # ---------------------------------------------------------------- reads
@@ -225,11 +225,11 @@ def resolve_scope(req: ScopeRequest, conn: db.Connection = Depends(get_conn)) ->
     a single "552 rows" total hid a 2x duplicate ingest for weeks, where
     274 to-run / 88 approved-skipped / 0 already-mapped shows the shape.
     """
-    _validate(req.channel, req.pipeline)
-    pipelines = [req.pipeline] if req.pipeline else list(MODULE)
+    _validate(req.channel, req.engine)
+    engines = [req.engine] if req.engine else list(ENGINE_MODULE)
     legs = [
         scope.resolve(conn, req.channel, p, req.category, req.subcategory, req.skus).as_dict()
-        for p in pipelines
+        for p in engines
     ]
     total_to_run = sum(x["to_run"] for x in legs)
     return {
@@ -347,9 +347,9 @@ def compare(before: str, after: str, conn: db.Connection = Depends(get_conn)) ->
 # ---------------------------------------------------------------- recovery
 @router.post("/failed/preview")
 def failed_preview(req: ScopeRequest, conn: db.Connection = Depends(get_conn)) -> dict:
-    _validate(req.channel, req.pipeline)
+    _validate(req.channel, req.engine)
     return recovery.preview(
-        conn, req.channel, req.pipeline, req.category, req.subcategory, req.skus
+        conn, req.channel, req.engine, req.category, req.subcategory, req.skus
     ).as_dict()
 
 
@@ -367,16 +367,16 @@ def failed_reset(
     repeatable errors -- and whether to retry is a decision somebody makes.
     Steward-approved rows are never touched, and that is not overridable.
     """
-    _validate(req.channel, req.pipeline)
+    _validate(req.channel, req.engine)
     conn = db.get_connection()
     return recovery.reset_failed(
-        conn, req.channel, req.pipeline, req.category, req.subcategory,
+        conn, req.channel, req.engine, req.category, req.subcategory,
         req.skus, actor=user.email,
     ).as_dict()
 
 
 # ---------------------------------------------------------------- launch
-def _build_command(req: RunRequest, pipeline: str, run_id: str, log_path: str) -> list[str]:
+def _build_command(req: RunRequest, engine: str, run_id: str, log_path: str) -> list[str]:
     """The argv the subprocess will receive.
 
     Shared by the confirmation preview and the launch itself, deliberately:
@@ -385,7 +385,7 @@ def _build_command(req: RunRequest, pipeline: str, run_id: str, log_path: str) -
     someone to review it is that what they read is what executes.
     """
     cmd = [
-        sys.executable, "-m", f"{MODULE[pipeline]}.batch_flow", "match",
+        sys.executable, "-m", f"{ENGINE_MODULE[engine]}.batch_flow", "match",
         "--source-table", f"staging.{req.channel}_products",
         "--master-table", "staging.himalaya_products",
         "--max-workers", str(req.workers),
@@ -413,11 +413,11 @@ def _shell_quote(cmd: list[str]) -> str:
     return " ".join(out)
 
 
-def _spawn(req: RunRequest, pipeline: str, overrides: dict[str, str]) -> Run:
+def _spawn(req: RunRequest, engine: str, overrides: dict[str, str]) -> Run:
     run_id = str(uuid.uuid4())
     log_path = os.path.join(REPO_ROOT, "logs", f"console_{run_id}.log")
 
-    cmd = _build_command(req, pipeline, run_id, log_path)
+    cmd = _build_command(req, engine, run_id, log_path)
 
     env = {
         **os.environ,
@@ -432,7 +432,7 @@ def _spawn(req: RunRequest, pipeline: str, overrides: dict[str, str]) -> Run:
         cmd, cwd=REPO_ROOT, env=env,
         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
     )
-    r = Run(run_id=run_id, channel=req.channel, pipeline=pipeline,
+    r = Run(run_id=run_id, channel=req.channel, engine=engine,
             category=req.category, subcategory=req.subcategory,
             proc=proc, log_path=log_path)
     RUNS[run_id] = r
@@ -444,7 +444,7 @@ def results(
     channel: str,
     category: str | None = None,
     subcategory: str | None = None,
-    pipeline: str | None = None,
+    engine: str | None = None,
     status: str | None = None,
     q: str | None = None,
     limit: int = Query(100, le=1000),
@@ -460,7 +460,7 @@ def results(
     category but many sub-category groups -- 14 of them in a single 51-SKU
     run -- so without them a row cannot be placed.
     """
-    _validate(channel, pipeline)
+    _validate(channel, engine)
     conn = db.get_connection()
 
     src = db_models.get_table(conn.engine, "staging", f"{channel}_products")
@@ -480,8 +480,8 @@ def results(
         where.append(src.c.category == category)
     if subcategory:
         where.append(src.c.subcategory == subcategory)
-    if pipeline:
-        where.append(scope._brand_clause(src, pipeline))
+    if engine:
+        where.append(scope._brand_clause(src, engine))
     if status:
         where.append(src.c.mapping_status == status)
     if q:
@@ -535,7 +535,7 @@ def results(
                 "score": float(r["final_score"]) if r["final_score"] is not None else None,
                 "confidence": r["confidence_level"],
                 "reasoning": r["llm_reasoning"],
-                "pipeline": (
+                "engine": (
                     "himalaya"
                     if (r["brand"] or "").strip().lower() in himalaya
                     else "competitor"
@@ -550,7 +550,7 @@ def results(
 def result_groups(
     channel: str,
     category: str | None = None,
-    pipeline: str | None = None,
+    engine: str | None = None,
     conn: db.Connection = Depends(get_conn),
 ) -> list[dict]:
     """Outcome mix per (category, sub-category).
@@ -559,7 +559,7 @@ def result_groups(
     categories in one run, and that spread is the finding -- it says where the
     engine is weak. No amount of scrolling a flat row list surfaces it.
     """
-    _validate(channel, pipeline)
+    _validate(channel, engine)
     conn = db.get_connection()
     src = db_models.get_table(conn.engine, "staging", f"{channel}_products")
 
@@ -582,8 +582,8 @@ def result_groups(
     )
     if category:
         q = q.where(src.c.category == category)
-    if pipeline:
-        q = q.where(scope._brand_clause(src, pipeline))
+    if engine:
+        q = q.where(scope._brand_clause(src, engine))
 
     out = []
     for r in conn.execute(q).all():
@@ -670,24 +670,24 @@ def plan(req: RunRequest, user: auth.User = Depends(auth.current_user), conn: db
 
     Nothing is launched. This is a read.
     """
-    _validate(req.channel, req.pipeline)
+    _validate(req.channel, req.engine)
     overrides = _validate_overrides(req.overrides)   # fail here, not after the click
 
-    pipelines = [req.pipeline] if req.pipeline else list(MODULE)
+    engines = [req.engine] if req.engine else list(ENGINE_MODULE)
     legs, commands = [], []
 
-    for pipe in pipelines:
+    for pipe in engines:
         counts = scope.resolve(
             conn, req.channel, pipe, req.category, req.subcategory, req.skus
         ).as_dict()
-        counts["module"] = MODULE[pipe]
+        counts["module"] = ENGINE_MODULE[pipe]
         counts["brand_filter"] = (
             f"brand IN {tuple(C.HIMALAYA_BRANDS)}" if pipe == "himalaya"
             else f"brand NOT IN {tuple(C.HIMALAYA_BRANDS)}"
         )
         legs.append(counts)
         commands.append({
-            "pipeline": pipe,
+            "engine": pipe,
             # <run-id> is a placeholder: the real id is minted at launch and
             # returned then. Showing a fake uuid here would be a lie about
             # something the user is being asked to verify.
@@ -701,11 +701,11 @@ def plan(req: RunRequest, user: auth.User = Depends(auth.current_user), conn: db
     # Conflicts are reported rather than raised: the dialog should say why
     # the button is disabled, not fail after the user commits.
     blocked = [
-        {"pipeline": r.pipeline, "run_id": r.run_id}
+        {"engine": r.engine, "run_id": r.run_id}
         for r in RUNS.values()
         if r.proc and r.proc.poll() is None
         and r.channel == req.channel and r.category == req.category
-        and r.pipeline in pipelines
+        and r.engine in engines
     ]
 
     return {
@@ -750,23 +750,23 @@ def plan(req: RunRequest, user: auth.User = Depends(auth.current_user), conn: db
 
 @router.post("/runs")
 def launch(req: RunRequest, user: auth.User = Depends(auth.current_user), conn: db.Connection = Depends(get_conn)) -> dict:
-    """Launch one run per requested pipeline.
+    """Launch one run per requested engine.
 
-    "Both" is two runs, never one: the pipelines apply opposite brand filters
+    "Both" is two runs, never one: the engines apply opposite brand filters
     and cannot share a batch. They are launched together rather than queued --
     their row sets are disjoint, and 120 pairs of runs in the existing history
     already overlapped in time without incident. What is NOT safe is unbounded
     concurrency on one table: deadlocks appeared at six workers in a single
     run, so the same scope is refused while it is already running.
     """
-    _validate(req.channel, req.pipeline)
-    pipelines = [req.pipeline] if req.pipeline else list(MODULE)
+    _validate(req.channel, req.engine)
+    engines = [req.engine] if req.engine else list(ENGINE_MODULE)
 
-    for p in pipelines:
+    for p in engines:
         for existing in RUNS.values():
             if (existing.proc and existing.proc.poll() is None
                     and existing.channel == req.channel
-                    and existing.pipeline == p
+                    and existing.engine == p
                     and existing.category == req.category):
                 raise HTTPException(
                     409,
@@ -783,16 +783,16 @@ def launch(req: RunRequest, user: auth.User = Depends(auth.current_user), conn: 
 
     reset = {}
     if req.reset_failed:
-        for p in pipelines:
+        for p in engines:
             reset[p] = recovery.reset_failed(
                 conn, req.channel, p, req.category, req.subcategory,
                 actor=user.email,
             ).rows_reset
 
-    launched = [_spawn(req, p, overrides) for p in pipelines]
+    launched = [_spawn(req, p, overrides) for p in engines]
     return {
         "runs": [
-            {"run_id": r.run_id, "pipeline": r.pipeline, "log": r.log_path}
+            {"run_id": r.run_id, "engine": r.engine, "log": r.log_path}
             for r in launched
         ],
         "failed_rows_reset": reset,
@@ -1005,7 +1005,7 @@ def config_history(limit: int = Query(30, le=200), conn: db.Connection = Depends
     """
     rows = conn.execute(
         sa.text("""
-            SELECT TOP (:n) r.execution_id, r.started_at, r.channel, r.pipeline,
+            SELECT TOP (:n) r.execution_id, r.started_at, r.channel, r.engine,
                    r.git_sha, c.config_key, c.config_value, c.is_override
             FROM audit.engine_run r
             JOIN audit.engine_run_config c ON c.execution_id = r.execution_id
@@ -1018,7 +1018,7 @@ def config_history(limit: int = Query(30, le=200), conn: db.Connection = Depends
     for r in rows:
         entry = runs.setdefault(str(r[0]), {
             "execution_id": str(r[0]), "started_at": r[1],
-            "channel": r[2], "pipeline": r[3], "git_sha": r[4], "config": {},
+            "channel": r[2], "engine": r[3], "git_sha": r[4], "config": {},
         })
         entry["config"][r[5]] = {"value": r[6], "is_override": bool(r[7])}
     return list(runs.values())[:limit]

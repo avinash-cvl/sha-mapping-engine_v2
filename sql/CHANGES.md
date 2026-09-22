@@ -117,3 +117,29 @@ Optional: `CONSOLE_TOKEN_TTL_HOURS` (default 8).
 
 Access is **ADMIN only** — currently 2 of the 25 accounts. A `USER` account
 is refused at sign-in with 403.
+
+---
+
+## 015a — `audit.engine_run.pipeline` renamed to `engine`
+
+**Applied to dev:** 2026-09-22
+**Applied to prod:** _not yet_
+
+"Pipeline" already means the flow recorded in `audit.pipeline_execution_log`
+(`pipeline_name`, one row per flow run). Using the same word for "which side
+of the brand filter runs" gave one term two meanings in the same database.
+The console's concept is which **engine** runs — Himalaya (`oneds_master`) or
+Competitor (`oneds_competitor`).
+
+If `015` has not yet been applied to prod, apply the current file and skip
+this — it already creates the column as `engine`. Otherwise:
+
+```sql
+DROP INDEX IX_engine_run_scope ON audit.engine_run;
+EXEC sp_rename 'audit.engine_run.pipeline', 'engine', 'COLUMN';
+CREATE INDEX IX_engine_run_scope
+    ON audit.engine_run (channel, engine, category, subcategory, started_at DESC);
+```
+
+`audit.pipeline_execution_log` and `pipeline_name` are **not** touched — that
+is the existing meaning and it stays.

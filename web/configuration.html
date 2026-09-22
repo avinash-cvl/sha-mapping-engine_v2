@@ -182,7 +182,7 @@ function renderHistory(runs) {
   }
   const get = (r, k) => r.config[k]?.value ?? "—";
   $("hist").innerHTML = runs.map((r) => {
-    const side = r.pipeline === "himalaya"
+    const side = r.engine === "himalaya"
       ? '<span class="pill p-cat"><i class="sq"></i>Himalaya</span>'
       : '<span class="pill p-comp"><i class="sq"></i>Competitor</span>';
     return `<tr>

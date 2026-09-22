@@ -18,7 +18,7 @@ run_record.start(conn, rid, counts, workers=4, use_llm=True,
                  triggered_by="test", trigger_type="manual",
                  config_overrides={"SEMANTIC_TOPK": "150"})
 
-row = conn.execute(sa.text("SELECT channel,pipeline,category,scoped_total,status,triggered_by,git_sha,source_row_count FROM audit.engine_run WHERE execution_id=:i"), {"i": str(rid)}).first()
+row = conn.execute(sa.text("SELECT channel,engine,category,scoped_total,status,triggered_by,git_sha,source_row_count FROM audit.engine_run WHERE execution_id=:i"), {"i": str(rid)}).first()
 chk("run row written", row is not None, True)
 chk("channel", row[0], "zepto")
 chk("scoped_total matches resolver", row[3], counts.scoped_total)

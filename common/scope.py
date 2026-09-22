@@ -23,10 +23,10 @@ import sqlalchemy as sa
 import common.config as C
 from common import db, db_models
 
-# The two pipelines, named the way the operator names them rather than by
+# The two engines, named the way the operator names them rather than by
 # module. "himalaya" maps Himalaya's own listings to the master; "competitor"
 # maps everyone else's to the nearest Himalaya equivalent.
-PIPELINES = ("himalaya", "competitor")
+ENGINES = ("himalaya", "competitor")
 
 
 @dataclass(frozen=True)
@@ -36,11 +36,11 @@ class ScopeCounts:
     summed into one."""
 
     channel: str
-    pipeline: str
+    engine: str
     category: str | None
     subcategory: str | None
 
-    scoped_total: int       # rows matching channel+pipeline+category filters
+    scoped_total: int       # rows matching channel+engine+category filters
     to_run: int             # PENDING, not steward-approved -> the engine works these
     approved_skipped: int   # steward-approved; never re-run, never overwritten
     already_mapped: int     # carry a mapping_status other than PENDING/Failed
@@ -56,19 +56,19 @@ def _source_table(channel: str) -> str:
     return f"staging.{channel}_products"
 
 
-def _brand_clause(source, pipeline: str):
-    """The one clause that separates the two pipelines.
+def _brand_clause(source, engine: str):
+    """The one clause that separates the two engines.
 
     Expressed as membership / non-membership of C.HIMALAYA_BRANDS rather than
     an explicit competitor list: the competitor set is open-ended, and a brand
-    the ingest has not seen before should flow through the competitor pipeline
+    the ingest has not seen before should flow through the competitor engine
     by default instead of being silently dropped.
     """
-    if pipeline == "himalaya":
+    if engine == "himalaya":
         return source.c.brand.in_(C.HIMALAYA_BRANDS)
-    if pipeline == "competitor":
+    if engine == "competitor":
         return ~source.c.brand.in_(C.HIMALAYA_BRANDS)
-    raise ValueError(f"pipeline must be one of {PIPELINES}, got {pipeline!r}")
+    raise ValueError(f"engine must be one of {ENGINES}, got {engine!r}")
 
 
 def _approved_clause(source):
@@ -105,7 +105,7 @@ def _not_approved_clause(source):
 def resolve(
     conn: db.Connection,
     channel: str,
-    pipeline: str,
+    engine: str,
     category: str | None = None,
     subcategory: str | None = None,
     skus: list[str] | None = None,
@@ -116,7 +116,7 @@ def resolve(
     source = db_models.get_table(conn.engine, schema, name)
 
     base = sa.select(sa.func.count()).select_from(source).where(
-        _brand_clause(source, pipeline)
+        _brand_clause(source, engine)
     )
     if category:
         base = base.where(source.c.category == category)
@@ -164,7 +164,7 @@ def resolve(
 
     return ScopeCounts(
         channel=channel,
-        pipeline=pipeline,
+        engine=engine,
         category=category,
         subcategory=subcategory,
         scoped_total=scoped_total,
@@ -183,21 +183,21 @@ def resolve_both(
     subcategory: str | None = None,
     skus: list[str] | None = None,
 ) -> list[ScopeCounts]:
-    """Both pipelines over the same scope, as two separate results.
+    """Both engines over the same scope, as two separate results.
 
     Never summed. The two sides are routinely asymmetric -- zepto lip balms
     is 4 Himalaya rows against 274 competitor rows -- and a single total
     would hide exactly the shape an operator needs to see before confirming.
     """
     return [
-        resolve(conn, channel, p, category, subcategory, skus) for p in PIPELINES
+        resolve(conn, channel, p, category, subcategory, skus) for p in ENGINES
     ]
 
 
 def groups(
     conn: db.Connection,
     channel: str,
-    pipeline: str,
+    engine: str,
     category: str | None = None,
 ) -> list[dict]:
     """Per (category, subcategory) breakdown of runnable rows.
@@ -221,7 +221,7 @@ def groups(
                 sa.case((source.c.mapping_status == "PENDING", 1), else_=0)
             ).label("pending"),
         )
-        .where(_brand_clause(source, pipeline))
+        .where(_brand_clause(source, engine))
         .where(not_approved)
         .group_by(source.c.category, source.c.subcategory)
         .order_by(sa.func.count().desc())

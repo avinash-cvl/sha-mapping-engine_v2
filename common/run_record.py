@@ -92,7 +92,7 @@ def start(
             sa.insert(run).values(
                 execution_id=str(execution_id),
                 channel=counts.channel,
-                pipeline=counts.pipeline,
+                engine=counts.engine,
                 category=counts.category,
                 subcategory=counts.subcategory,
                 explicit_sku_count=explicit_sku_count,
@@ -208,7 +208,7 @@ def finish(
 
 
 def outcome_for(
-    conn: db.Connection, channel: str, pipeline: str,
+    conn: db.Connection, channel: str, engine: str,
     category: str | None, subcategory: str | None,
 ) -> dict[str, int]:
     """Current status mix for a scope, read straight off the source table.
@@ -224,7 +224,7 @@ def outcome_for(
 
     q = (
         sa.select(source.c.mapping_status, sa.func.count())
-        .where(_brand_clause(source, pipeline))
+        .where(_brand_clause(source, engine))
         .where(_not_approved_clause(source))
         .group_by(source.c.mapping_status)
     )

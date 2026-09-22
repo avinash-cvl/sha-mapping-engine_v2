@@ -102,7 +102,7 @@ logger = logging.getLogger(__name__)
 # HIMALAYA_BRANDS membership test in batch_flow_steps.py's selection,
 # and is what common.scope resolves counts against so a preview and a
 # run can never disagree about what is in scope.
-PIPELINE = "competitor"
+ENGINE = "competitor"
 
 
 # ============================================================
@@ -453,7 +453,7 @@ def process_one_sku(
                 disposition_results=disposition_results,
             )
         else:
-            # --no-llm: keep each SKU's preliminary (pipeline-only)
+            # --no-llm: keep each SKU's preliminary (engine-only)
             # disposition as the final result, same as flow.py's
             # use_llm=False path -- mcda_judge.judge is never called.
             final_results = {}
@@ -740,7 +740,7 @@ def main() -> None:
         run_counts = scope.resolve(
             conn,
             channel=CHANNEL,
-            pipeline=PIPELINE,
+            engine=ENGINE,
             category=args.category,
             subcategory=args.subcategory,
             skus=args.sku,
@@ -1146,7 +1146,7 @@ def main() -> None:
                 # UNRESOLVED rows are NOT closed here -- that state
                 # means "the rules could not decide", not "there is
                 # nothing here", and dropping them would silently lose
-                # recall. They flow on through the normal pipeline.
+                # recall. They flow on through the normal engine.
                 # =================================================
 
                 category_resolved, batch = step_6c_apply_category_shortcircuit(
@@ -1541,7 +1541,7 @@ def main() -> None:
                 processed=total_processed,
                 failed=0,
                 outcome=run_record.outcome_for(
-                    conn, CHANNEL, PIPELINE, args.category, args.subcategory
+                    conn, CHANNEL, ENGINE, args.category, args.subcategory
                 ),
             )
 

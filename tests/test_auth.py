@@ -100,7 +100,7 @@ def test_bad_overrides_are_refused_before_launch(client, overrides):
     """A bad weight does not crash the engine -- it quietly produces a
     different ranking, so it has to fail at the boundary."""
     r = client.post("/api/engine/runs", json={
-        "channel": "zepto", "pipeline": "competitor",
+        "channel": "zepto", "engine": "competitor",
         "category": "lip makeup", "subcategory": "lip balms",
         "workers": 1, "overrides": overrides,
     })

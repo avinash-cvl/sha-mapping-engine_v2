@@ -55,7 +55,7 @@ BEGIN
         -- Scope as selected. category/subcategory are NULL for an
         -- unfiltered run, which is distinct from an empty string.
         channel             VARCHAR(32)   NOT NULL,   -- amazon | blinkit | swiggy | zepto
-        pipeline            VARCHAR(16)   NOT NULL,   -- himalaya | competitor
+        engine              VARCHAR(16)   NOT NULL,   -- himalaya | competitor
         category            NVARCHAR(128) NULL,
         subcategory         NVARCHAR(128) NULL,
         explicit_sku_count  INT           NULL,       -- NULL = no --sku filter
@@ -100,7 +100,7 @@ BEGIN
     -- "Have we run this scope, and when?" -- the query the old table could
     -- not answer.
     CREATE INDEX IX_engine_run_scope
-        ON audit.engine_run (channel, pipeline, category, subcategory, started_at DESC);
+        ON audit.engine_run (channel, engine, category, subcategory, started_at DESC);
 
     -- Finding stale runs, and listing recent activity.
     CREATE INDEX IX_engine_run_status

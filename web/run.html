@@ -120,7 +120,7 @@
         </div>
       </section>
 
-      <section class="panel" id="queue-panel" hidden>
+      <section class="panel" id="queue-panel">
         <div class="panel-h"><span class="panel-t">Active runs</span>
           <span class="live" style="margin-left:auto"><i></i>Streaming</span></div>
         <div class="panel-b"><div class="q" id="queue"></div></div>
@@ -151,7 +151,7 @@
           <div class="tw">
             <table>
               <thead><tr>
-                <th>Pipeline</th><th>Category</th><th>Source listing</th>
+                <th>Engine</th><th>Category</th><th>Source listing</th>
                 <th>Matched to</th><th>Status</th><th class="num">Confidence</th>
               </tr></thead>
               <tbody id="rows-body">
@@ -241,11 +241,33 @@ function skuList() {
 function scopeBody() {
   return {
     channel: $("channel").value,
-    pipeline: selectedPipeline(),
+    engine: selectedPipeline(),
     category: $("category").value || null,
     subcategory: $("subcategory").value || null,
     skus: skuList(),
   };
+}
+
+async function adoptRunningRuns() {
+  /* A run outlives the page that started it. Without this, refreshing during
+     a four-hour job leaves the operator with no view of it at all. */
+  try {
+    const runs = await api("/runs?limit=20");
+    runs.filter((r) => r.status === "running").forEach((r) => {
+      if (LIVE.has(r.execution_id)) return;
+      LIVE.set(r.execution_id, {
+        run_id: r.execution_id, engine: r.engine, status: r.status,
+        processed: r.processed, failed: r.failed, to_run: r.to_run,
+      });
+      streamRun(r.execution_id, {
+        onProgress: (p) => { Object.assign(LIVE.get(r.execution_id), p); renderQueue(); },
+        onDone: (p) => { Object.assign(LIVE.get(r.execution_id), p); renderQueue();
+                         resolve(); loadResults(); },
+        onError: (msg) => showError($("errors"), msg),
+      });
+    });
+    renderQueue();
+  } catch { /* the queue is secondary; the rest of the page still works */ }
 }
 
 async function boot() {
@@ -255,6 +277,7 @@ async function boot() {
       .map((c) => `<option>${esc(c)}</option>`).join("");
     fillCategories();
     await resolve();
+    await adoptRunningRuns();
   } catch (e) { showError($("errors"), e.message); }
 }
 
@@ -290,9 +313,9 @@ async function resolve() {
     if (selectedPipeline()) {
       const both = await api("/scope", {
         method: "POST",
-        body: JSON.stringify({ ...scopeBody(), pipeline: null }),
+        body: JSON.stringify({ ...scopeBody(), engine: null }),
       });
-      const by = Object.fromEntries(both.legs.map((l) => [l.pipeline, l]));
+      const by = Object.fromEntries(both.legs.map((l) => [l.engine, l]));
       $("n-him").textContent = fmt(by.himalaya.to_run);
       $("n-comp").textContent = fmt(by.competitor.to_run);
       $("n-both").textContent = fmt(by.himalaya.to_run + by.competitor.to_run);
@@ -308,7 +331,7 @@ async function resolve() {
 }
 
 function renderLegs(data) {
-  const by = Object.fromEntries(data.legs.map((l) => [l.pipeline, l]));
+  const by = Object.fromEntries(data.legs.map((l) => [l.engine, l]));
   const him = by.himalaya, comp = by.competitor;
 
   /* The scope picker always shows both counts -- that is how you choose --
@@ -332,8 +355,8 @@ function renderLegs(data) {
 
   $("legs").style.gridTemplateColumns = active.length > 1 ? "" : "1fr";
   $("legs").innerHTML = active
-    .map((l) => leg(l, l.pipeline === "himalaya" ? "cat" : "comp",
-                    l.pipeline === "himalaya" ? "Himalaya" : "Competitor"))
+    .map((l) => leg(l, l.engine === "himalaya" ? "cat" : "comp",
+                    l.engine === "himalaya" ? "Himalaya" : "Competitor"))
     .join("");
   const toRun = active.reduce((a, l) => a + l.to_run, 0);
   const approved = active.reduce((a, l) => a + l.approved_skipped, 0);
@@ -371,7 +394,6 @@ async function launch() {
     /* The same body the plan was built from, so what was confirmed is what
        runs. */
     const data = await api("/runs", { method: "POST", body: JSON.stringify(planBody()) });
-    $("queue-panel").hidden = false;
     $("log-panel").hidden = false;
     if (Object.keys(data.overrides || {}).length) {
       $("errors").innerHTML = `<div class="note" style="margin:0 0 14px">
@@ -398,17 +420,30 @@ function watch(run) {
 }
 
 function renderQueue() {
-  $("queue").innerHTML = [...LIVE.values()].map((r, i) => {
+  const live = [...LIVE.values()];
+  const header = $("queue-panel").querySelector(".live");
+  if (header) header.style.visibility = live.some(r => r.status === "running")
+    ? "visible" : "hidden";
+
+  if (!live.length) {
+    $("queue").innerHTML = `<div class="q-row" style="color:var(--ink-3);
+      justify-content:center;padding:20px">No runs in progress.</div>`;
+    return;
+  }
+  $("queue").innerHTML = live.map((r, i) => {
     const pct = r.to_run ? Math.round((r.processed / r.to_run) * 100) : 0;
-    const cls = r.pipeline === "himalaya" ? "p-cat" : "p-comp";
-    const name = r.pipeline === "himalaya" ? "Himalaya" : "Competitor";
+    const cls = r.engine === "himalaya" ? "p-cat" : "p-comp";
+    const name = r.engine === "himalaya" ? "Himalaya" : "Competitor";
+    const done = r.status && r.status !== "running";
     return `<div class="q-row">
       <span class="ord">${i + 1}</span>
       <span class="pill ${cls}"><i class="sq"></i>${name}</span>
       <span class="nm">${esc($("channel").value)} · ${esc($("category").value || "all")}
         <span>${r.run_id.slice(0, 8)}</span></span>
-      <span class="q-bar"><i style="width:${pct}%;background:var(--ok)"></i></span>
-      <span class="n">${fmt(r.processed)} / ${fmt(r.to_run)}${r.failed ? ` · ${r.failed} failed` : ""}</span>
+      <span class="q-bar"><i style="width:${pct}%;background:${
+        r.failed ? "var(--warn)" : "var(--ok)"}"></i></span>
+      <span class="n">${fmt(r.processed)} / ${fmt(r.to_run)}${
+        r.failed ? ` · ${r.failed} failed` : ""}${done ? " · done" : ""}</span>
     </div>`;
   }).join("");
 }
@@ -489,7 +524,7 @@ async function openConfirm() {
 
 function renderPlan(p) {
   const leg = (l) =>
-    '<div><b>' + (l.pipeline === "himalaya" ? "Himalaya catalog" : "Competitive substitute") + '</b>' +
+    '<div><b>' + (l.engine === "himalaya" ? "Himalaya catalog" : "Competitive substitute") + '</b>' +
     '<dl class="kv">' +
       '<dt>To run</dt><dd class="big">' + fmt(l.to_run) + '</dd>' +
       '<dt>Brand filter</dt><dd>' + esc(l.brand_filter) + '</dd>' +
@@ -505,7 +540,7 @@ function renderPlan(p) {
   return (
     (p.blocked_by.length
       ? '<div class="m-sec"><div class="m-block"><b>A run for this scope is already in progress.</b><br>' +
-        p.blocked_by.map((b) => esc(b.pipeline) + " \u00b7 " + esc(b.run_id.slice(0, 8))).join("<br>") +
+        p.blocked_by.map((b) => esc(b.engine) + " \u00b7 " + esc(b.run_id.slice(0, 8))).join("<br>") +
         '</div></div>'
       : "") +
 
@@ -603,7 +638,7 @@ async function loadResults(offset = RES_OFFSET, limit = RES_LIMIT) {
   const base = `channel=${encodeURIComponent($("channel").value)}`
     + ($("category").value ? `&category=${encodeURIComponent($("category").value)}` : "")
     + ($("subcategory").value ? `&subcategory=${encodeURIComponent($("subcategory").value)}` : "")
-    + (selectedPipeline() ? `&pipeline=${selectedPipeline()}` : "");
+    + (selectedPipeline() ? `&engine=${selectedPipeline()}` : "");
 
   const status = $("f-status").value;
   const q = $("f-q").value.trim();
@@ -654,7 +689,7 @@ async function loadResults(offset = RES_OFFSET, limit = RES_LIMIT) {
 }
 
 function resultRow(r) {
-  const side = r.pipeline === "himalaya"
+  const side = r.engine === "himalaya"
     ? '<span class="pill p-cat"><i class="sq"></i>Himalaya</span>'
     : '<span class="pill p-comp"><i class="sq"></i>Competitor</span>';
   const matched = r.product_code
