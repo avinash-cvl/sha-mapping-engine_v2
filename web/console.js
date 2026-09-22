@@ -13,6 +13,17 @@ async function api(path, opts = {}) {
     headers: { "Content-Type": "application/json" },
     ...opts,
   });
+  /* An expired session must not surface as a generic error on every panel.
+     Send the user to sign in, carrying where they were so the deep link
+     survives. */
+  if (res.status === 401) {
+    const next = encodeURIComponent(location.pathname + location.search);
+    location.href = `/login?expired=1&next=${next}`;
+    throw new Error("Session expired.");
+  }
+  if (res.status === 403) {
+    throw new Error("Your account does not have access to the engine console.");
+  }
   if (!res.ok) {
     let detail;
     try { detail = (await res.json()).detail; } catch { detail = res.statusText; }
@@ -81,4 +92,23 @@ function streamRun(runId, { onProgress, onDone, onError }) {
   return es;
 }
 
-window.Console = { api, fmt, duration, pill, esc, showError, clearError, streamRun, STATUS };
+async function whoami() {
+  const res = await fetch("/api/session/me");
+  if (!res.ok) { location.href = "/login"; throw new Error("not signed in"); }
+  return (await res.json()).user;
+}
+
+async function mountUser(el) {
+  if (!el) return null;
+  const user = await whoami();
+  el.innerHTML = `${esc(user.name || user.email)} · <b>${esc(user.role)}</b>
+    <a href="#" id="signout" style="color:var(--accent);margin-left:8px">Sign out</a>`;
+  el.querySelector("#signout").addEventListener("click", async (e) => {
+    e.preventDefault();
+    await fetch("/api/session/logout", { method: "POST" });
+    location.href = "/login";
+  });
+  return user;
+}
+
+window.Console = { whoami, mountUser, api, fmt, duration, pill, esc, showError, clearError, streamRun, STATUS };

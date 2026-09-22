@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in · Harmonization Engine</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="/static/console.css">
+<style>
+  .shell{min-height:88vh;display:grid;place-items:center;padding-block:40px}
+  .card{width:100%;max-width:380px}
+  .brand{display:flex;align-items:center;gap:10px;font-weight:600;font-size:16px;
+         letter-spacing:-.01em;justify-content:center;margin-bottom:6px}
+  .lede{text-align:center;color:var(--ink-3);font-size:13px;margin:0 0 20px}
+  .card .field{margin-bottom:14px}
+  .card input{width:100%;font:inherit;font-size:14px;color:var(--ink);
+              background:var(--surface-2);border:1px solid var(--line);
+              border-radius:8px;padding:10px 12px}
+  .card .btn{width:100%;justify-content:center;padding:11px;font-size:14px}
+  .err{background:var(--crit-soft);border:1px solid color-mix(in srgb,var(--crit) 32%,transparent);
+       color:var(--ink);border-radius:8px;padding:11px 13px;font-size:12.5px;margin-bottom:14px}
+  .foot{text-align:center;font-size:12px;color:var(--ink-3);margin-top:16px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="shell">
+    <div class="card">
+      <div class="brand">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <rect x="2.5" y="3.5" width="7" height="7" rx="1.6" stroke="currentColor" stroke-width="1.7"/>
+          <rect x="14.5" y="13.5" width="7" height="7" rx="1.6" stroke="currentColor" stroke-width="1.7"/>
+          <path d="M9.5 7h4.2a2.3 2.3 0 0 1 2.3 2.3V13" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+          <circle cx="18" cy="17" r="1.4" fill="currentColor"/>
+        </svg>
+        Harmonization Engine
+      </div>
+      <p class="lede">Sign in with your admin account.</p>
+
+      <div class="panel">
+        <div class="panel-b">
+          <div id="err"></div>
+          <form id="form">
+            <div class="field">
+              <label for="email">Email</label>
+              <input type="email" id="email" autocomplete="username" required autofocus>
+            </div>
+            <div class="field">
+              <label for="password">Password</label>
+              <input type="password" id="password" autocomplete="current-password" required>
+            </div>
+            <button class="btn primary" type="submit" id="btn">Sign in</button>
+          </form>
+        </div>
+      </div>
+
+      <p class="foot">The console launches production runs. Admin accounts only.</p>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const params = new URLSearchParams(location.search);
+
+if (params.get("expired")) {
+  $("err").innerHTML = '<div class="err">Your session expired. Sign in again.</div>';
+}
+
+$("form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  $("err").innerHTML = "";
+  $("btn").disabled = true;
+  $("btn").textContent = "Signing in…";
+  try {
+    const res = await fetch("/api/session/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: $("email").value, password: $("password").value }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.detail || "Sign-in failed.");
+    }
+    /* Return the user where they were headed, so a deep link survives an
+       expired session instead of dumping them on the run page. */
+    location.href = params.get("next") || "/";
+  } catch (err) {
+    $("err").innerHTML = `<div class="err">${err.message}</div>`;
+    $("btn").disabled = false;
+    $("btn").textContent = "Sign in";
+    $("password").value = "";
+    $("password").focus();
+  }
+});
+</script>
+</body>
+</html>

@@ -24,13 +24,20 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 import sqlalchemy as sa
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
-from common import db, db_models, recovery, run_record, scope
+from common import auth, db, db_models, recovery, run_record, scope
 
-router = APIRouter(prefix="/api/engine", tags=["engine"])
+# Applied to the router rather than to each route: a dependency listed here
+# cannot be forgotten when someone adds an endpoint later. Every path under
+# /api/engine requires an admin session.
+router = APIRouter(
+    prefix="/api/engine",
+    tags=["engine"],
+    dependencies=[Depends(auth.require_admin)],
+)
 
 CHANNELS = ("amazon", "blinkit", "swiggy", "zepto")
 MODULE = {"himalaya": "oneds_master", "competitor": "oneds_competitor"}
@@ -52,6 +59,72 @@ class RunRequest(ScopeRequest):
     use_llm: bool = True
     reset_failed: bool = False           # opt-in; never implicit
     triggered_by: str | None = None
+    # Per-run config, handed to the subprocess as environment variables.
+    # config.py reads os.environ at import time, so a fresh process picks
+    # these up and no other run is affected -- which is why overrides are
+    # per-run rather than a global the console mutates.
+    overrides: dict[str, str] = Field(default_factory=dict)
+
+
+# Settings a run may override, with the bounds each is sane within.
+# Anything absent here cannot be set from the console at all: TOP_N_OUTPUT is
+# the contract with the review portal, and the model deployments would make
+# scores incomparable with every prior run.
+OVERRIDABLE = {
+    "CATEGORY_GATE_MIN_TARGET_POP": (int, 0, 10),
+    "CATEGORY_GATE_MIN_CONF": (float, 0.0, 1.1),
+    "SEMANTIC_TOPK": (int, 10, 500),
+    "LEXICAL_TOPK": (int, 10, 500),
+    "W_SEMANTIC": (float, 0.0, 1.0),
+    "W_LEXICAL": (float, 0.0, 1.0),
+    "W_TYPE": (float, 0.0, 1.0),
+    "W_PACK": (float, 0.0, 1.0),
+    "W_OVERLAP": (float, 0.0, 1.0),
+    "PRODUCT_GROUP_MATCH_BONUS": (float, 1.0, 2.0),
+    "PACK_TYPE_MISMATCH_PENALTY": (float, 0.5, 1.0),
+}
+
+LOCKED = ("TOP_N_OUTPUT", "AZURE_LLM_DEPLOYMENT", "AZURE_EMBEDDING_DEPLOYMENT")
+
+
+def _validate_overrides(raw: dict[str, str]) -> dict[str, str]:
+    """Reject anything out of range before a run starts.
+
+    A bad weight does not crash the engine -- it quietly produces a different
+    ranking, which is far worse than an error. The weights are checked as a
+    set too: they are a blend, and one raised in isolation silently changes
+    what every other signal is worth.
+    """
+    clean: dict[str, str] = {}
+    for key, value in raw.items():
+        if key in LOCKED:
+            raise HTTPException(400, f"{key} cannot be overridden.")
+        if key not in OVERRIDABLE:
+            raise HTTPException(400, f"{key} is not an overridable setting.")
+        cast, lo, hi = OVERRIDABLE[key]
+        try:
+            parsed = cast(value)
+        except (TypeError, ValueError):
+            raise HTTPException(400, f"{key} must be a {cast.__name__}.")
+        if not (lo <= parsed <= hi):
+            raise HTTPException(400, f"{key} must be between {lo} and {hi}.")
+        clean[key] = str(parsed)
+
+    weights = {k: float(v) for k, v in clean.items() if k.startswith("W_")}
+    if weights:
+        import common.config as cfg
+        full = {
+            k: weights.get(k, float(getattr(cfg, k)))
+            for k in ("W_SEMANTIC", "W_LEXICAL", "W_TYPE", "W_PACK", "W_OVERLAP")
+        }
+        total = round(sum(full.values()), 4)
+        if abs(total - 1.0) > 0.001:
+            raise HTTPException(
+                400,
+                f"Scoring weights must sum to 1.00; these sum to {total:.2f}. "
+                "Adjust the others to compensate.",
+            )
+    return clean
 
 
 # ------------------------------------------------- in-process run registry
@@ -234,7 +307,9 @@ def failed_preview(req: ScopeRequest) -> dict:
 
 
 @router.post("/failed/reset")
-def failed_reset(req: ScopeRequest, actor: str | None = None) -> dict:
+def failed_reset(
+    req: ScopeRequest, user: auth.User = Depends(auth.current_user)
+) -> dict:
     """Flip Failed rows back to PENDING so the next run picks them up.
 
     Explicit by design. A deadlocked worker leaves its row 'Failed', step 6
@@ -247,12 +322,12 @@ def failed_reset(req: ScopeRequest, actor: str | None = None) -> dict:
     conn = db.get_connection()
     return recovery.reset_failed(
         conn, req.channel, req.pipeline, req.category, req.subcategory,
-        req.skus, actor=actor,
+        req.skus, actor=user.email,
     ).as_dict()
 
 
 # ---------------------------------------------------------------- launch
-def _spawn(req: RunRequest, pipeline: str) -> Run:
+def _spawn(req: RunRequest, pipeline: str, overrides: dict[str, str]) -> Run:
     run_id = str(uuid.uuid4())
     log_path = os.path.join(REPO_ROOT, "logs", f"console_{run_id}.log")
 
@@ -274,8 +349,12 @@ def _spawn(req: RunRequest, pipeline: str) -> Run:
 
     env = {
         **os.environ,
+        **overrides,
         "ENGINE_TRIGGERED_BY": req.triggered_by or "console",
         "ENGINE_TRIGGER_TYPE": "manual",
+        # Recorded against the run so audit.engine_run_config can mark which
+        # values were overridden rather than inherited.
+        "ENGINE_CONFIG_OVERRIDES": ",".join(sorted(overrides)),
     }
     proc = subprocess.Popen(
         cmd, cwd=REPO_ROOT, env=env,
@@ -289,7 +368,7 @@ def _spawn(req: RunRequest, pipeline: str) -> Run:
 
 
 @router.post("/runs")
-def launch(req: RunRequest) -> dict:
+def launch(req: RunRequest, user: auth.User = Depends(auth.current_user)) -> dict:
     """Launch one run per requested pipeline.
 
     "Both" is two runs, never one: the pipelines apply opposite brand filters
@@ -314,16 +393,23 @@ def launch(req: RunRequest) -> dict:
                     f"already in progress ({existing.run_id})",
                 )
 
+    overrides = _validate_overrides(req.overrides)
+
     conn = db.get_connection()
+
+    # Attribution comes from the session, never from the request body. A
+    # client-supplied name in an audit trail is a suggestion, not a record.
+    req = req.model_copy(update={"triggered_by": user.email})
+
     reset = {}
     if req.reset_failed:
         for p in pipelines:
             reset[p] = recovery.reset_failed(
                 conn, req.channel, p, req.category, req.subcategory,
-                actor=req.triggered_by or "console",
+                actor=user.email,
             ).rows_reset
 
-    launched = [_spawn(req, p) for p in pipelines]
+    launched = [_spawn(req, p, overrides) for p in pipelines]
     return {
         "runs": [
             {"run_id": r.run_id, "pipeline": r.pipeline, "log": r.log_path}
@@ -331,6 +417,7 @@ def launch(req: RunRequest) -> dict:
         ],
         "failed_rows_reset": reset,
         "parallel": len(launched) > 1,
+        "overrides": overrides,
     }
 
 

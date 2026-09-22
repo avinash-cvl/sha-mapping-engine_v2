@@ -35,6 +35,7 @@
       <a href="/configuration">Configuration</a>
       <a href="/history" aria-current="page">History</a>
     </nav>
+    <span class="who" id="who"></span>
     <span class="env"><i></i>LOCAL</span>
   </div>
 
@@ -170,6 +171,7 @@ $("btn-compare").addEventListener("click", async () => {
   } catch (e) { showError($("errors"), e.message); }
 });
 
+Console.mountUser(document.getElementById('who'));
 load();
 </script>
 </body>

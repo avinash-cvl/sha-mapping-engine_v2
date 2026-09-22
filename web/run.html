@@ -26,6 +26,7 @@
       <a href="/configuration">Configuration</a>
       <a href="/history">History</a>
     </nav>
+    <span class="who" id="who"></span>
     <span class="env" id="env"><i></i>LOCAL</span>
   </div>
 
@@ -88,6 +89,27 @@
               <select id="llm-state"><option value="1" selected>Enabled</option><option value="0">Disabled</option></select></div>
           </div>
           <p class="hint" style="margin:8px 0 0">Above 4 workers this instance has produced SQL&nbsp;40001 deadlocks.</p>
+
+          <div style="border-top:1px solid var(--line-soft);margin-top:12px;padding-top:12px">
+            <p class="hint" style="margin:0 0 10px"><b style="color:var(--ink-2)">Config overrides</b><br>
+              Apply to this run only, passed to the process as environment
+              variables. Recorded against the run so a later comparison shows them.</p>
+            <div class="row2">
+              <div class="field"><label for="ov-pop">Gate min pop</label>
+                <input id="ov-pop" type="number" min="0" max="10" placeholder="default"></div>
+              <div class="field"><label for="ov-sem">Semantic topK</label>
+                <input id="ov-sem" type="number" min="10" max="500" placeholder="default"></div>
+            </div>
+            <div class="row2">
+              <div class="field"><label for="ov-lex">Lexical topK</label>
+                <input id="ov-lex" type="number" min="10" max="500" placeholder="default"></div>
+              <div class="field"><label for="ov-conf">Gate min conf</label>
+                <input id="ov-conf" type="number" step="0.01" min="0" max="1.1" placeholder="default"></div>
+            </div>
+            <p class="hint" style="margin:0">Scoring weights are not editable here: they must sum
+              to 1.00, and changing one silently reweights every other signal.
+              <a href="/configuration" style="color:var(--accent)">See configuration</a>.</p>
+          </div>
         </details>
       </div>
     </form>
@@ -257,11 +279,25 @@ async function launch() {
   const original = btn.textContent;
   btn.disabled = true; btn.textContent = "Launching…";
   try {
+    /* Only send what was actually filled in -- an empty field means
+       "inherit", not "set to zero". */
+    const overrides = {};
+    const pairs = { "ov-pop": "CATEGORY_GATE_MIN_TARGET_POP", "ov-sem": "SEMANTIC_TOPK",
+                    "ov-lex": "LEXICAL_TOPK", "ov-conf": "CATEGORY_GATE_MIN_CONF" };
+    for (const [id, key] of Object.entries(pairs)) {
+      const v = $(id).value.trim();
+      if (v !== "") overrides[key] = v;
+    }
     const body = { ...scopeBody(), workers: +$("workers").value,
-                   use_llm: $("llm-state").value === "1", triggered_by: "console" };
+                   use_llm: $("llm-state").value === "1", overrides };
     const data = await api("/runs", { method: "POST", body: JSON.stringify(body) });
     $("queue-panel").hidden = false;
     $("log-panel").hidden = false;
+    if (Object.keys(data.overrides || {}).length) {
+      $("errors").innerHTML = `<div class="note" style="margin:0 0 14px">
+        <div><b>Running with overrides:</b>
+        ${Object.entries(data.overrides).map(([k,v])=>`${esc(k)}=${esc(v)}`).join(", ")}</div></div>`;
+    }
     data.runs.forEach(watch);
   } catch (e) {
     showError($("errors"), e.message);
@@ -322,6 +358,7 @@ $("btn-reset").addEventListener("click", async () => {
   } catch (e) { showError($("errors"), e.message); }
 });
 
+Console.mountUser(document.getElementById('who'));
 boot();
 </script>
 </body>

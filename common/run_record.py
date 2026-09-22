@@ -21,6 +21,7 @@ because the alternative is losing real work to a bookkeeping fault.
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 from datetime import datetime, timezone
 
@@ -113,7 +114,14 @@ def start(
         )
 
         cfg = db_models.get_table(conn.engine, "audit", "engine_run_config")
-        overrides = config_overrides or {}
+        # The console sets ENGINE_CONFIG_OVERRIDES on the subprocess so the
+        # run can record which values were chosen for it rather than
+        # inherited from config.py -- the difference a later comparison
+        # depends on.
+        env_overrides = {
+            k for k in os.environ.get("ENGINE_CONFIG_OVERRIDES", "").split(",") if k
+        }
+        overrides = {**(config_overrides or {}), **{k: "" for k in env_overrides}}
         rows = []
         for key in TRACKED_CONFIG:
             value = getattr(C, key, None)

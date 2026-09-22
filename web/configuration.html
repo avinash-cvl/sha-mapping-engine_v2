@@ -40,6 +40,7 @@
       <a href="/configuration" aria-current="page">Configuration</a>
       <a href="/history">History</a>
     </nav>
+    <span class="who" id="who"></span>
     <span class="env"><i></i>LOCAL</span>
   </div>
 
@@ -140,6 +141,7 @@ function renderHistory(runs) {
   }).join("");
 }
 
+Console.mountUser(document.getElementById('who'));
 load();
 </script>
 </body>

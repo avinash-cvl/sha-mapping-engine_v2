@@ -97,3 +97,23 @@ column takes a JSON document, not prose. `common/recovery.py` writes
 `FAILED_ROWS_RESET` entries in the same shape `STAGING_REVIEW_UPDATED` and
 `CROSSWALK_UPSERT` already use. A plain-text insert is rejected at the
 constraint.
+
+---
+
+## Console authentication — no schema change
+
+The console authenticates against the existing `config.users` (25 accounts,
+argon2id hashes, `role` column). **No table is created, altered or written
+to.** Reads only, and only on sign-in.
+
+Two environment variables are required in prod:
+
+| Variable | Purpose |
+|---|---|
+| `CONSOLE_JWT_SECRET` | Signs session tokens. **Required** — the console refuses to start a session without it rather than falling back to a default. |
+| `CONSOLE_SECURE_COOKIES` | Set `true` behind TLS so the session cookie is `Secure`. Defaults to `false` because a `Secure` cookie is silently dropped over plain http, which makes a local dev server look broken. |
+
+Optional: `CONSOLE_TOKEN_TTL_HOURS` (default 8).
+
+Access is **ADMIN only** — currently 2 of the 25 accounts. A `USER` account
+is refused at sign-in with 403.

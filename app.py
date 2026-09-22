@@ -19,7 +19,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from routers import engine
+from routers import engine, session
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 WEB = os.path.join(BASE, "web")
@@ -30,6 +30,7 @@ app = FastAPI(
     version="0.1.0",
 )
 
+app.include_router(session.router)
 app.include_router(engine.router)
 
 
@@ -47,6 +48,10 @@ if os.path.isdir(WEB):
     @app.get("/")
     def index() -> FileResponse:
         return FileResponse(os.path.join(WEB, "run.html"))
+
+    @app.get("/login")
+    def login_page() -> FileResponse:
+        return FileResponse(os.path.join(WEB, "login.html"))
 
     @app.get("/configuration")
     def configuration() -> FileResponse:
