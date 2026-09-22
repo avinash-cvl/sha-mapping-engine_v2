@@ -113,10 +113,12 @@
            border-bottom:1px solid var(--line-soft)">
         <input type="search" id="log-q" placeholder="Filter by name, channel or run id"
                aria-label="Search log files">
+        <button class="btn" id="log-clear" style="padding:6px 12px;font-size:12.5px">Clear</button>
+        <span class="sp" id="log-shown"></span>
       </div>
       <div class="tw"><table>
         <thead><tr>
-          <th>Log</th><th>Run</th><th class="num">Size</th><th>Modified</th><th></th>
+          <th>Log file</th><th>Run</th><th class="num">Size</th><th>Modified</th><th></th>
         </tr></thead>
         <tbody id="logs-body">
           <tr><td colspan="5" style="padding:20px;color:var(--ink-3)">Loading…</td></tr>
@@ -418,6 +420,7 @@ async function loadLogs(offset = 0, limit = LOG_LIMIT) {
     const d = await api(`/logs?limit=${limit}&offset=${offset}`
       + (q ? `&q=${encodeURIComponent(q)}` : ""));
     $("logs-count").textContent = `${fmt(d.total)} files`;
+    $("log-shown").textContent = `${fmt(d.files.length)} of ${fmt(d.total)}`;
     $("tab-logs-count").textContent = fmt(d.total);
     $("logs-body").innerHTML = d.files.length
       ? d.files.map(logFileRow).join("")
@@ -441,13 +444,15 @@ function logFileRow(f) {
   const kb = f.size_bytes < 1024 * 1024
     ? `${Math.round(f.size_bytes / 1024)} KB`
     : `${(f.size_bytes / 1048576).toFixed(1)} MB`;
+  const when = new Date(f.modified);
   return `<tr>
-    <td class="cell-cat">${esc(f.label)}<div class="sc m">${esc(f.name)}</div></td>
+    <td><div class="log-name">${esc(f.label)}</div>
+        <div class="log-file">${esc(f.name)}</div></td>
     <td class="m">${f.run_id ? esc(f.run_id.slice(0, 8)) : "—"}</td>
-    <td class="num">${kb}</td>
-    <td class="t-sub" style="margin:0">${new Date(f.modified).toLocaleString()}</td>
-    <td><button class="btn log-open" data-name="${esc(f.name)}"
-          style="padding:4px 10px;font-size:12px">Open</button></td>
+    <td class="num log-size">${kb}</td>
+    <td class="t-sub" style="margin:0;white-space:nowrap">${when.toLocaleDateString()}
+      <span style="color:var(--ink-3)">${when.toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}</span></td>
+    <td><button class="btn open log-open" data-name="${esc(f.name)}">Open</button></td>
   </tr>`;
 }
 
@@ -455,6 +460,10 @@ async function openLog(name) {
   return openRunDetail({ logName: name });
 }
 
+
+$("log-clear").addEventListener("click", () => {
+  $("log-q").value = ""; loadLogs(0, LOG_LIMIT);
+});
 
 let logTimer;
 $("log-q").addEventListener("input", () => {
@@ -550,16 +559,27 @@ function renderRunDetail() {
       ? '<span class="pill p-rev"><i class="sq"></i>Partial failure</span>'
       : '<span class="pill p-fail"><i class="sq"></i>Failed</span>';
 
-  const when = (v) => v ? new Date(v).toLocaleString() : "—";
+  /* A log file has no run row, so started/completed fall back to the first
+     and last timestamps in the log itself. Showing "—" for a run that plainly
+     did happen reads as broken. */
+  const startedAt = r?.started_at || d.started_at;
+  const endedAt = r?.ended_at || d.ended_at;
+  const when = (v) => v
+    ? new Date(v).toLocaleString(undefined,
+        { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })
+    : "—";
+
   $("rd-meta").innerHTML = [
-    ["Run ID", r?.execution_id || cfg.run_id || "—"],
+    ["Run ID", r?.execution_id || cfg.run_id || "—", true],
     ["Source", cfg.source_table || (r ? `staging.${r.channel}_products` : "—")],
     ["Master", cfg.master_table || "staging.himalaya_products"],
     ["Scope", r ? `${r.category || "all"} / ${r.subcategory || "all"}`
                 : (d.groups[0] ? `${d.groups[0].category} / ${d.groups[0].subcategory}` : "—")],
-    ["Started", when(r?.started_at)],
-    ["Completed", when(r?.ended_at)],
-  ].map(([k, v]) => `<div><label>${esc(k)}</label><b title="${esc(v)}">${esc(v)}</b></div>`).join("");
+    ["Started", when(startedAt)],
+    ["Completed", when(endedAt)],
+  ].map(([k, v, mono]) =>
+    `<div><label>${esc(k)}</label>
+       <b class="${mono ? "mono" : ""}" title="${esc(v)}">${esc(v)}</b></div>`).join("");
 
   /* Submitted is the sum of the per-group batches, which is what actually
      reached the worker pool -- not the scope, which still counts rows the
@@ -607,27 +627,57 @@ function renderRdOverview(d, t) {
          <div><b>Completed:</b> ${fmt(t.successful)} SKUs processed across
            ${fmt(t.groups)} group${t.groups === 1 ? "" : "s"}, none failed.</div></div>`;
 
-  /* The execution flow, in the order it happened: setup steps, then a line
-     per group, then the errors. This is the log's own narrative, filtered to
-     the lines that carry a decision. */
+  /* Each step logs a key=value fragment. Read verbatim -- "groups=1",
+     "master_records=3662" -- it is a log dump, not a narrative. These say
+     what the step did, in the words someone would use describing it. */
+  const SAY = {
+    "1":  (v) => `Scope resolved to ${fmt(v.groups || 0)} category group${
+                   (v.groups || 0) === 1 ? "" : "s"}.`,
+    "2":  (v) => `Loaded ${fmt(v.master_records || 0)} master records from the Himalaya catalogue.`,
+    "3":  (v) => `Built lookups over ${fmt(v.master_lookup || 0)} master products.`,
+    "4":  (v) => `Resolved ${fmt(v.mappings || 0)} category mapping${
+                   (v.mappings || 0) === 1 ? "" : "s"}.`,
+    "5":  (v) => `Prepared ${fmt(v.eligible_groups || 0)} eligible master group${
+                   (v.eligible_groups || 0) === 1 ? "" : "s"}.`,
+    "16": () => "Source rows marked completed.",
+  };
+
+  function phrase(step) {
+    const v = {};
+    (step.detail || "").split("|").forEach((part) => {
+      const [k, val] = part.split("=").map((x) => (x || "").trim());
+      if (k && val !== undefined) v[k] = Number(val) || val;
+    });
+    const say = SAY[step.step];
+    if (say) return say(v);
+    /* Unknown step: show the detail rather than inventing a sentence for it,
+       so a new log line appears instead of disappearing. */
+    return step.detail ? esc(step.detail) : `Step ${esc(step.step)} completed.`;
+  }
+
   const rows = [];
-  d.setup.steps.forEach((s) =>
-    rows.push(["info", "STEP " + s.step, s.detail || "completed"]));
+  d.setup.steps.forEach((st) =>
+    rows.push(["info", "STEP " + st.step, st.at, phrase(st)]));
+
   d.groups.slice(0, 40).forEach((g) => {
-    rows.push([g.failed ? "warn" : "info",
-      "GROUP",
-      `<mark>${esc(g.category)} / ${esc(g.subcategory)}</mark> — ${fmt(g.batch_size)} submitted, `
-      + `${fmt(g.successful)} ok${g.failed ? `, <b>${fmt(g.failed)} failed</b>` : ""}`
-      + (g.eligible_master != null ? ` · pool ${fmt(g.eligible_master)}` : "")]);
+    const short = g.crosswalk_resolved
+      ? ` ${fmt(g.crosswalk_resolved)} closed by the approved crosswalk before scoring.` : "";
+    rows.push([g.failed ? "warn" : "info", "GROUP", g.at,
+      `<mark>${esc(g.category)} / ${esc(g.subcategory)}</mark> — `
+      + `${fmt(g.batch_size)} SKUs submitted to ${fmt(g.eligible_master || 0)} master candidates, `
+      + `${fmt(g.successful)} matched`
+      + (g.failed ? `, <b>${fmt(g.failed)} failed</b>` : "")
+      + `.${short}`]);
   });
+
   d.warnings.filter((w) => w.level === "ERROR").slice(0, 10).forEach((w) =>
-    rows.push(["err", "ERROR", esc(w.message)]));
+    rows.push(["err", "ERROR", w.at, esc(w.message)]));
 
   $("rd-overview").innerHTML = banner
     + `<div class="sec-t">Execution flow</div><div class="flow">`
-    + rows.map(([lvl, tag, msg]) =>
+    + rows.map(([lvl, tag, at, msg]) =>
         `<div class="flow-row"><div class="lvl ${lvl}">${esc(tag)}</div>
-           <div class="at"></div><div class="msg">${msg}</div></div>`).join("")
+           <div class="at">${esc(at || "")}</div><div class="msg">${msg}</div></div>`).join("")
     + `</div>`
     + (d.groups.length > 40
         ? `<p class="hint" style="margin-top:8px">Showing the first 40 groups — see the
@@ -695,7 +745,7 @@ function renderRdConsole(d) {
     ? `<div class="sec-t">Warnings and errors</div><div class="flow">`
       + d.warnings.map((w) => `<div class="flow-row">
           <div class="lvl ${w.level === "ERROR" ? "err" : "warn"}">${esc(w.level)}</div>
-          <div class="at">${esc((w.subcategory || w.category || "").slice(0, 10))}</div>
+          <div class="at">${esc(w.at || "")}</div>
           <div class="msg">${esc(w.message)}</div></div>`).join("")
       + `</div>`
     : `<p style="padding:24px;text-align:center;color:var(--ink-3)">

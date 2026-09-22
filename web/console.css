@@ -319,11 +319,14 @@
 .rd-metrics{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;padding:12px 16px;
   border-bottom:1px solid var(--line-soft)}
 @media(max-width:900px){.rd-metrics{grid-template-columns:repeat(2,1fr)}}
-.rd-metric{border:1px solid var(--line);border-radius:8px;padding:9px 11px}
-.rd-metric label{display:block;font-size:10.5px;color:var(--ink-3)}
-.rd-metric b{font-family:var(--mono);font-size:18px;font-weight:600;
-  font-variant-numeric:tabular-nums;line-height:1.25}
-.rd-metric small{display:block;font-size:10.5px;color:var(--ink-3)}
+.rd-metric{border:1px solid var(--line);border-radius:8px;padding:10px 12px;
+  background:var(--surface)}
+.rd-metric label{display:block;font-size:10.5px;color:var(--ink-3);margin-bottom:3px}
+/* block, not inline: as an inline element the value and its caption ran
+   together as "548Initial scope". */
+.rd-metric b{display:block;font-family:var(--mono);font-size:19px;font-weight:650;
+  font-variant-numeric:tabular-nums;line-height:1.2;letter-spacing:-.01em}
+.rd-metric small{display:block;font-size:10.5px;color:var(--ink-3);margin-top:2px}
 .rd-tabs{display:flex;border-bottom:1px solid var(--line);padding:0 14px;overflow-x:auto}
 .rd-body{flex:1;min-height:0;overflow:auto;padding:15px 17px}
 .rd-foot{border-top:1px solid var(--line-soft);padding:10px 16px;display:flex;
@@ -381,3 +384,44 @@ tbody tr:hover{background:var(--accent-soft)}
 tbody tr.stale:hover{background:var(--surface-2)}
 .btn.open{height:29px;padding:0 10px;font-size:12px;font-weight:600}
 .btn.open:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}
+
+
+/* ---------------- grid corrections ----------------
+   Fixes to what the first pass got visibly wrong rather than merely absent. */
+
+/* The sticky header inherits the body ground unless it is given its own, so
+   scrolled rows showed through the column labels. */
+.tw thead th{background:var(--surface-2)}
+
+/* A toolbar holding one stretched input reads as a broken layout. The
+   controls size to their content and the row stays left-aligned. */
+.fbar{align-items:center}
+.fbar input[type=search]{min-width:240px;max-width:340px}
+.fbar select{min-width:140px}
+
+/* Log rows: the filename belongs under its label, not wrapped beside it, and
+   the row should be the height of its content. */
+.log-name{font-size:12.5px;font-weight:600}
+.log-file{font-family:var(--mono);font-size:11px;color:var(--ink-3);margin-top:2px;
+  overflow-wrap:anywhere}
+.log-size{font-family:var(--mono);font-variant-numeric:tabular-nums;white-space:nowrap}
+
+/* Cards get the mockup's lift. A flat border on a grey ground reads as an
+   unstyled table. */
+.hsum,.panel{box-shadow:0 1px 2px rgba(16,24,40,.05),0 8px 24px -16px rgba(16,24,40,.12)}
+:root:not([data-theme="light"]){
+  @media (prefers-color-scheme:dark){
+    .hsum,.panel{box-shadow:none}
+  }
+}
+:root[data-theme="dark"] .hsum,:root[data-theme="dark"] .panel{box-shadow:none}
+
+/* Summary tiles: the mockup's numbers are larger and the label tighter. */
+.hsum b{font-size:22px;line-height:1.15}
+.hsum small{margin-top:3px}
+
+/* The run id is the one value in the meta strip that must be copyable in
+   full; the rest are short enough to read. Mono only where it earns it. */
+.rd-meta b{font-family:var(--sans);font-size:12px}
+.rd-meta b.mono{font-family:var(--mono);font-size:11px}
+.rd-meta label{font-size:9px;letter-spacing:.07em}

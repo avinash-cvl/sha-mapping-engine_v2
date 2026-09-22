@@ -110,6 +110,7 @@ class Group:
 
     def as_dict(self) -> dict:
         return {
+            "at": self.started_at.strftime("%H:%M:%S") if self.started_at else None,
             "category": self.category,
             "subcategory": self.subcategory,
             "batch_size": self.batch_size,
@@ -214,8 +215,24 @@ def parse(text: str, max_failures: int = 500) -> dict:
             continue
 
         if dm := STEP_DONE.match(msg):
-            entry = {"step": dm.group("step"), "detail": (dm.group("detail") or "").strip()}
-            (current.steps if current else setup["steps"]).append(entry)
+            step, detail = dm.group("step"), (dm.group("detail") or "").strip()
+            bucket = current.steps if current else setup["steps"]
+
+            # Each step logs twice: a banner ("MASTER LOADED ONCE") and a
+            # detail ("master_records=3662"). Rendering both produced STEP 2
+            # twice with the useful half second. Merge into one entry and
+            # prefer the line that carries a number.
+            prior = next((e for e in bucket if e["step"] == step), None)
+            if prior is not None:
+                if detail and ("=" in detail or not prior["detail"]):
+                    prior["detail"] = detail
+                continue
+
+            bucket.append({
+                "step": step,
+                "detail": detail,
+                "at": m.group("ts").split(" ")[1] if ts else None,
+            })
             continue
 
         if current is not None:
@@ -271,6 +288,7 @@ def parse(text: str, max_failures: int = 500) -> dict:
         if level in ("WARNING", "ERROR"):
             entry = {
                 "level": level,
+                "at": m.group("ts").split(" ")[1] if ts else None,
                 "message": msg[:300],
                 "category": current.category if current else None,
                 "subcategory": current.subcategory if current else None,
@@ -308,4 +326,8 @@ def parse(text: str, max_failures: int = 500) -> dict:
         # number moves and the structure can be trusted less, which is
         # something a reader should be able to see.
         "counts": counts,
+        # A log file has no audit.engine_run row behind it, so the modal would
+        # otherwise show "-" for when the run happened. The log knows.
+        "started_at": first_ts.isoformat() if first_ts else None,
+        "ended_at": last_ts.isoformat() if last_ts else None,
     }
