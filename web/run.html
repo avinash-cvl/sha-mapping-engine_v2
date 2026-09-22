@@ -192,9 +192,29 @@
       </section>
 
       <section class="panel" id="log-panel" hidden>
-        <div class="panel-h"><span class="panel-t">Run log</span>
-          <button class="btn" id="btn-refresh-log" style="margin-left:auto;padding:5px 11px;font-size:12px">Refresh</button></div>
-        <div class="panel-b" style="padding:14px"><div class="log" id="log">—</div></div>
+        <div class="panel-h">
+          <span class="panel-t">Run log</span>
+          <span class="stale" id="log-meta"></span>
+          <button class="btn" id="btn-raw" style="margin-left:auto;padding:5px 11px;font-size:12px">Raw</button>
+          <button class="btn" id="btn-refresh-log" style="padding:5px 11px;font-size:12px">Refresh</button>
+        </div>
+        <div class="panel-b" id="log-structured">
+          <div id="log-summary"></div>
+          <div id="log-setup"></div>
+          <div class="tw" style="margin-top:14px">
+            <table>
+              <thead><tr>
+                <th>Category</th><th>Sub-category</th>
+                <th class="num">SKUs</th><th class="num">OK</th><th class="num">Failed</th>
+                <th class="num">Pool</th><th class="num">Time</th><th></th>
+              </tr></thead>
+              <tbody id="log-groups"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="panel-b" id="log-raw" hidden style="padding:14px">
+          <div class="log" id="log">—</div>
+        </div>
       </section>
     </div>
   </div>
@@ -448,14 +468,129 @@ function renderQueue() {
   }).join("");
 }
 
+let RAW_MODE = false;
+
 async function refreshLog(runId) {
   const id = runId || [...LIVE.keys()].slice(-1)[0];
   if (!id) return;
+  LAST_LOG_RUN = id;
+
+  if (RAW_MODE) {
+    try {
+      const data = await api(`/runs/${id}/log?lines=200`);
+      $("log").textContent = data.lines.join("");
+      $("log").scrollTop = $("log").scrollHeight;
+    } catch { /* the run row is the source of truth, not the file */ }
+    return;
+  }
+
   try {
-    const data = await api(`/runs/${id}/log?lines=40`);
-    $("log").textContent = data.lines.join("");
-    $("log").scrollTop = $("log").scrollHeight;
-  } catch { /* log may not exist yet; the run is still the source of truth */ }
+    const d = await api(`/runs/${id}/log/structured`);
+    renderStructuredLog(d);
+  } catch {
+    /* A log that cannot be parsed should still be readable. */
+    RAW_MODE = true; toggleRawView(); refreshLog(id);
+  }
+}
+
+let LAST_LOG_RUN = null;
+
+function toggleRawView() {
+  $("log-structured").hidden = RAW_MODE;
+  $("log-raw").hidden = !RAW_MODE;
+  $("btn-raw").textContent = RAW_MODE ? "Structured" : "Raw";
+}
+
+function renderStructuredLog(d) {
+  const t = d.totals;
+  const c = d.counts;
+
+  $("log-meta").textContent =
+    `${fmt(c.lines)} lines · ${fmt(t.groups)} group${t.groups === 1 ? "" : "s"}`
+    + (c.unparsed ? ` · ${fmt(c.unparsed)} unrecognised` : "");
+
+  /* Failures first, with the conclusion rather than the evidence: a run whose
+     failures are all deadlocks needs a retry at lower concurrency, not an
+     investigation, and saying so is the whole point of parsing the error. */
+  $("log-summary").innerHTML = t.failed
+    ? `<div class="note" style="margin:0 0 14px;background:var(--crit-soft);
+         border:1px solid color-mix(in srgb,var(--crit) 32%,transparent)">
+         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true" style="color:var(--crit)">
+           <path d="M12 8.5v4.5M12 16.5v.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+           <path d="M10.3 3.9 2.6 17.2A2 2 0 0 0 4.3 20.2h15.4a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" stroke="currentColor" stroke-width="1.7"/>
+         </svg>
+         <div><b>${fmt(t.failed)} SKUs failed across ${fmt(t.groups_with_failures)} group${
+           t.groups_with_failures === 1 ? "" : "s"}.</b>
+           ${t.all_failures_retryable
+             ? "All are SQL&nbsp;40001 deadlocks — transient lock contention, not matching errors. Retry at fewer workers."
+             : `${fmt(t.deadlocks)} deadlock, ${fmt(t.failed - t.deadlocks)} other — the rest need investigating.`}
+         </div></div>`
+    : `<div class="note" style="margin:0 0 14px;background:var(--ok-soft);
+         border:1px solid color-mix(in srgb,var(--ok) 30%,transparent)">
+         <div><b>${fmt(t.successful)} SKUs processed, none failed.</b>
+           ${t.seconds ? duration(Math.round(t.seconds)) : ""}</div></div>`;
+
+  const cfg = d.setup.config || {};
+  $("log-setup").innerHTML = `<div class="est" style="margin:0">
+      <div><span class="k">Setup</span><span class="v">${d.setup.steps.length} steps</span></div>
+      <div><span class="k">Workers</span><span class="v">${esc(cfg.max_workers || "—")}</span></div>
+      <div><span class="k">Batch size</span><span class="v">${esc(cfg.batch_size || "—")}</span></div>
+      <div><span class="k">Elapsed</span><span class="v">${
+        t.seconds ? duration(Math.round(t.seconds)) : "—"}</span></div>
+    </div>`;
+
+  /* Worst first: on a 97-group run, "which ones had problems" is the only
+     question anyone asks of this table. */
+  const groups = [...d.groups].sort((a, b) => b.failed - a.failed);
+  $("log-groups").innerHTML = groups.length
+    ? groups.map(logGroupRow).join("")
+    : `<tr><td colspan="8" style="padding:24px;text-align:center;color:var(--ink-3)">
+         No groups processed yet.</td></tr>`;
+
+  document.querySelectorAll(".grp-toggle").forEach((b) =>
+    b.addEventListener("click", () => {
+      const detail = document.getElementById(b.dataset.target);
+      detail.hidden = !detail.hidden;
+      b.textContent = detail.hidden ? "Details" : "Hide";
+    }));
+}
+
+function logGroupRow(g, i) {
+  const id = `grp-${i}-${(g.subcategory || "").replace(/\W+/g, "")}`;
+  const mark = g.status === "ok"
+    ? '<span class="pill p-ok"><i class="sq"></i>OK</span>'
+    : g.status === "partial"
+      ? '<span class="pill p-rev"><i class="sq"></i>Partial</span>'
+      : '<span class="pill p-fail"><i class="sq"></i>Failed</span>';
+
+  const steps = (g.steps || []).map((s) =>
+    `<div><span class="k">Step ${esc(s.step)}</span><span class="v">${esc(s.detail || "done")}</span></div>`
+  ).join("");
+
+  const warns = (g.warnings || []).length
+    ? `<div class="log" style="margin-top:10px;max-height:140px">${
+        g.warnings.map(esc).join("\n")}</div>`
+    : "";
+
+  return `<tr>
+      <td class="cell-cat">${esc(g.category || "")}</td>
+      <td class="cell-cat">${esc(g.subcategory || "")}</td>
+      <td class="num">${fmt(g.batch_size)}</td>
+      <td class="num">${fmt(g.successful)}</td>
+      <td class="num" ${g.failed ? 'style="color:var(--crit);font-weight:600"' : ""}>${fmt(g.failed)}</td>
+      <td class="num">${g.eligible_master == null ? "—" : fmt(g.eligible_master)}</td>
+      <td class="num">${g.seconds == null ? "—" : duration(Math.round(g.seconds))}</td>
+      <td>${mark} <button class="btn grp-toggle" data-target="${id}"
+            style="padding:3px 9px;font-size:11.5px;margin-left:6px">Details</button></td>
+    </tr>
+    <tr id="${id}" hidden><td colspan="8" style="background:var(--sunken)">
+      <div class="est" style="margin:0;background:none;border:none">
+        <div><span class="k">Crosswalk skipped</span><span class="v">${fmt(g.crosswalk_resolved)}</span></div>
+        <div><span class="k">Master pool</span><span class="v">${
+          g.eligible_master == null ? "—" : fmt(g.eligible_master)}</span></div>
+        ${steps}
+      </div>${warns}
+    </td></tr>`;
 }
 
 $("channel").addEventListener("change", () => { fillCategories(); resolve(); });
@@ -465,7 +600,10 @@ $("skus").addEventListener("change", resolve);
 document.querySelectorAll('input[name="t"]').forEach((el) =>
   el.addEventListener("change", resolve));
 $("btn-run").addEventListener("click", openConfirm);
-$("btn-refresh-log").addEventListener("click", () => refreshLog());
+$("btn-refresh-log").addEventListener("click", () => refreshLog(LAST_LOG_RUN));
+$("btn-raw").addEventListener("click", () => {
+  RAW_MODE = !RAW_MODE; toggleRawView(); refreshLog(LAST_LOG_RUN);
+});
 $("btn-reset").addEventListener("click", async () => {
   if (!confirm("Reset failed rows to PENDING so the next run picks them up?")) return;
   try {

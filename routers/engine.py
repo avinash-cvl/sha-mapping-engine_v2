@@ -18,6 +18,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import uuid
@@ -30,7 +31,7 @@ from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
 import common.config as C
-from common import auth, db, db_models, recovery, run_record, scope
+from common import auth, db, db_models, log_parse, recovery, run_record, scope
 
 # Applied to the router rather than to each route: a dependency listed here
 # cannot be forgotten when someone adds an endpoint later. Every path under
@@ -910,6 +911,130 @@ async def stream(run_id: str) -> EventSourceResponse:
             conn.close()
 
     return EventSourceResponse(guarded())
+
+
+@router.get("/logs")
+def list_logs(
+    limit: int = Query(100, le=1000),
+    offset: int = Query(0, ge=0),
+    q: str | None = None,
+) -> dict:
+    """Every run log on disk, newest first.
+
+    The logs folder outlives audit.engine_run: 1,092 files, most written
+    before the console existed and none of them represented in the history
+    table. Reading the directory is the only way to reach them, and a run
+    from August is exactly the kind of thing someone needs when asking what
+    changed since.
+
+    Metadata only -- name, size, mtime, and the run id parsed out of the
+    filename. Parsing 51 MB to build a listing would make the listing the
+    slowest page in the console.
+    """
+    log_dir = os.path.join(REPO_ROOT, "logs")
+    if not os.path.isdir(log_dir):
+        return {"total": 0, "offset": offset, "limit": limit, "files": []}
+
+    entries = []
+    for name in os.listdir(log_dir):
+        if not name.endswith(".log"):
+            continue
+        if q and q.lower() not in name.lower():
+            continue
+        path = os.path.join(log_dir, name)
+        try:
+            stat = os.stat(path)
+        except OSError:
+            continue
+
+        # Filenames are <prefix>_<uuid>.log, and some carry the uuid twice
+        # where a console run re-derived the path. Take the last one.
+        ids = re.findall(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+            name, re.I,
+        )
+        entries.append({
+            "name": name,
+            "run_id": ids[-1] if ids else None,
+            "size_bytes": stat.st_size,
+            "modified": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
+            "label": re.sub(r"_?[0-9a-f-]{36}", "", name).replace(".log", "") or "run",
+        })
+
+    entries.sort(key=lambda e: e["modified"], reverse=True)
+    return {
+        "total": len(entries),
+        "offset": offset,
+        "limit": limit,
+        "files": entries[offset:offset + limit],
+    }
+
+
+@router.get("/logs/{name}")
+def read_log(name: str, raw: bool = False) -> dict:
+    """Parse one log by filename, for files with no run row behind them."""
+    # The name comes from a URL, so it is treated as hostile: basename only,
+    # resolved, and required to sit inside the logs directory. A log browser
+    # that accepts ../../.env is a file-disclosure endpoint.
+    log_dir = os.path.realpath(os.path.join(REPO_ROOT, "logs"))
+    path = os.path.realpath(os.path.join(log_dir, os.path.basename(name)))
+    if not path.startswith(log_dir + os.sep) or not os.path.exists(path):
+        raise HTTPException(404, "no such log file")
+
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        text = fh.read()
+
+    parsed = log_parse.parse(text)
+    parsed["path"] = os.path.basename(path)
+    parsed["size_bytes"] = os.path.getsize(path)
+    if raw:
+        parsed["raw_tail"] = text.splitlines()[-500:]
+    return parsed
+
+
+@router.get("/runs/{run_id}/log/structured")
+def structured_log(run_id: str, raw: bool = False) -> dict:
+    """A run log as the structure it already has.
+
+    The raw file is unreadable at scale: one real run is 21,980 lines, of
+    which 7,642 are HTTP chatter, 2,044 are separator rules and 2,551 are
+    per-SKU worker lines. Tailing it shows whichever group finished last.
+
+    Parsed, the same file is five setup steps and ninety-seven groups, each
+    with its own scope, pool size, worker outcome and duration -- which is
+    what someone asking "where did it go wrong" actually wants.
+    """
+    path = _find_log(run_id)
+    if not path:
+        raise HTTPException(404, "no log file for that run")
+
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        text = fh.read()
+
+    parsed = log_parse.parse(text)
+    parsed["path"] = os.path.basename(path)
+    parsed["size_bytes"] = os.path.getsize(path)
+    if raw:
+        # Bounded: a 25k-line file should not travel through the console
+        # because someone ticked a box.
+        parsed["raw_tail"] = text.splitlines()[-500:]
+    return parsed
+
+
+def _find_log(run_id: str) -> str | None:
+    """Locate a run's log whether the console named it or the CLI did."""
+    run = RUNS.get(run_id)
+    if run and run.log_path and os.path.exists(run.log_path):
+        return run.log_path
+    log_dir = os.path.join(REPO_ROOT, "logs")
+    if not os.path.isdir(log_dir):
+        return None
+    hits = [
+        os.path.join(log_dir, f)
+        for f in os.listdir(log_dir)
+        if run_id.lower() in f.lower()
+    ]
+    return max(hits, key=os.path.getsize) if hits else None
 
 
 @router.get("/runs/{run_id}/log")

@@ -46,6 +46,14 @@
   <div class="stack" style="margin-top:20px">
     <div id="errors"></div>
 
+    <div class="tabs" role="tablist" style="margin-bottom:20px">
+      <button class="tab" role="tab" aria-selected="true" data-view="runs">
+        Runs <span class="cnt" id="tab-runs-count"></span></button>
+      <button class="tab" role="tab" aria-selected="false" data-view="logs">
+        Log files <span class="cnt" id="tab-logs-count"></span></button>
+    </div>
+
+    <div id="view-runs">
     <div id="stale-banner"></div>
 
     <section class="panel">
@@ -84,6 +92,56 @@
       </table></div>
       <div style="padding:0 16px 14px"><div id="runs-pager"></div></div>
     </section>
+
+
+    </div>
+
+    <div id="view-logs" hidden>
+    <section class="panel" id="logs-panel">
+      <div class="panel-h">
+        <span class="panel-t">Log files</span>
+        <span class="stale" id="logs-count">—</span>
+        <span class="stale" style="margin-left:auto">Runs from before the console kept
+          history live only here</span>
+      </div>
+      <div class="fbar" style="padding:12px 16px;background:var(--sunken);
+           border-bottom:1px solid var(--line-soft)">
+        <input type="search" id="log-q" placeholder="Filter by name, channel or run id"
+               aria-label="Search log files">
+      </div>
+      <div class="tw"><table>
+        <thead><tr>
+          <th>Log</th><th>Run</th><th class="num">Size</th><th>Modified</th><th></th>
+        </tr></thead>
+        <tbody id="logs-body">
+          <tr><td colspan="5" style="padding:20px;color:var(--ink-3)">Loading…</td></tr>
+        </tbody>
+      </table></div>
+      <div style="padding:0 16px 14px"><div id="logs-pager"></div></div>
+
+      <div id="log-detail" hidden style="border-top:1px solid var(--line)">
+        <div class="panel-h">
+          <span class="panel-t" id="log-detail-name">Log</span>
+          <span class="stale" id="log-detail-meta"></span>
+          <button class="btn" id="log-close" style="margin-left:auto;padding:5px 11px;font-size:12px">Close</button>
+        </div>
+        <div class="panel-b">
+          <div id="log-detail-summary"></div>
+          <div class="tw" style="margin-top:12px">
+            <table>
+              <thead><tr>
+                <th>Category</th><th>Sub-category</th><th class="num">SKUs</th>
+                <th class="num">OK</th><th class="num">Failed</th>
+                <th class="num">Pool</th><th class="num">Time</th>
+              </tr></thead>
+              <tbody id="log-detail-groups"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    </div>
 
     <section class="panel" id="cmp" hidden>
       <div class="panel-h"><span class="panel-t">Comparison</span>
@@ -162,6 +220,7 @@ function applyFilters(offset = 0, limit = PAGE_LIMIT) {
 
   try {
     $("count").textContent = `${runs.length} of ${ALL.length}`;
+    $("tab-runs-count").textContent = fmt(ALL.length);
     if (PAGE_OFFSET >= runs.length) PAGE_OFFSET = 0;   // filter shrank the set
     if (!runs.length) {
       $("rows").innerHTML = `<tr><td colspan="8" style="padding:28px;text-align:center;color:var(--ink-3)">
@@ -268,8 +327,119 @@ $("btn-compare").addEventListener("click", async () => {
   } catch (e) { showError($("errors"), e.message); }
 });
 
+
+/* ---------------- log files ----------------
+   audit.engine_run only goes back to when the console started recording.
+   The logs folder goes back further -- 1,092 files -- and for those runs it
+   is the only record there is. */
+let LOG_OFFSET = 0;
+let LOG_LIMIT = 25;
+
+async function loadLogs(offset = 0, limit = LOG_LIMIT) {
+  LOG_OFFSET = offset; LOG_LIMIT = limit;
+  const q = $("log-q").value.trim();
+  try {
+    const d = await api(`/logs?limit=${limit}&offset=${offset}`
+      + (q ? `&q=${encodeURIComponent(q)}` : ""));
+    $("logs-count").textContent = `${fmt(d.total)} files`;
+    $("tab-logs-count").textContent = fmt(d.total);
+    $("logs-body").innerHTML = d.files.length
+      ? d.files.map(logFileRow).join("")
+      : `<tr><td colspan="5" style="padding:24px;text-align:center;color:var(--ink-3)">
+           No log files match.</td></tr>`;
+
+    const pg = $("logs-pager");
+    pg.innerHTML = "";
+    if (d.total > limit) {
+      pg.appendChild(Console.pager({
+        total: d.total, offset: d.offset, limit: d.limit,
+        onGo: (off, lim) => loadLogs(off, lim),
+      }));
+    }
+    document.querySelectorAll(".log-open").forEach((b) =>
+      b.addEventListener("click", () => openLog(b.dataset.name)));
+  } catch (e) { showError($("errors"), e.message); }
+}
+
+function logFileRow(f) {
+  const kb = f.size_bytes < 1024 * 1024
+    ? `${Math.round(f.size_bytes / 1024)} KB`
+    : `${(f.size_bytes / 1048576).toFixed(1)} MB`;
+  return `<tr>
+    <td class="cell-cat">${esc(f.label)}<div class="sc m">${esc(f.name)}</div></td>
+    <td class="m">${f.run_id ? esc(f.run_id.slice(0, 8)) : "—"}</td>
+    <td class="num">${kb}</td>
+    <td class="t-sub" style="margin:0">${new Date(f.modified).toLocaleString()}</td>
+    <td><button class="btn log-open" data-name="${esc(f.name)}"
+          style="padding:4px 10px;font-size:12px">Open</button></td>
+  </tr>`;
+}
+
+async function openLog(name) {
+  try {
+    const d = await api(`/logs/${encodeURIComponent(name)}`);
+    const t = d.totals, c = d.counts;
+    $("log-detail").hidden = false;
+    $("log-detail-name").textContent = d.path;
+    $("log-detail-meta").textContent =
+      `${fmt(c.lines)} lines · ${fmt(t.groups)} group${t.groups === 1 ? "" : "s"}`
+      + (c.unparsed ? ` · ${fmt(c.unparsed)} unrecognised` : "");
+
+    $("log-detail-summary").innerHTML = t.failed
+      ? `<div class="note" style="margin:0;background:var(--crit-soft);
+           border:1px solid color-mix(in srgb,var(--crit) 32%,transparent)">
+           <div><b>${fmt(t.failed)} SKUs failed across ${fmt(t.groups_with_failures)} group${
+             t.groups_with_failures === 1 ? "" : "s"}.</b>
+             ${t.all_failures_retryable
+               ? "All SQL&nbsp;40001 deadlocks — transient, retryable at fewer workers."
+               : `${fmt(t.deadlocks)} deadlock, ${fmt(t.failed - t.deadlocks)} other.`}
+           </div></div>`
+      : `<div class="note" style="margin:0;background:var(--ok-soft);
+           border:1px solid color-mix(in srgb,var(--ok) 30%,transparent)">
+           <div><b>${fmt(t.successful)} SKUs processed, none failed.</b>
+             ${t.seconds ? " · " + Console.duration(Math.round(t.seconds)) : ""}</div></div>`;
+
+    const groups = [...d.groups].sort((a, b) => b.failed - a.failed);
+    $("log-detail-groups").innerHTML = groups.length
+      ? groups.map((g) => `<tr>
+          <td class="cell-cat">${esc(g.category || "")}</td>
+          <td class="cell-cat">${esc(g.subcategory || "")}</td>
+          <td class="num">${fmt(g.batch_size)}</td>
+          <td class="num">${fmt(g.successful)}</td>
+          <td class="num" ${g.failed ? 'style="color:var(--crit);font-weight:600"' : ""}>${fmt(g.failed)}</td>
+          <td class="num">${g.eligible_master == null ? "—" : fmt(g.eligible_master)}</td>
+          <td class="num">${g.seconds == null ? "—" : Console.duration(Math.round(g.seconds))}</td>
+        </tr>`).join("")
+      : `<tr><td colspan="7" style="padding:20px;text-align:center;color:var(--ink-3)">
+           This log records no completed groups — the run may have failed during setup.</td></tr>`;
+
+    $("log-detail").scrollIntoView({ behavior: "smooth", block: "nearest" });
+  } catch (e) { showError($("errors"), e.message); }
+}
+
+$("log-close").addEventListener("click", () => { $("log-detail").hidden = true; });
+let logTimer;
+$("log-q").addEventListener("input", () => {
+  clearTimeout(logTimer); logTimer = setTimeout(() => loadLogs(0, LOG_LIMIT), 300);
+});
+
+
+
+document.querySelectorAll(".tab[data-view]").forEach((tab) => {
+  tab.addEventListener("click", () => {
+    document.querySelectorAll(".tab[data-view]").forEach((t) =>
+      t.setAttribute("aria-selected", String(t === tab)));
+    $("view-runs").hidden = tab.dataset.view !== "runs";
+    $("view-logs").hidden = tab.dataset.view !== "logs";
+    /* The comparison belongs to the runs view; leaving it on screen under
+       the log browser would attach it to the wrong thing. */
+    if (tab.dataset.view !== "runs") $("cmp").hidden = true;
+  });
+});
+
 Console.mountUser(document.getElementById('who'));
 load();
+loadLogs();
 </script>
 </body>
 </html>
