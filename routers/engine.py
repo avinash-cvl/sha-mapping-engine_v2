@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -34,6 +35,8 @@ from common import auth, db, db_models, recovery, run_record, scope
 # Applied to the router rather than to each route: a dependency listed here
 # cannot be forgotten when someone adds an endpoint later. Every path under
 # /api/engine requires an admin session.
+logger = logging.getLogger(__name__)
+
 router = APIRouter(
     prefix="/api/engine",
     tags=["engine"],
@@ -839,9 +842,30 @@ async def stream(run_id: str) -> EventSourceResponse:
         # poll -- the console opens this stream the instant it launches.
         waited = 0.0
         while True:
-            row = conn.execute(
-                sa.select(run).where(run.c.execution_id == run_id)
-            ).first()
+            try:
+                row = conn.execute(
+                    sa.select(run).where(run.c.execution_id == run_id)
+                ).first()
+            except Exception as exc:
+                # A query fault here used to kill the ASGI task mid-response,
+                # so the browser saw a dropped stream and reconnected -- one
+                # failing query became an endless loop of them, and the only
+                # symptom on screen was "Reconnecting to the run".
+                #
+                # The usual cause is a stale reflection: db_models memoises
+                # the schema per process, so a column renamed underneath a
+                # running server keeps being selected until it restarts.
+                logger.exception("stream query failed for run %s", run_id)
+                yield {"event": "done", "data": json.dumps({
+                    "run_id": run_id, "status": "unknown",
+                    "error": (
+                        "Could not read this run's progress. If the schema "
+                        "changed recently, restart the console. The run "
+                        "itself is unaffected -- its result is recorded."
+                    ),
+                    "detail": str(exc)[:200],
+                })}
+                return
 
             if row is None:
                 if waited < 30.0:
