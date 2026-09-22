@@ -174,7 +174,7 @@
           not which ones moved — a net +5 could be five gained, or eight gained and
           three lost. Per-SKU drill-down is done against the live mapping table.</div>
       </div>
-      <div class="tw"><table>
+      <div class="tw tw-short"><table>
         <thead><tr><th>Outcome</th><th class="num">Before</th><th class="num">After</th><th class="num">Δ</th></tr></thead>
         <tbody id="cmp-rows"></tbody>
       </table></div>
@@ -224,7 +224,7 @@ function renderStaleBanner() {
 }
 
 let PAGE_OFFSET = 0;
-let PAGE_LIMIT = 50;
+let PAGE_LIMIT = 25;
 
 function applyFilters(offset = 0, limit = PAGE_LIMIT) {
   PAGE_OFFSET = offset; PAGE_LIMIT = limit;

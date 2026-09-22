@@ -174,7 +174,7 @@
       '<button class="btn pg-btn" data-go="next"' + (to < total ? "" : " disabled") + ">Next</button>" +
       '<button class="btn pg-btn" data-go="last"' + (to < total ? "" : " disabled") + ">Last</button>" +
       '<select class="pg-size" aria-label="Rows per page">' +
-        [50, 100, 250, 500].map((n) =>
+        [25, 50, 100, 250].map((n) =>
           '<option value="' + n + '"' + (n === limit ? " selected" : "") + ">" +
           n + " per page</option>").join("") +
       "</select>";

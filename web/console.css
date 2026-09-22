@@ -171,7 +171,20 @@
   .grp-bar i{display:block;height:100%}
   .cell-cat{font-size:12.5px}
   .cell-cat .sc{color:var(--ink-3);font-size:11.5px;margin-top:1px}
-  .tw{overflow-x:auto}
+  /* Scroll the table, not the document.
+   A 25-row table with a sticky header keeps the column labels and the pager
+   both reachable; letting the page grow instead meant scrolling past the
+   run preview and the queue to reach the controls for the rows you were
+   already looking at. max-height is in vh so a tall screen shows more rows
+   rather than the same few with empty space below. */
+.tw{overflow:auto;max-height:min(62vh, 640px)}
+.tw thead th{position:sticky;top:0;z-index:1;background:var(--surface)}
+/* The sticky header sits over scrolled rows, so it needs its own bottom
+   edge -- a border on the cell scrolls away with the cell. */
+.tw thead th::after{content:"";position:absolute;left:0;right:0;bottom:0;
+  height:1px;background:var(--line)}
+/* Small tables should not reserve the full height. */
+.tw.tw-short{max-height:none;overflow:visible}
   table{width:100%;border-collapse:collapse;font-size:13px}
   th{text-align:left;font-size:11px;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:var(--ink-3);padding:10px 14px;border-bottom:1px solid var(--line);white-space:nowrap}
   td{padding:10px 14px;border-bottom:1px solid var(--line-soft);vertical-align:top}
