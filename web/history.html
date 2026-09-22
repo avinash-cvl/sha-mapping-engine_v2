@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>History · Harmonization Engine</title>
+<link rel="icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+CjxyZWN0IHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgcng9IjUiIGZpbGw9IiMxRjZGRUIiLz4KPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZmZmIiBzdHJva2Utd2lkdGg9IjEuOCI+CjxyZWN0IHg9IjQuNSIgeT0iNS41IiB3aWR0aD0iNiIgaGVpZ2h0PSI2IiByeD0iMS40Ii8+CjxyZWN0IHg9IjEzLjUiIHk9IjEyLjUiIHdpZHRoPSI2IiBoZWlnaHQ9IjYiIHJ4PSIxLjQiLz4KPHBhdGggZD0iTTEwLjUgOC41aDIuNmExLjkgMS45IDAgMCAxIDEuOSAxLjl2Mi4xIiBzdHJva2UtbGluZWNhcD0icm91bmQiLz4KPC9nPjwvc3ZnPg==">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
@@ -411,88 +412,7 @@ async function openLog(name) {
   return openRunDetail({ logName: name });
 }
 
-async function openLogLegacy(name) {
-  try {
-    const d = await api(`/logs/${encodeURIComponent(name)}`);
-    const t = d.totals, c = d.counts;
-    $("log-detail").hidden = false;
-    $("log-detail-name").textContent = d.path;
-    $("log-detail-meta").textContent =
-      `${fmt(c.lines)} lines · ${fmt(t.groups)} group${t.groups === 1 ? "" : "s"}`
-      + (c.unparsed ? ` · ${fmt(c.unparsed)} unrecognised` : "");
 
-    $("log-detail-summary").innerHTML = t.failed
-      ? `<div class="note" style="margin:0;background:var(--crit-soft);
-           border:1px solid color-mix(in srgb,var(--crit) 32%,transparent)">
-           <div><b>${fmt(t.failed)} SKUs failed across ${fmt(t.groups_with_failures)} group${
-             t.groups_with_failures === 1 ? "" : "s"}.</b>
-             ${t.all_failures_retryable
-               ? "All SQL&nbsp;40001 deadlocks — transient, retryable at fewer workers."
-               : `${fmt(t.deadlocks)} deadlock, ${fmt(t.failed - t.deadlocks)} other.`}
-           </div></div>`
-      : `<div class="note" style="margin:0;background:var(--ok-soft);
-           border:1px solid color-mix(in srgb,var(--ok) 30%,transparent)">
-           <div><b>${fmt(t.successful)} SKUs processed, none failed.</b>
-             ${t.seconds ? " · " + Console.duration(Math.round(t.seconds)) : ""}</div></div>`;
-
-    const groups = [...d.groups].sort((a, b) => b.failed - a.failed);
-    $("log-detail-groups").innerHTML = groups.length
-      ? groups.map((g) => `<tr>
-          <td class="cell-cat">${esc(g.category || "")}</td>
-          <td class="cell-cat">${esc(g.subcategory || "")}</td>
-          <td class="num">${fmt(g.batch_size)}</td>
-          <td class="num">${fmt(g.successful)}</td>
-          <td class="num" ${g.failed ? 'style="color:var(--crit);font-weight:600"' : ""}>${fmt(g.failed)}</td>
-          <td class="num">${g.eligible_master == null ? "—" : fmt(g.eligible_master)}</td>
-          <td class="num">${g.seconds == null ? "—" : Console.duration(Math.round(g.seconds))}</td>
-        </tr>`).join("")
-      : `<tr><td colspan="7" style="padding:20px;text-align:center;color:var(--ink-3)">
-           This log records no completed groups — the run may have failed during setup.</td></tr>`;
-
-    const fails = d.failures || [];
-    $("ld-fail-count").textContent = fmt(fails.length);
-    $("log-detail-failures").innerHTML = fails.length
-      ? fails.map((f) => `<tr>
-          <td class="m">${esc(f.sku)}</td>
-          <td class="cell-cat">${esc(f.category || "—")}
-            <div class="sc">${esc(f.subcategory || "")}</div></td>
-          <td class="t-title" style="max-width:none"><div class="m"
-            style="font-size:11.5px;line-height:1.6">${esc(f.error || "No error recorded.")}</div></td>
-          <td class="num">${f.retryable
-            ? '<span class="pill p-rev"><i class="sq"></i>Retry</span>'
-            : '<span class="pill p-fail"><i class="sq"></i>Investigate</span>'}</td>
-        </tr>`).join("")
-      : `<tr><td colspan="4" style="padding:22px;text-align:center;color:var(--ink-3)">
-           No SKUs failed.</td></tr>`;
-
-    const warns = d.warnings || [];
-    $("ld-warn-count").textContent = fmt(warns.length);
-    $("log-detail-warnings").innerHTML = warns.length
-      ? warns.map((w) => `<tr>
-          <td>${w.level === "ERROR"
-                ? '<span class="pill p-fail"><i class="sq"></i>Error</span>'
-                : '<span class="pill p-rev"><i class="sq"></i>Warning</span>'}</td>
-          <td class="cell-cat">${esc(w.category || "—")}
-            <div class="sc">${esc(w.subcategory || "")}</div></td>
-          <td class="t-title" style="max-width:none">${esc(w.message)}</td>
-        </tr>`).join("")
-      : `<tr><td colspan="3" style="padding:22px;text-align:center;color:var(--ink-3)">
-           No warnings.</td></tr>`;
-
-    $("log-detail").scrollIntoView({ behavior: "smooth", block: "nearest" });
-  } catch (e) { showError($("errors"), e.message); }
-}
-
-$("log-close").addEventListener("click", () => { $("log-detail").hidden = true; });
-
-document.querySelectorAll(".tab[data-ld]").forEach((tab) => {
-  tab.addEventListener("click", () => {
-    document.querySelectorAll(".tab[data-ld]").forEach((t) =>
-      t.setAttribute("aria-selected", String(t === tab)));
-    ["groups", "failures", "warnings"].forEach((v) =>
-      ($("ldtab-" + v).hidden = v !== tab.dataset.ld));
-  });
-});
 let logTimer;
 $("log-q").addEventListener("input", () => {
   clearTimeout(logTimer); logTimer = setTimeout(() => loadLogs(0, LOG_LIMIT), 300);

@@ -86,3 +86,28 @@ def test_page_destructures_every_console_helper_it_calls(page):
         f"{page}.html calls {sorted(missing)} without destructuring them "
         f"from window.Console"
     )
+
+
+@pytest.mark.parametrize("page", PAGES)
+def test_every_element_id_referenced_actually_exists(page):
+    """$("some-id") on an element that is not in the markup throws.
+
+    `node --check` cannot see it -- the file parses -- and the error arrives
+    as "Cannot read properties of null (reading 'addEventListener')" with a
+    line number and nothing else. It happens whenever markup is replaced and
+    the code that drove it is left behind, which is exactly what removing the
+    stacked log-detail panel did: 82 orphaned lines still calling
+    $("log-detail").
+    """
+    html = (WEB / f"{page}.html").read_text(encoding="utf-8")
+
+    declared = set(re.findall(r'\bid="([^"]+)"', html))
+    referenced = set(re.findall(r'\$\("([^"]+)"\)', html))
+    referenced |= set(re.findall(r'getElementById\("([^"]+)"\)', html))
+
+    # Ids the page creates at runtime, addressed by a template literal rather
+    # than a literal string, are out of scope for a static check.
+    dynamic = {r for r in referenced if "$" in r or "{" in r}
+
+    missing = referenced - declared - dynamic
+    assert not missing, f"{page}.html references ids that do not exist: {sorted(missing)}"
