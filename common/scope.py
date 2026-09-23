@@ -21,7 +21,7 @@ from dataclasses import asdict, dataclass
 import sqlalchemy as sa
 
 import common.config as C
-from common import db, db_models
+from common import db, db_models, rejection
 
 # The two engines, named the way the operator names them rather than by
 # module. "himalaya" maps Himalaya's own listings to the master; "competitor"
@@ -45,6 +45,11 @@ class ScopeCounts:
     approved_skipped: int   # steward-approved; never re-run, never overwritten
     already_mapped: int     # carry a mapping_status other than PENDING/Failed
     failed_resettable: int  # Failed -- NOT picked up by a plain re-run (see below)
+    # Rejected rows are counted but NOT excluded: a rejection is a verdict on
+    # a pairing, not on the listing, so the SKU stays eligible. Reported
+    # separately so the operator can see the engine is about to re-propose
+    # something a steward has already turned down.
+    rejected: int
 
     source_row_count: int   # whole-table row count, pins the input population
 
@@ -155,6 +160,18 @@ def resolve(
         base.where(source.c.mapping_status == "Failed").where(not_approved)
     ).scalar() or 0
 
+    # Rows a steward has rejected. Counted, NOT excluded: _not_approved_clause
+    # matches 'Rejected' too, so these are already inside to_run and the
+    # engine will process them again. That is intended -- a rejection is a
+    # verdict on a proposed pairing, not on the listing -- but it must be
+    # visible, because the engine can otherwise re-propose the very match
+    # that was turned down and nothing says so.
+    rejected = 0
+    if hasattr(source.c, "review_status"):
+        rejected = conn.execute(
+            base.where(rejection._rejected_clause(source))
+        ).scalar() or 0
+
     # Whole-table count, unfiltered: pins the input population so a later
     # comparison spanning an ingest change is detectable rather than
     # silently misleading.
@@ -172,6 +189,7 @@ def resolve(
         approved_skipped=approved_skipped,
         already_mapped=already_mapped,
         failed_resettable=failed_resettable,
+        rejected=rejected,
         source_row_count=source_row_count,
     )
 

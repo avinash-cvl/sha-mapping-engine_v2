@@ -340,6 +340,11 @@
 
   /* ------------------------------------------------------------ confirm */
 
+  /* The dialog is shared between launching a run and rejecting a match, so
+     the confirm button dispatches to whatever set this rather than being
+     hard-wired to one of them. */
+  let CONFIRM_ACTION = null;
+
   function runBody() {
     return {
       ...scopeBody(),
@@ -359,6 +364,15 @@
     }
     const p = PLAN;
     const blocked = p.blocked_by.length;
+
+    /* Restored, because rejectMatch() borrows this dialog and rewrites both. */
+    CONFIRM_ACTION = launch;
+    $("confirm-title").innerHTML =
+      `<svg width="19" height="19" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 8.5v4.5M12 16.5v.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M10.3 3.9 2.6 17.2A2 2 0 0 0 4.3 20.2h15.4a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" stroke="currentColor" stroke-width="1.7"/></svg>
+       Confirm this run`;
+    $("confirm-lede").textContent =
+      "This writes mapping rows to the database and calls the LLM. "
+      + "Read the scope below before confirming.";
 
     $("confirm-body").innerHTML =
       `<div class="m-sec">
@@ -432,18 +446,12 @@
     document.body.style.overflow = "";
   }
 
+  /* Errors and dialog lifecycle belong to the confirm handler that invokes
+     this, so a failure here propagates rather than being swallowed. */
   async function launch() {
-    $("confirm-go").disabled = true;
-    $("confirm-go").textContent = "Starting…";
-    try {
-      const res = await api("/runs", { method: "POST", body: JSON.stringify(runBody()) });
-      closeConfirm();
-      clearError($("errors"));
-      startQueue(res.runs);
-    } catch (e) {
-      showError($("errors"), e.message);
-      closeConfirm();
-    }
+    const res = await api("/runs", { method: "POST", body: JSON.stringify(runBody()) });
+    clearError($("errors"));
+    startQueue(res.runs);
   }
 
   /* ------------------------------------------------------------ queue */
@@ -590,6 +598,7 @@
   /* ------------------------------------------------------------ results */
 
   let RES = { offset: 0, limit: 25 };
+  let LAST_RESULTS = null;       // the page currently rendered, for the reject dialog
 
   async function loadResults() {
     /* /results requires a channel and 400s without one. Before a channel is
@@ -598,7 +607,7 @@
        to ignore real ones. */
     if (!$("ch").value) {
       $("resBody").innerHTML =
-        `<tr><td colspan="6" class="empty">Pick a channel to see its results.</td></tr>`;
+        `<tr><td colspan="7" class="empty">Pick a channel to see its results.</td></tr>`;
       $("c-results").textContent = "0";
       $("c-failures").textContent = "0";
       $("resPager").innerHTML = "";
@@ -629,7 +638,28 @@
       r.score.toFixed(2)}</span>`;
   }
 
+  /* Three states, three controls. An approved row is not re-decidable from
+     here -- its crosswalk entry has already been written and the engine
+     short-circuits on it, so offering Reject there only ever produced a 409
+     the user could not act on. */
+  function reviewCell(r) {
+    const verdict = (r.review_status || "").trim().toLowerCase();
+    if (verdict === "approved") {
+      return '<span class="pill p-ok" title="Steward-approved — withdraw in the review portal">'
+        + '<i class="sq"></i>Approved</span>';
+    }
+    if (verdict === "rejected") {
+      return '<span class="pill p-fail"><i class="sq"></i>Rejected</span>';
+    }
+    if (!r.product_code) return "";
+    return `<button class="btn sm rej-mark" data-sku="${esc(r.sku)}"
+              title="Record that this match is wrong">Reject</button>`;
+  }
+
   function renderResults(d) {
+    /* Kept so the reject dialog can name the pairing without re-fetching the
+       row the user is already looking at. */
+    LAST_RESULTS = d;
     $("c-results").textContent = fmt(d.total);
     $("resBody").innerHTML = d.rows.length
       ? d.rows.map((r) => `<tr>
@@ -643,8 +673,12 @@
             <div class="sc">${esc(r.subcategory || "")}</div></td>
           <td>${pill(r.status)}</td>
           <td class="num">${confCell(r)}</td>
+          <td>${reviewCell(r)}</td>
         </tr>`).join("")
-      : `<tr><td colspan="6" class="empty">No rows match these filters.</td></tr>`;
+      : `<tr><td colspan="7" class="empty">No rows match these filters.</td></tr>`;
+
+    $("resBody").querySelectorAll(".rej-mark").forEach((b) =>
+      b.addEventListener("click", () => rejectMatch(b.dataset.sku)));
 
     $("resPager").innerHTML = "";
     $("resPager").appendChild(pager({
@@ -683,6 +717,136 @@
       : `<tr><td colspan="4" class="empty">No failures on this page.</td></tr>`;
   }
 
+  /* ------------------------------------------------------------ rejected */
+
+  let REJ = { offset: 0, limit: 25 };
+
+  async function loadRejected() {
+    if (!$("ch").value) {
+      $("rejBody").innerHTML =
+        `<tr><td colspan="5" class="empty">Pick a channel to see its rejections.</td></tr>`;
+      $("c-rejected").textContent = "0";
+      $("offenders").innerHTML = "";
+      $("rejPager").innerHTML = "";
+      return;
+    }
+    const params = new URLSearchParams({
+      channel: $("ch").value,
+      limit: String(REJ.limit), offset: String(REJ.offset),
+    });
+    if ($("cat").value) params.set("category", $("cat").value);
+    if ($("rejEngine").value) params.set("engine", $("rejEngine").value);
+    if ($("rejSearch").value.trim()) params.set("q", $("rejSearch").value.trim());
+
+    const [d, off] = await Promise.all([
+      api("/rejected?" + params),
+      api(`/rejected/offenders?channel=${encodeURIComponent($("ch").value)}`).catch(() => []),
+    ]);
+
+    $("c-rejected").textContent = fmt(d.total);
+    $("rejCap").textContent = d.total
+      ? `${fmt(d.total)} rejected on ${$("ch").value}` : "";
+
+    /* A product code collecting several rejections is the decoy-node
+       signature: a gate target too small to hold an alternative, so
+       everything routed there comes back as the same product. Surfaced
+       above the list because it is the finding, not a row in it. */
+    const repeat = off.filter((o) => o.rejections > 1);
+    $("offenders").innerHTML = repeat.length
+      ? `<div class="note" style="margin-top:14px">
+           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 8.5v4.5M12 16.5v.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M10.3 3.9 2.6 17.2A2 2 0 0 0 4.3 20.2h15.4a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" stroke="currentColor" stroke-width="1.7"/></svg>
+           <div><b>${repeat.length} master product${repeat.length === 1 ? "" : "s"}
+             attracting repeat rejections.</b>
+             ${repeat.slice(0, 3).map((o) =>
+               `<span class="m">${esc(o.product_code)}</span> ${esc(o.product_name || "")}
+                — ${fmt(o.rejections)}&times;`).join("; ")}.
+             A code that keeps being rejected is usually a gate target too small to
+             offer an alternative — check it in
+             <a href="#catalog" data-route="catalog">Catalog</a>.</div></div>`
+      : "";
+
+    $("rejBody").innerHTML = d.rows.length
+      ? d.rows.map((r) => `<tr>
+          <td class="t-title">${esc(r.title || r.sku)}
+            <div class="t-sub m">${esc(r.brand || "")} · ${esc(r.sku)}</div></td>
+          <td class="t-title" style="color:var(--crit)">${esc(r.rejected_name || "—")}
+            <div class="t-sub m">${esc(r.rejected_code || "")}</div></td>
+          <td class="t-sub" style="margin:0">${esc(who(r.reviewed_by))}
+            ${r.reviewed_at ? `<div class="t-sub m">${new Date(r.reviewed_at)
+              .toLocaleDateString(undefined, { day: "2-digit", month: "short" })}</div>` : ""}
+            ${r.comment ? `<div class="t-sub" style="max-width:280px">${esc(r.comment)}</div>` : ""}</td>
+          <td class="num">${r.score == null ? "—" : r.score.toFixed(2)}</td>
+          <td><button class="btn sm rej-undo" data-sku="${esc(r.sku)}">Withdraw</button></td>
+        </tr>`).join("")
+      : `<tr><td colspan="5" class="empty">Nothing has been rejected on this channel.</td></tr>`;
+
+    $("rejPager").innerHTML = "";
+    $("rejPager").appendChild(pager({
+      total: d.total, offset: d.offset, limit: d.limit,
+      onGo: (offset, limit) => { REJ = { offset, limit }; loadRejected().catch(() => {}); },
+    }));
+
+    $("rejBody").querySelectorAll(".rej-undo").forEach((b) =>
+      b.addEventListener("click", async () => {
+        b.disabled = true;
+        try {
+          await api(`/rejected?channel=${encodeURIComponent($("ch").value)}`
+            + `&sku=${encodeURIComponent(b.dataset.sku)}`, { method: "DELETE" });
+          await loadRejected();
+        } catch (e) {
+          showError($("errors"), e.message);
+          b.disabled = false;
+        }
+      }));
+  }
+
+  /* The reason is the point of the record, so it gets a real field rather
+     than window.prompt -- which is unstyled, truncates, and is suppressed
+     outright in some embedded contexts. */
+  function rejectMatch(sku) {
+    const row = (LAST_RESULTS?.rows || []).find((r) => r.sku === sku);
+    $("confirm-title").innerHTML =
+      `<svg width="19" height="19" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 8.5v4.5M12 16.5v.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M10.3 3.9 2.6 17.2A2 2 0 0 0 4.3 20.2h15.4a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" stroke="currentColor" stroke-width="1.7"/></svg>
+       Reject this match`;
+    $("confirm-lede").textContent =
+      "Recorded against this listing. It does not delete the mapping row — "
+      + "it records that a human judged this pairing wrong.";
+    $("confirm-body").innerHTML =
+      `<div class="m-sec">
+         <h3>The pairing being rejected</h3>
+         <dl class="kv">
+           <dt>Listing</dt><dd>${esc(row?.title || sku)}</dd>
+           <dt>SKU</dt><dd>${esc(sku)}</dd>
+           <dt>Matched to</dt><dd class="crit">${esc(row?.product_name || "—")}</dd>
+           <dt>Product code</dt><dd>${esc(row?.product_code || "—")}</dd>
+           <dt>Score</dt><dd>${row?.score == null ? "—" : row.score.toFixed(2)}</dd>
+         </dl>
+       </div>
+       <div class="m-sec">
+         <h3>Why is it wrong?</h3>
+         <textarea id="rej-comment" rows="3"
+           placeholder="e.g. flavour mismatch — cocoa vs cherry"></textarea>
+         <p class="hint" style="margin-top:8px">Recorded against the row with your name.
+           The SKU stays eligible for re-runs — this is a verdict on the pairing,
+           not on the listing.</p>
+       </div>`;
+    $("confirm-go").textContent = "Reject match";
+    $("confirm-go").disabled = false;
+    CONFIRM_ACTION = async () => {
+      await api("/rejected", {
+        method: "POST",
+        body: JSON.stringify({
+          channel: $("ch").value, sku,
+          comment: $("rej-comment").value.trim() || null,
+        }),
+      });
+      await Promise.all([loadResults(), loadRejected()]);
+    };
+    $("confirm").hidden = false;
+    document.body.style.overflow = "hidden";
+    $("rej-comment").focus();
+  }
+
   /* ------------------------------------------------------------ gate */
 
   async function loadGate() {
@@ -709,7 +873,14 @@
 
   /* The results table is scoped by the same channel/category as the run, so
      it follows the pickers rather than staying on whatever was loaded first. */
-  const rescope = () => { RES.offset = 0; loadResults().catch(() => {}); };
+  const rescope = () => {
+    RES.offset = 0; REJ.offset = 0;
+    loadResults().catch(() => {});
+    /* The rejected count sits on a tab label, so it follows the channel even
+       while that tab is closed -- a tab reading 0 until you click it is
+       worse than no count. */
+    loadRejected().catch(() => {});
+  };
 
   $("ch").addEventListener("change", () => { fillCategories(); scheduleResolve(); rescope(); });
   $("cat").addEventListener("change", () => { fillSubcategories(); scheduleResolve(); rescope(); });
@@ -722,7 +893,22 @@
     r.addEventListener("change", () => { if (PREVIEW) renderPreview(); }));
 
   $("confirm-cancel").addEventListener("click", closeConfirm);
-  $("confirm-go").addEventListener("click", launch);
+  $("confirm-go").addEventListener("click", async () => {
+    const action = CONFIRM_ACTION;
+    if (!action) return;
+    const label = $("confirm-go").textContent;
+    $("confirm-go").disabled = true;
+    $("confirm-go").textContent = "Working…";
+    try {
+      await action();
+      closeConfirm();
+    } catch (e) {
+      showError($("errors"), e.message);
+      closeConfirm();
+    } finally {
+      $("confirm-go").textContent = label;
+    }
+  });
   $("confirm").addEventListener("click", (e) => { if (e.target === $("confirm")) closeConfirm(); });
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && !$("confirm").hidden) closeConfirm();
@@ -743,7 +929,19 @@
       document.querySelectorAll(".tabpanel[data-panel]").forEach((p) =>
         (p.hidden = p.dataset.panel !== t.dataset.tab));
       if (t.dataset.tab === "gate") loadGate().catch(() => {});
+      if (t.dataset.tab === "rejected") {
+        loadRejected().catch((e) => showError($("errors"), e.message));
+      }
     }));
+
+  let rejTimer = null;
+  $("rejSearch").addEventListener("input", () => {
+    clearTimeout(rejTimer);
+    rejTimer = setTimeout(() => { REJ.offset = 0; loadRejected().catch(() => {}); }, 300);
+  });
+  $("rejEngine").addEventListener("change", () => {
+    REJ.offset = 0; loadRejected().catch(() => {});
+  });
 
   $("saved-last").addEventListener("click", () => {
     try {

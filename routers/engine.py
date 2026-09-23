@@ -31,7 +31,8 @@ from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
 import common.config as C
-from common import auth, db, db_models, log_parse, recovery, run_record, scope
+from common import (auth, db, db_models, log_parse, recovery, rejection,
+                    run_record, scope)
 
 # Applied to the router rather than to each route: a dependency listed here
 # cannot be forgotten when someone adds an endpoint later. Every path under
@@ -506,7 +507,7 @@ def results(
     rows = conn.execute(
         sa.select(
             src.c.sku, src.c.title, src.c.brand, src.c.category, src.c.subcategory,
-            src.c.mapping_status, src.c.pack_size, src.c.uom,
+            src.c.mapping_status, src.c.pack_size, src.c.uom, src.c.review_status,
             mapping.c.product_code, mapping.c.product_name, mapping.c.final_score,
             mapping.c.confidence_level, mapping.c.llm_reasoning,
         )
@@ -530,6 +531,11 @@ def results(
                 "category": r["category"],
                 "subcategory": r["subcategory"],
                 "status": r["mapping_status"],
+                # The steward's verdict, so the client can tell an approved
+                # row (not re-decidable here) from a rejected one from an
+                # unreviewed one. Without it the UI offered a Reject button on
+                # approved rows, where it can only ever 409.
+                "review_status": r["review_status"],
                 "pack": (
                     f'{r["pack_size"]}{r["uom"]}'
                     if r["pack_size"] is not None else None
@@ -1576,3 +1582,93 @@ def settings_about() -> dict:
         "port": int(os.environ.get("CONSOLE_PORT", "8099")),
         "log_dir": os.path.join(REPO_ROOT, "logs"),
     }
+
+
+# ---------------------------------------------------------------- rejections
+class RejectRequest(BaseModel):
+    channel: str
+    sku: str
+    comment: str | None = None
+
+
+@router.get("/rejected")
+def list_rejected(
+    channel: str,
+    category: str | None = None,
+    engine: str | None = None,
+    q: str | None = None,
+    limit: int = Query(50, le=500),
+    offset: int = Query(0, ge=0),
+    conn: db.Connection = Depends(get_conn),
+) -> dict:
+    """Matches a steward has turned down, and what was proposed for each.
+
+    The inverse of the approved crosswalk, and the more informative half. An
+    approval says the engine was right, which is what it is already trying to
+    be; a rejection says it was confidently wrong and names the product code
+    it was wrong about.
+    """
+    _validate(channel, engine)
+    engine_filter = (
+        (lambda src: scope._brand_clause(src, engine)) if engine else None
+    )
+    return rejection.listing(
+        conn, channel, category=category, engine_filter=engine_filter,
+        q=q, limit=limit, offset=offset,
+    )
+
+
+@router.get("/rejected/offenders")
+def rejected_offenders(
+    channel: str,
+    limit: int = Query(20, le=100),
+    conn: db.Connection = Depends(get_conn),
+) -> list[dict]:
+    """Master products that rejections keep landing on.
+
+    One product code across many rejections is the signature of a decoy node:
+    a gate target holding too few rows for a shortlist, so everything routed
+    there comes back as the same product. This finds those without anyone
+    running a QC pass by hand.
+    """
+    _validate(channel, None)
+    return rejection.offenders(conn, channel, limit)
+
+
+@router.post("/rejected")
+def reject_match(
+    req: RejectRequest,
+    user: auth.User = Depends(auth.current_user),
+    conn: db.Connection = Depends(get_conn),
+) -> dict:
+    """Record that the rank-1 match for this SKU is wrong.
+
+    Attribution comes from the session, never the request body -- a
+    client-supplied reviewer name in an audit trail is a suggestion, not a
+    record.
+    """
+    _validate(req.channel, None)
+    try:
+        return rejection.reject(
+            conn, req.channel, req.sku, actor=user.email, comment=req.comment
+        ).as_dict()
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+    except PermissionError as exc:
+        raise HTTPException(409, str(exc))
+
+
+@router.delete("/rejected")
+def withdraw_rejection(
+    channel: str,
+    sku: str,
+    user: auth.User = Depends(auth.current_user),
+    conn: db.Connection = Depends(get_conn),
+) -> dict:
+    """Return a rejected row to unreviewed."""
+    _validate(channel, None)
+    try:
+        changed = rejection.withdraw(conn, channel, sku, actor=user.email)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+    return {"channel": channel, "sku": sku, "withdrawn": changed}

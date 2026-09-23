@@ -229,6 +229,7 @@
           <div class="tabs" role="tablist" aria-label="Run outcome">
             <button class="tab" role="tab" aria-selected="true" data-tab="results">Results <span class="cnt" id="c-results">0</span></button>
             <button class="tab" role="tab" aria-selected="false" data-tab="failures">Failures <span class="cnt bad" id="c-failures">0</span></button>
+            <button class="tab" role="tab" aria-selected="false" data-tab="rejected">Rejected <span class="cnt" id="c-rejected">0</span></button>
             <button class="tab" role="tab" aria-selected="false" data-tab="log">Log</button>
             <button class="tab" role="tab" aria-selected="false" data-tab="gate">Gate health <span class="cnt" id="c-gate">0</span></button>
           </div>
@@ -250,8 +251,9 @@
             <div class="tw">
               <table>
                 <thead><tr><th>Engine</th><th>Source listing</th><th>Matched to</th>
-                  <th>Category</th><th>Status</th><th class="num">Confidence</th></tr></thead>
-                <tbody id="resBody"><tr><td colspan="6" class="empty">Run a scope to see results.</td></tr></tbody>
+                  <th>Category</th><th>Status</th><th class="num">Confidence</th>
+                  <th></th></tr></thead>
+                <tbody id="resBody"><tr><td colspan="7" class="empty">Run a scope to see results.</td></tr></tbody>
               </table>
             </div>
             <div id="resPager"></div>
@@ -265,6 +267,33 @@
                 <tbody id="failBody"><tr><td colspan="4" class="empty">No failures recorded.</td></tr></tbody>
               </table>
             </div>
+          </div>
+
+          <div class="tabpanel" data-panel="rejected" hidden>
+            <div class="note info" style="margin-top:0">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 8v5M12 16.5v.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.8"/></svg>
+              <div>A rejection is a verdict on the <b>pairing</b>, not the listing — the
+                SKU stays eligible and a re-run will process it again. What matters is
+                that it does not land on the same product code twice.</div>
+            </div>
+
+            <div id="offenders"></div>
+
+            <div class="tbar" style="margin-top:14px">
+              <div class="searchbox"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.2" stroke="currentColor" stroke-width="1.7"/><path d="m19 19-4-4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg><input id="rejSearch" type="search" placeholder="Filter rejections…" aria-label="Filter rejections"></div>
+              <select id="rejEngine" aria-label="Filter by engine">
+                <option value="">All engines</option><option value="himalaya">Himalaya</option><option value="competitor">Competitor</option></select>
+              <span class="spacer"></span>
+              <span class="hint" id="rejCap"></span>
+            </div>
+            <div class="tw">
+              <table>
+                <thead><tr><th>Source listing</th><th>Rejected match</th>
+                  <th>Reviewer</th><th class="num">Score</th><th></th></tr></thead>
+                <tbody id="rejBody"><tr><td colspan="5" class="empty">Pick a channel to see its rejections.</td></tr></tbody>
+              </table>
+            </div>
+            <div id="rejPager"></div>
           </div>
 
           <div class="tabpanel" data-panel="log" hidden>
@@ -530,7 +559,7 @@
       <h2 id="confirm-title">
         <svg width="19" height="19" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 8.5v4.5M12 16.5v.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M10.3 3.9 2.6 17.2A2 2 0 0 0 4.3 20.2h15.4a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" stroke="currentColor" stroke-width="1.7"/></svg>
         Confirm this run</h2>
-      <p>This writes mapping rows to the database and calls the LLM. Read the scope below before confirming.</p>
+      <p id="confirm-lede">This writes mapping rows to the database and calls the LLM. Read the scope below before confirming.</p>
     </div>
     <div class="modal-b" id="confirm-body"></div>
     <div class="modal-f">
