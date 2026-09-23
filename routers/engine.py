@@ -1171,3 +1171,408 @@ def config_history(limit: int = Query(30, le=200), conn: db.Connection = Depends
         })
         entry["config"][r[5]] = {"value": r[6], "is_override": bool(r[7])}
     return list(runs.values())[:limit]
+
+
+# ---------------------------------------------------------------- catalog
+def _master_node_population(conn) -> dict[tuple[str, str], int]:
+    """How many active master rows sit under each (category, sub-category).
+
+    The same figure the category gate narrows to. A product whose node holds
+    one row is a decoy: anything gated there comes back as that product
+    whatever the listing said, which is how every serum listing once matched
+    the same SERUM FLUID.
+    """
+    master = db_models.get_table(conn.engine, "staging", "himalaya_products")
+    return {
+        ((r[0] or "").strip().lower(), (r[1] or "").strip().lower()): r[2]
+        for r in conn.execute(
+            sa.select(
+                master.c.normalized_category,
+                master.c.normalized_subcategory,
+                sa.func.count(),
+            )
+            .where(master.c.is_active == True)  # noqa: E712 - SQL, not Python
+            .group_by(master.c.normalized_category, master.c.normalized_subcategory)
+        ).all()
+    }
+
+
+def _mapped_counts(conn, codes: list[str]) -> dict[str, int]:
+    """How many rank-1 listings across every channel point at each code.
+
+    Rank-1 only. The engine writes TOP_N_OUTPUT rows per SKU, so counting all
+    of them would report three listings where one listing was matched -- and
+    the number on screen is meant to answer "how many listings chose this
+    product", not "how many candidate rows exist".
+    """
+    if not codes:
+        return {}
+    # Chunked because SQL Server caps a statement at 2,100 parameters and an
+    # IN (...) spends one per value. A page of 25 is nowhere near it, but the
+    # endpoint permits 200 and a caller passing more gets a driver error that
+    # says "COUNT field incorrect" and names nothing useful.
+    CHUNK = 1000
+    totals: dict[str, int] = {}
+    for ch in CHANNELS:
+        try:
+            mapping = db_models.get_table(conn.engine, "staging", f"{ch}_product_mapping")
+        except Exception:
+            continue
+        for i in range(0, len(codes), CHUNK):
+            rows = conn.execute(
+                sa.select(mapping.c.product_code, sa.func.count())
+                .where(mapping.c.product_code.in_(codes[i:i + CHUNK]))
+                .where(mapping.c.match_rank == 1)
+                .group_by(mapping.c.product_code)
+            ).all()
+            for code, n in rows:
+                totals[code] = totals.get(code, 0) + n
+    return totals
+
+
+@router.get("/catalog")
+def catalog(
+    q: str | None = None,
+    category: str | None = None,
+    limit: int = Query(25, le=200),
+    offset: int = Query(0, ge=0),
+    conn: db.Connection = Depends(get_conn),
+) -> dict:
+    """The master catalogue, with how much has been mapped onto each product.
+
+    Paged server-side: the master grows with every ingest, and the mapped
+    count below runs across four channels.
+    """
+    master = db_models.get_table(conn.engine, "staging", "himalaya_products")
+
+    where = [master.c.is_active == True]  # noqa: E712 - SQL, not Python
+    if category:
+        where.append(sa.func.lower(master.c.normalized_category) == category.strip().lower())
+    if q:
+        like = f"%{q.strip()}%"
+        where.append(sa.or_(
+            master.c.product_name.ilike(like),
+            master.c.product_code.ilike(like),
+            master.c.normalized_title.ilike(like),
+        ))
+
+    total = conn.execute(
+        sa.select(sa.func.count()).select_from(master).where(*where)
+    ).scalar_one()
+    catalog_total = conn.execute(
+        sa.select(sa.func.count()).select_from(master)
+        .where(master.c.is_active == True)  # noqa: E712 - SQL, not Python
+    ).scalar_one()
+
+    rows = conn.execute(
+        sa.select(
+            master.c.product_code, master.c.product_name, master.c.normalized_title,
+            master.c.normalized_category, master.c.normalized_subcategory,
+            master.c.normalized_pack_size, master.c.normalized_uom,
+        )
+        .where(*where)
+        # Ordered by the column actually rendered. product_name is NULL on all
+        # 3,662 active rows, so ordering by it produced an arbitrary sequence.
+        .order_by(master.c.normalized_title)
+        .offset(offset).limit(limit)
+    ).mappings().all()
+
+    pop = _master_node_population(conn)
+    mapped = _mapped_counts(conn, [r["product_code"] for r in rows if r["product_code"]])
+
+    categories = [
+        r[0] for r in conn.execute(
+            sa.select(master.c.normalized_category)
+            .where(master.c.is_active == True)  # noqa: E712 - SQL, not Python
+            .where(master.c.normalized_category.isnot(None))
+            .group_by(master.c.normalized_category)
+            .order_by(master.c.normalized_category)
+        ).all()
+    ]
+
+    return {
+        "total": total,
+        "catalog_total": catalog_total,
+        "offset": offset,
+        "limit": limit,
+        "categories": categories,
+        "rows": [
+            {
+                "product_code": r["product_code"],
+                # normalized_title, not product_name: the latter is NULL on
+                # every active master row, so reading it put the category in
+                # the product column for all 3,662 products.
+                "product_name": r["product_name"] or r["normalized_title"],
+                "category": r["normalized_category"],
+                "subcategory": r["normalized_subcategory"],
+                "pack": (
+                    f'{r["normalized_pack_size"]}{r["normalized_uom"] or ""}'
+                    if r["normalized_pack_size"] is not None else None
+                ),
+                "mapped": mapped.get(r["product_code"], 0),
+                "node_rows": pop.get((
+                    (r["normalized_category"] or "").strip().lower(),
+                    (r["normalized_subcategory"] or "").strip().lower(),
+                ), 0),
+            }
+            for r in rows
+        ],
+    }
+
+
+@router.get("/catalog/health")
+def catalog_health(conn: db.Connection = Depends(get_conn)) -> dict:
+    """Master-data faults that produce bad matches downstream.
+
+    Not engine bugs -- catalogue bugs. A duplicate product_code means two
+    master rows compete for the same listing and which one wins is arbitrary;
+    a missing pack size disables the pack signal for every comparison against
+    that product.
+    """
+    master = db_models.get_table(conn.engine, "staging", "himalaya_products")
+    active = master.c.is_active == True  # noqa: E712 - SQL, not Python
+
+    dupes = conn.execute(
+        sa.select(master.c.product_code, sa.func.count())
+        .where(active).where(master.c.product_code.isnot(None))
+        .group_by(master.c.product_code)
+        .having(sa.func.count() > 1)
+        .order_by(sa.func.count().desc())
+    ).all()
+
+    detail = []
+    for code, n in dupes[:25]:
+        names = conn.execute(
+            sa.select(sa.func.coalesce(master.c.product_name, master.c.normalized_title))
+            .where(active).where(master.c.product_code == code).limit(4)
+        ).scalars().all()
+        detail.append({"product_code": code, "rows": n, "names": names})
+
+    missing_pack = conn.execute(
+        sa.select(sa.func.count()).select_from(master)
+        .where(active).where(master.c.normalized_pack_size.is_(None))
+    ).scalar_one()
+
+    # Nodes that rules.py can route to but the master cannot answer from.
+    #
+    # NOT `sum(1 for n in pop.values() if n == 0)`: pop is built by grouping
+    # the master itself, so every key in it has at least one row and that
+    # count is always zero. The starved nodes are the ones a RULE names and
+    # the master does not have -- which is why this has to come from the same
+    # pack targets /gate-warnings reads.
+    pop = _master_node_population(conn)
+    from oneds_master.category.resolve import pack_targets
+    from oneds_master.category.rules import PACKS
+
+    targets = {
+        (cat.strip().lower(), sub.strip().lower())
+        for pack in PACKS.values()
+        for cat, sub in pack_targets(pack)
+    }
+    empty_nodes = sum(1 for t in targets if pop.get(t, 0) == 0)
+
+    # Products no listing on any channel has been matched to. Not necessarily
+    # wrong -- Himalaya sells things competitors do not -- but a product that
+    # never wins is worth knowing about before blaming scoring.
+    #
+    # Asked as "which codes ARE mapped", then subtracted. Passing all 3,662
+    # master codes into an IN (...) instead blew SQL Server's 2,100-parameter
+    # ceiling and came back as a bare "COUNT field incorrect or syntax error",
+    # which names neither the limit nor the parameter that hit it.
+    all_codes = set(conn.execute(
+        sa.select(master.c.product_code).where(active)
+        .where(master.c.product_code.isnot(None))
+    ).scalars().all())
+
+    mapped_codes: set[str] = set()
+    for ch in CHANNELS:
+        try:
+            mapping = db_models.get_table(conn.engine, "staging", f"{ch}_product_mapping")
+        except Exception:
+            continue
+        mapped_codes.update(conn.execute(
+            sa.select(mapping.c.product_code)
+            .where(mapping.c.match_rank == 1)
+            .where(mapping.c.product_code.isnot(None))
+            .group_by(mapping.c.product_code)
+        ).scalars().all())
+
+    never_mapped = len(all_codes - mapped_codes)
+
+    return {
+        "duplicate_skus": len(dupes),
+        "missing_pack": missing_pack,
+        "empty_nodes": empty_nodes,
+        "never_mapped": never_mapped,
+        "duplicates": detail,
+    }
+
+
+@router.get("/catalog/{product_code}")
+def catalog_product(
+    product_code: str,
+    limit: int = Query(25, le=200),
+    conn: db.Connection = Depends(get_conn),
+) -> dict:
+    """One master product, and every listing mapped onto it.
+
+    The reverse of /results, and the view that makes a decoy node visible: a
+    product collecting listings that plainly are not it is the symptom of a
+    gate pointing somewhere too small.
+    """
+    master = db_models.get_table(conn.engine, "staging", "himalaya_products")
+    row = conn.execute(
+        sa.select(
+            master.c.product_code, master.c.product_name, master.c.normalized_title,
+            master.c.normalized_category, master.c.normalized_subcategory,
+            master.c.normalized_pack_size, master.c.normalized_uom,
+        )
+        .where(master.c.product_code == product_code)
+        .where(master.c.is_active == True)  # noqa: E712 - SQL, not Python
+    ).mappings().first()
+    if row is None:
+        raise HTTPException(404, "no active master product with that code")
+
+    listings: list[dict] = []
+    total = 0
+    for ch in CHANNELS:
+        try:
+            mapping = db_models.get_table(conn.engine, "staging", f"{ch}_product_mapping")
+            src = db_models.get_table(conn.engine, "staging", f"{ch}_products")
+        except Exception:
+            continue
+
+        # Joined on the source ROW id, not on sku: a sku can have more than
+        # one source row, and joining on sku returns the same listing once
+        # per twin. That is the bug that turned 359 results into 447.
+        join = mapping.join(src, src.c.id == mapping.c[f"{ch}_product_id"])
+        where = [mapping.c.product_code == product_code, mapping.c.match_rank == 1]
+
+        total += conn.execute(
+            sa.select(sa.func.count()).select_from(join).where(*where)
+        ).scalar_one()
+
+        for r in conn.execute(
+            sa.select(
+                src.c.sku, src.c.title, src.c.brand, src.c.mapping_status,
+                mapping.c.final_score, mapping.c.llm_reasoning,
+            )
+            .select_from(join).where(*where)
+            .order_by(mapping.c.final_score.desc())
+            .limit(limit)
+        ).mappings().all():
+            listings.append({
+                "channel": ch,
+                "sku": r["sku"],
+                "title": r["title"],
+                "brand": r["brand"],
+                "status": r["mapping_status"],
+                "score": float(r["final_score"]) if r["final_score"] is not None else None,
+                "reasoning": r["llm_reasoning"],
+            })
+
+    listings.sort(key=lambda x: (x["score"] is None, -(x["score"] or 0)))
+    pop = _master_node_population(conn)
+
+    return {
+        "product": {
+            "product_code": row["product_code"],
+            "product_name": row["product_name"] or row["normalized_title"],
+            "category": row["normalized_category"],
+            "subcategory": row["normalized_subcategory"],
+            "pack": (
+                f'{row["normalized_pack_size"]}{row["normalized_uom"] or ""}'
+                if row["normalized_pack_size"] is not None else None
+            ),
+        },
+        "node_rows": pop.get((
+            (row["normalized_category"] or "").strip().lower(),
+            (row["normalized_subcategory"] or "").strip().lower(),
+        ), 0),
+        "total": total,
+        "listings": listings[:limit],
+    }
+
+
+# ---------------------------------------------------------------- settings
+@router.get("/settings/channels")
+def settings_channels(conn: db.Connection = Depends(get_conn)) -> list[dict]:
+    """Per-channel population and how much of it is still unprocessed."""
+    run = db_models.get_table(conn.engine, "audit", "engine_run")
+    out = []
+    for ch in CHANNELS:
+        try:
+            src = db_models.get_table(conn.engine, "staging", f"{ch}_products")
+        except Exception:
+            continue
+        rows = conn.execute(sa.select(sa.func.count()).select_from(src)).scalar_one()
+        pending = conn.execute(
+            sa.select(sa.func.count()).select_from(src)
+            .where(sa.or_(src.c.mapping_status.is_(None),
+                          src.c.mapping_status == "PENDING"))
+        ).scalar_one()
+        last = conn.execute(
+            sa.select(sa.func.max(run.c.started_at)).where(run.c.channel == ch)
+        ).scalar()
+        out.append({
+            "channel": ch,
+            "source_table": f"staging.{ch}_products",
+            "rows": rows,
+            "pending": pending,
+            "last_run": last.isoformat() if last else None,
+        })
+    return out
+
+
+@router.get("/settings/members")
+def settings_members(conn: db.Connection = Depends(get_conn)) -> list[dict]:
+    """Who can sign in. Read-only, and no password material leaves here.
+
+    config.users is shared with the steward review portal, so this endpoint
+    reads it and never writes: an account edited from the console would
+    change who can sign in to a system this console does not own.
+    """
+    users = db_models.get_table(conn.engine, "config", "users")
+    rows = conn.execute(
+        sa.select(users.c.name, users.c.email, users.c.role,
+                  users.c.status, users.c.last_login_at)
+        .order_by(users.c.role, users.c.email)
+    ).mappings().all()
+    return [
+        {
+            "name": r["name"],
+            "email": r["email"],
+            "role": (r["role"] or "").upper(),
+            "is_active": str(r["status"] or "").strip().upper() in ("ACTIVE", "1", "TRUE", "Y"),
+            "last_login_at": r["last_login_at"].isoformat() if r["last_login_at"] else None,
+        }
+        for r in rows
+    ]
+
+
+@router.get("/settings/about")
+def settings_about() -> dict:
+    """What this deployment is, so a screenshot is attributable.
+
+    The git sha matters more than it looks: a result is only interpretable
+    alongside the code that produced it, and "which build was that?" is the
+    first question asked about a surprising number.
+    """
+    def _git(*args: str) -> str:
+        try:
+            return subprocess.run(
+                ["git", *args], cwd=REPO_ROOT, capture_output=True,
+                text=True, timeout=5,
+            ).stdout.strip()
+        except Exception:
+            return ""
+
+    return {
+        "environment": os.environ.get("ENGINE_ENV", "LOCAL"),
+        "database": _database_name(),
+        "server": _database_server(),
+        "git_sha": _git("rev-parse", "--short", "HEAD"),
+        "branch": _git("rev-parse", "--abbrev-ref", "HEAD"),
+        "port": int(os.environ.get("CONSOLE_PORT", "8099")),
+        "log_dir": os.path.join(REPO_ROOT, "logs"),
+    }

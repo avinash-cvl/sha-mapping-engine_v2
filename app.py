@@ -75,6 +75,18 @@ if os.path.isdir(WEB):
 
     @app.get("/")
     def index(request: Request):
+        """The seven-page console.
+
+        It routes client-side off the hash (#runs, #catalog, ...), so one
+        document serves every page. The three older single-purpose pages are
+        still served below at their own paths: someone with /history
+        bookmarked should not get a 404 on the morning this ships, and the
+        run-detail dialog is identical in both.
+        """
+        return _page(request, "console.html")
+
+    @app.get("/run")
+    def run_page(request: Request):
         return _page(request, "run.html")
 
     @app.get("/configuration")

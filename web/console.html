@@ -1,0 +1,600 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Harmonization Engine Console</title>
+<link rel="icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+CjxyZWN0IHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgcng9IjUiIGZpbGw9IiMxRjZGRUIiLz4KPGcgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZmZmIiBzdHJva2Utd2lkdGg9IjEuOCI+CjxyZWN0IHg9IjQuNSIgeT0iNS41IiB3aWR0aD0iNiIgaGVpZ2h0PSI2IiByeD0iMS40Ii8+CjxyZWN0IHg9IjEzLjUiIHk9IjEyLjUiIHdpZHRoPSI2IiBoZWlnaHQ9IjYiIHJ4PSIxLjQiLz4KPHBhdGggZD0iTTEwLjUgOC41aDIuNmExLjkgMS45IDAgMCAxIDEuOSAxLjl2Mi4xIiBzdHJva2UtbGluZWNhcD0icm91bmQiLz4KPC9nPjwvc3ZnPg==">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="/static/console.css">
+<link rel="stylesheet" href="/static/shell.css">
+</head>
+<body>
+
+<h1 class="vh" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)">Harmonization Engine Console</h1>
+
+<nav class="navrail" aria-label="Console sections">
+  <div class="rail-mark" aria-hidden="true">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><rect x="2.5" y="3.5" width="7" height="7" rx="1.6" stroke="currentColor" stroke-width="1.7"/><rect x="14.5" y="13.5" width="7" height="7" rx="1.6" stroke="currentColor" stroke-width="1.7"/><path d="M9.5 7h4.2a2.3 2.3 0 0 1 2.3 2.3V13" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="18" cy="17" r="1.4" fill="currentColor"/></svg>
+  </div>
+  <button class="rail-new" title="Start a new run" aria-label="Start a new run" data-route="runs-new">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+  </button>
+  <div class="rail-nav">
+    <button class="rail-btn" data-route="runs" title="Runs" aria-label="Runs">
+      <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><rect x="4" y="4" width="16" height="16" rx="4" stroke="currentColor" stroke-width="1.7"/><path d="M9 12.5l2 2 4-4.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+    <button class="rail-btn" data-route="catalog" title="Catalog" aria-label="Catalog">
+      <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M12 3.5 4 7.2v9.6L12 20.5l8-3.7V7.2L12 3.5Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M4 7.2 12 11l8-3.8M12 11v9.5" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+    </button>
+    <button class="rail-btn" data-route="rules" title="Match rules" aria-label="Match rules">
+      <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M4 7h9M17 7h3M4 17h3M11 17h9" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="13" cy="7" r="2.3" stroke="currentColor" stroke-width="1.6"/><circle cx="8" cy="17" r="2.3" stroke="currentColor" stroke-width="1.6"/></svg>
+    </button>
+    <button class="rail-btn" data-route="history" title="History" aria-label="History">
+      <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="8.3" stroke="currentColor" stroke-width="1.6"/><path d="M12 7.5V12l3.2 2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+    <button class="rail-btn" data-route="alerts" title="Alerts" aria-label="Alerts">
+      <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M6 10.5a6 6 0 0 1 12 0c0 3.4 1 4.7 1.6 5.3H4.4C5 15.2 6 13.9 6 10.5Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M9.7 18.7a2.4 2.4 0 0 0 4.6 0" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      <span class="dot-badge" id="rail-badge" hidden></span>
+    </button>
+  </div>
+  <div class="rail-spacer"></div>
+  <div class="rail-foot">
+    <button class="rail-btn" data-route="settings" title="Settings" aria-label="Settings">
+      <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.6"/><path d="M12 3.6v2.2M12 18.2v2.2M20.4 12h-2.2M5.8 12H3.6M17.7 6.3l-1.5 1.5M7.8 16.2l-1.5 1.5M17.7 17.7l-1.5-1.5M7.8 7.8 6.3 6.3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+    </button>
+  </div>
+</nav>
+
+<div class="content">
+  <header class="appbar">
+    <div class="crumb" id="crumb"><b>Runs</b></div>
+    <div class="searchbox">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.2" stroke="currentColor" stroke-width="1.7"/><path d="m19 19-4-4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+      <input id="cmdInput" type="search" placeholder="Search runs, SKUs, categories…" aria-label="Search">
+      <span class="kbd">Ctrl K</span>
+    </div>
+    <div class="appbar-right">
+      <span class="env"><i aria-hidden="true"></i><span id="env-name">Production</span></span>
+      <button class="iconbtn theme-toggle" id="themeToggle" title="Toggle theme" aria-label="Toggle colour theme">
+        <svg class="i-sun" width="17" height="17" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="4" stroke="currentColor" stroke-width="1.7"/><path d="M12 3v2M12 19v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M3 12h2M19 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+        <svg class="i-moon" width="17" height="17" viewBox="0 0 24 24" fill="none"><path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a7 7 0 0 0 10.5 10.5Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+      </button>
+      <button class="iconbtn" id="bellBtn" data-route="alerts" title="Alerts" aria-label="Alerts">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none"><path d="M6 10.5a6 6 0 0 1 12 0c0 3.4 1 4.7 1.6 5.3H4.4C5 15.2 6 13.9 6 10.5Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M9.7 18.7a2.4 2.4 0 0 0 4.6 0" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        <span class="dot-badge" id="bell-badge" hidden></span>
+      </button>
+      <div class="whobox"><span class="avatar" id="avatar">—</span><span class="who-name" id="who"></span></div>
+    </div>
+  </header>
+
+  <div class="shellwrap">
+  <div id="errors"></div>
+
+  <!-- ============================== RUNS ============================== -->
+  <section class="page" data-page="runs">
+    <div class="page-head">
+      <div><h2>Runs</h2><p>Match jobs across every channel and engine.</p></div>
+      <button class="btn primary" data-route="runs-new">+ New run</button>
+    </div>
+
+    <div class="tiles" style="margin-bottom:16px" id="run-tiles">
+      <div class="tile run"><span class="n" id="tile-active">—</span><span class="k">Active</span></div>
+      <div class="tile"><span class="n" id="tile-queued">—</span><span class="k">Queued</span></div>
+      <div class="tile warnv"><span class="n" id="tile-failed">—</span><span class="k">Failed today</span></div>
+      <div class="tile critv"><span class="n" id="tile-stuck">—</span><span class="k">Stuck — needs reconcile</span></div>
+    </div>
+
+    <div class="note crit" id="stuck-note" hidden>
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 8.5v4.5M12 16.5v.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M10.3 3.9 2.6 17.2A2 2 0 0 0 4.3 20.2h15.4a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" stroke="currentColor" stroke-width="1.7"/></svg>
+      <div id="stuck-note-text"></div>
+    </div>
+
+    <section class="panel" style="margin-top:16px">
+      <div class="panel-h"><span class="panel-t">Recent runs</span>
+        <span class="stale" style="margin-left:auto" id="recent-live"></span></div>
+      <div class="panel-b">
+        <div class="tbar">
+          <select id="rr-channel" aria-label="Channel"><option value="">All channels</option></select>
+          <select id="rr-engine" aria-label="Engine">
+            <option value="">All engines</option>
+            <option value="himalaya">Himalaya</option>
+            <option value="competitor">Competitor</option>
+          </select>
+          <select id="rr-status" aria-label="Status">
+            <option value="">All statuses</option>
+            <option value="running">Running</option>
+            <option value="completed">Completed</option>
+            <option value="completed_with_failures">With failures</option>
+            <option value="failed">Failed</option>
+            <option value="stale">Stuck</option>
+          </select>
+          <span class="spacer"></span>
+        </div>
+        <div class="tw tw-short">
+          <table>
+            <thead><tr><th>Run</th><th>Scope</th><th>Engine</th><th>Outcome</th>
+              <th class="num">Processed</th><th class="num">Failed</th>
+              <th class="num">Duration</th><th>Triggered by</th><th></th></tr></thead>
+            <tbody id="rr-rows"><tr><td colspan="9" class="loading">Loading runs</td></tr></tbody>
+          </table>
+        </div>
+        <div class="tfoot" style="display:flex;align-items:center;gap:10px;margin-top:12px">
+          <span class="stale" id="rr-cap"></span>
+          <a href="#history" data-route="history" style="margin-left:auto;color:var(--accent);font-size:12.5px;font-weight:600;text-decoration:none">Open full history &rarr;</a>
+        </div>
+      </div>
+    </section>
+  </section>
+
+  <!-- ============================== NEW RUN ============================== -->
+  <section class="page" data-page="runs-new" hidden>
+    <div class="page-head">
+      <div><h2>New run</h2><p>Resolve a scope, confirm what it will touch, then queue it.</p></div>
+    </div>
+
+    <div class="grid">
+      <form class="panel" id="scope-form" onsubmit="return false" aria-label="Run scope">
+        <div class="panel-h"><span class="panel-t">Scope</span></div>
+        <div class="panel-b">
+          <div class="saved">
+            <button type="button" class="active" id="saved-last">My last scope</button>
+          </div>
+          <div class="field">
+            <label>Products to run</label>
+            <div class="seg">
+              <input type="radio" name="t" id="t-cat" value="himalaya">
+              <input type="radio" name="t" id="t-comp" value="competitor" checked>
+              <label for="t-cat"><span class="ic"><svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M4 7.5 12 3.5l8 4v9l-8 4-8-4v-9Z" stroke="currentColor" stroke-width="2"/></svg></span><span class="tx"><b>Himalaya</b><span>brand = Himalaya</span></span><span class="n" id="n-cat">—</span></label>
+              <label for="t-comp"><span class="ic"><svg width="12" height="12" viewBox="0 0 24 24" fill="none"><circle cx="8" cy="12" r="5" stroke="currentColor" stroke-width="2"/><circle cx="16" cy="12" r="5" stroke="currentColor" stroke-width="2"/></svg></span><span class="tx"><b>Competitor</b><span>brand &ne; Himalaya</span></span><span class="n" id="n-comp">—</span></label>
+            </div>
+          </div>
+
+          <div class="field">
+            <label for="ch">Channel</label>
+            <select id="ch">
+              <option value="">Select a channel…</option>
+            </select>
+            <p class="hint">Required in both modes — each channel is its own
+              source table, so a SKU has no meaning without one.</p>
+          </div>
+
+          <div class="field">
+            <label>Scope by</label>
+            <div class="seg seg-row">
+              <input type="radio" name="sb" id="sb-cat" value="category" checked>
+              <input type="radio" name="sb" id="sb-sku" value="skus">
+              <label for="sb-cat"><span class="ic"><svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M4 6h16M4 12h16M4 18h10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></span><span class="tx"><b>Category</b></span></label>
+              <label for="sb-sku"><span class="ic"><svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></span><span class="tx"><b>SKU list</b></span></label>
+            </div>
+          </div>
+
+          <div id="scope-by-category">
+            <div class="field"><label for="cat">Category</label><select id="cat"><option value="">All categories</option></select></div>
+            <div class="field"><label for="sub">Sub-category</label><select id="sub"><option value="">All sub-categories</option></select></div>
+          </div>
+
+          <div id="scope-by-skus" hidden>
+            <div class="field"><label for="skus">SKU list</label>
+              <textarea id="skus" rows="4" placeholder="Paste SKUs, one per line"></textarea>
+              <p class="hint">Looked up in the channel selected above — the same SKU
+                can exist on more than one channel, and each is a separate table.
+                Category and sub-category are ignored in this mode.</p></div>
+          </div>
+
+          <div class="row2">
+            <div class="field"><label for="w">Workers</label>
+              <select id="w"><option>2</option><option>3</option><option selected>4</option><option>6</option><option>8</option></select></div>
+            <div class="field"><label for="bs">Batch size</label><input id="bs" type="text" value="500"></div>
+          </div>
+          <div class="toggle"><label for="llm" style="margin:0">LLM judge</label>
+            <span class="sw"><input type="checkbox" id="llm" checked><span></span></span></div>
+          <p class="hint" style="margin:8px 0 0">Workers above 4 have produced SQL 40001 deadlocks on this instance.</p>
+        </div>
+      </form>
+
+      <div class="stack">
+        <section class="panel">
+          <div class="panel-h"><span class="panel-t">Run preview</span>
+            <span class="stale" style="margin-left:auto" id="preview-at"></span></div>
+          <div class="panel-b" id="preview-b">
+            <div class="loading">Resolving scope</div>
+          </div>
+        </section>
+
+        <section class="panel" id="queue-panel" hidden>
+          <div class="panel-h"><span class="panel-t">Queue</span>
+            <span style="margin-left:auto"><span class="live" id="liveTag"><i></i>Streaming</span></span></div>
+          <div class="panel-b">
+            <div class="q" id="queue-rows"></div>
+            <div class="stages" id="stages" style="margin-top:18px"></div>
+            <div class="prog-top">
+              <span class="prog-n" id="progN">0<small> / 0 total</small></span>
+              <span id="progPill"></span>
+              <span class="prog-meta" id="progMeta"></span>
+            </div>
+            <div class="bar" id="progBar" role="progressbar" aria-valuemin="0" aria-valuenow="0" aria-valuemax="0" aria-label="Queue progress"></div>
+            <div class="legend" id="progLegend"></div>
+            <div class="actions">
+              <button class="btn" id="cancelBtn">Cancel queue</button>
+              <button class="btn open" id="queue-detail" hidden>View details</button>
+              <span class="stale" id="cancelNote">Cancellation takes effect after the current SKU.</span>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel" id="outcome-panel">
+          <div class="tabs" role="tablist" aria-label="Run outcome">
+            <button class="tab" role="tab" aria-selected="true" data-tab="results">Results <span class="cnt" id="c-results">0</span></button>
+            <button class="tab" role="tab" aria-selected="false" data-tab="failures">Failures <span class="cnt bad" id="c-failures">0</span></button>
+            <button class="tab" role="tab" aria-selected="false" data-tab="log">Log</button>
+            <button class="tab" role="tab" aria-selected="false" data-tab="gate">Gate health <span class="cnt" id="c-gate">0</span></button>
+          </div>
+
+          <div class="tabpanel" data-panel="results">
+            <div class="tbar">
+              <div class="searchbox"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.2" stroke="currentColor" stroke-width="1.7"/><path d="m19 19-4-4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg><input id="resSearch" type="search" placeholder="Filter listings…" aria-label="Filter results"></div>
+              <select id="resEngine" aria-label="Filter by engine">
+                <option value="">All engines</option><option value="himalaya">Himalaya</option><option value="competitor">Competitor</option></select>
+              <select id="resStatus" aria-label="Filter by status">
+                <option value="">All statuses</option>
+                <option value="AutoMatch">AutoMatch</option>
+                <option value="StewardReview">StewardReview</option>
+                <option value="NoHimalayaEquivalent">NoHimalayaEquivalent</option>
+                <option value="Failed">Failed</option></select>
+              <select id="resCat" aria-label="Filter by category"><option value="">All categories</option></select>
+              <span class="spacer"></span>
+            </div>
+            <div class="tw">
+              <table>
+                <thead><tr><th>Engine</th><th>Source listing</th><th>Matched to</th>
+                  <th>Category</th><th>Status</th><th class="num">Confidence</th></tr></thead>
+                <tbody id="resBody"><tr><td colspan="6" class="empty">Run a scope to see results.</td></tr></tbody>
+              </table>
+            </div>
+            <div id="resPager"></div>
+          </div>
+
+          <div class="tabpanel" data-panel="failures" hidden>
+            <div id="fail-banner"></div>
+            <div class="tw">
+              <table>
+                <thead><tr><th>Source listing</th><th>Detail</th><th>Status</th><th class="num">Disposition</th></tr></thead>
+                <tbody id="failBody"><tr><td colspan="4" class="empty">No failures recorded.</td></tr></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="tabpanel" data-panel="log" hidden>
+            <div id="live-log" class="flow" style="max-height:340px;overflow:auto"></div>
+            <p class="hint" style="margin-top:10px">Full structured log opens in the run detail view once the run finishes.</p>
+          </div>
+
+          <div class="tabpanel" data-panel="gate" hidden>
+            <p class="hint" style="margin-bottom:12px">Gate targets touched by this scope. A near-empty target traps every listing routed to it.</p>
+            <div class="tw">
+              <table>
+                <thead><tr><th>Target</th><th class="num">Rows</th><th class="num">Hits</th><th>State</th></tr></thead>
+                <tbody id="gateBody"><tr><td colspan="4" class="empty">No gate warnings for this scope.</td></tr></tbody>
+              </table>
+            </div>
+            <div class="actions"><button class="btn sm" data-route="rules">View system-wide gate health</button></div>
+          </div>
+        </section>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================== CATALOG ============================== -->
+  <section class="page" data-page="catalog" hidden>
+    <div class="page-head">
+      <div><h2>Catalog</h2><p>The Himalaya master catalog — pick a product and see every listing already mapped to it.</p></div>
+    </div>
+
+    <div class="tbar">
+      <select id="cat-category" aria-label="Category"><option value="">All categories</option></select>
+      <div class="searchbox" style="max-width:260px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.2" stroke="currentColor" stroke-width="1.7"/><path d="m19 19-4-4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg><input id="cat-q" type="search" placeholder="Search products or SKU…" aria-label="Search catalog"></div>
+      <span class="spacer"></span>
+      <span class="hint" id="cat-count"></span>
+    </div>
+
+    <div class="csplit">
+      <div class="panel">
+        <div class="tw">
+          <table>
+            <thead><tr><th>Product</th><th>SKU</th><th class="num">Pack</th>
+              <th class="num">Mapped listings</th><th>Gate</th></tr></thead>
+            <tbody id="cat-rows"><tr><td colspan="5" class="loading">Loading catalog</td></tr></tbody>
+          </table>
+        </div>
+        <div id="cat-pager" style="padding:0 14px 12px"></div>
+      </div>
+
+      <div class="panel" id="cat-detail">
+        <div class="prod-h"><div class="pn">No product selected</div>
+          <div class="ps">Pick a row to see what maps to it</div></div>
+        <div class="panel-b"><p class="hint" style="margin:0">Every competitor listing the engine has matched to a master product is listed here — the reverse of the Results table.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================== MATCH RULES ============================== -->
+  <section class="page" data-page="rules" hidden>
+    <div class="page-head">
+      <div><h2>Match rules</h2><p>Thresholds, retrieval depth and scoring weights that govern every run — team defaults, not run overrides.</p></div>
+    </div>
+
+    <section class="panel">
+      <div class="tabs" role="tablist" aria-label="Match rules sections">
+        <button class="tab" role="tab" aria-selected="true" data-tab2="guard">Guardrails &amp; weights</button>
+        <button class="tab" role="tab" aria-selected="false" data-tab2="gate">Gate health <span class="cnt bad" id="c-gate-total">0</span></button>
+        <button class="tab" role="tab" aria-selected="false" data-tab2="health">Data health</button>
+        <button class="tab" role="tab" aria-selected="false" data-tab2="changelog">Change log</button>
+      </div>
+
+      <div class="tabpanel" data-panel2="guard">
+        <div class="note info">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 8v5M12 16.5v.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.8"/></svg>
+          <div>These are <b>team defaults</b>, read from the engine's own config module. A run overrides workers and batch size for itself from its Scope panel.</div>
+        </div>
+        <div id="cfg-body"><div class="loading">Loading configuration</div></div>
+      </div>
+
+      <div class="tabpanel" data-panel2="gate" hidden>
+        <div class="note" style="margin-top:0">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 8.5v4.5M12 16.5v.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M10.3 3.9 2.6 17.2A2 2 0 0 0 4.3 20.2h15.4a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" stroke="currentColor" stroke-width="1.7"/></svg>
+          <div id="gate-note">A rule pointing at a near-empty master node traps every listing routed to it. The backstop widens the pool and logs a warning, but the rule still needs fixing.</div>
+        </div>
+        <div class="tbar" style="margin-top:14px">
+          <select id="gate-sort" aria-label="Sort gate targets">
+            <option value="hits">Sort by hits (30d)</option>
+            <option value="rows">Sort by rows held</option>
+          </select>
+          <span class="spacer"></span>
+          <span class="hint" id="gate-cap"></span>
+        </div>
+        <div class="tw">
+          <table>
+            <thead><tr><th>Master node</th><th>Reached from</th><th class="num">Rows</th>
+              <th class="num">Hits (30d)</th><th>State</th></tr></thead>
+            <tbody id="gate-rows"><tr><td colspan="5" class="loading">Loading gate health</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="tabpanel" data-panel2="health" hidden>
+        <div class="tiles" id="health-tiles">
+          <div class="tile warnv"><span class="n" id="h-dupe">—</span><span class="k">Duplicate SKU codes</span></div>
+          <div class="tile warnv"><span class="n" id="h-pack">—</span><span class="k">Missing pack size</span></div>
+          <div class="tile critv"><span class="n" id="h-empty">—</span><span class="k">Taxonomy nodes with 0 rows</span></div>
+          <div class="tile"><span class="n" id="h-cold">—</span><span class="k">No mapping in 90 days</span></div>
+        </div>
+        <div class="grp" style="margin-top:18px">Duplicate SKU codes</div>
+        <div class="tw">
+          <table>
+            <thead><tr><th>SKU</th><th class="num">Rows</th><th>Products sharing it</th></tr></thead>
+            <tbody id="health-dupes"><tr><td colspan="3" class="loading">Checking</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="tabpanel" data-panel2="changelog" hidden>
+        <div class="tw">
+          <table>
+            <thead><tr><th>Date</th><th>Setting</th><th class="num">Before</th><th class="num">After</th>
+              <th>Changed by</th><th>Note</th></tr></thead>
+            <tbody id="cfg-log"><tr><td colspan="6" class="loading">Loading change log</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </section>
+
+  <!-- ============================== HISTORY ============================== -->
+  <section class="page" data-page="history" hidden>
+    <div class="page-head">
+      <div><h2>History</h2><p>Every recorded run and every log file on disk — compare any two to see what changed.</p></div>
+    </div>
+
+    <div class="hsum" id="hsum" style="margin-bottom:20px"></div>
+
+    <div class="tabs" role="tablist" style="margin-bottom:18px" aria-label="History views">
+      <button class="tab" role="tab" aria-selected="true" data-view="runs">Runs</button>
+      <button class="tab" role="tab" aria-selected="false" data-view="logs">Log files <span class="cnt" id="c-logs">0</span></button>
+    </div>
+
+    <div id="view-runs">
+      <div class="tbar">
+        <select id="f-channel" aria-label="Channel"><option value="">All channels</option></select>
+        <select id="f-engine" aria-label="Engine">
+          <option value="">All engines</option><option value="himalaya">Himalaya</option><option value="competitor">Competitor</option></select>
+        <select id="f-outcome" aria-label="Outcome">
+          <option value="">All outcomes</option>
+          <option value="completed">Completed</option>
+          <option value="completed_with_failures">With failures</option>
+          <option value="failed">Failed</option>
+          <option value="stale">Stale</option></select>
+        <div class="searchbox" style="max-width:220px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.2" stroke="currentColor" stroke-width="1.7"/><path d="m19 19-4-4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg><input id="f-q" type="search" placeholder="Category or run id" aria-label="Search runs"></div>
+        <button class="btn sm" id="f-clear">Clear</button>
+        <span class="spacer"></span>
+        <button class="btn sm" id="cmp-open" disabled>Compare selected</button>
+      </div>
+
+      <div class="note crit" id="stale-banner" hidden>
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 8.5v4.5M12 16.5v.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M10.3 3.9 2.6 17.2A2 2 0 0 0 4.3 20.2h15.4a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" stroke="currentColor" stroke-width="1.7"/></svg>
+        <div id="stale-banner-text"></div>
+      </div>
+
+      <section class="panel" style="margin-top:14px">
+        <div class="tw">
+          <table>
+            <thead><tr><th style="width:34px"></th><th>Run</th><th>Channel</th><th>Category</th>
+              <th>Started</th><th class="num">Duration</th><th>Result</th>
+              <th>Processing</th><th></th></tr></thead>
+            <tbody id="rows"><tr><td colspan="9" class="loading">Loading history</td></tr></tbody>
+          </table>
+        </div>
+        <div id="h-pager" style="padding:0 14px 12px"></div>
+      </section>
+
+      <section class="panel" id="cmp" hidden style="margin-top:16px">
+        <div class="panel-h"><span class="panel-t">Compare runs</span>
+          <button class="btn sm" id="cmp-close" style="margin-left:auto">Close</button></div>
+        <div class="panel-b" id="cmp-body"></div>
+      </section>
+    </div>
+
+    <div id="view-logs" hidden>
+      <div class="tbar">
+        <div class="searchbox" style="max-width:260px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.2" stroke="currentColor" stroke-width="1.7"/><path d="m19 19-4-4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg><input id="log-q" type="search" placeholder="Filter log files…" aria-label="Filter log files"></div>
+        <span class="spacer"></span>
+        <span class="hint">Every run writes one file. Open it to read the parsed structure rather than the raw text.</span>
+      </div>
+      <section class="panel">
+        <div class="tw">
+          <table>
+            <thead><tr><th>Log file</th><th>Engine</th><th>Modified</th>
+              <th class="num">Size</th><th class="num">Lines</th><th></th></tr></thead>
+            <tbody id="log-rows"><tr><td colspan="6" class="loading">Loading log files</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  </section>
+
+  <!-- ============================== ALERTS ============================== -->
+  <section class="page" data-page="alerts" hidden>
+    <div class="page-head">
+      <div><h2>Alerts</h2><p>Everything that needs a human, in one place.</p></div>
+      <div class="segbtns" role="tablist" aria-label="Alert filter">
+        <button aria-selected="true" data-seg="unresolved">Unresolved <span class="m" id="seg-unresolved">0</span></button>
+        <button aria-selected="false" data-seg="resolved">Resolved <span class="m" id="seg-resolved">0</span></button>
+        <button aria-selected="false" data-seg="all">All <span class="m" id="seg-all">0</span></button>
+      </div>
+    </div>
+    <div id="alertList"><div class="loading">Gathering alerts</div></div>
+  </section>
+
+  <!-- ============================== SETTINGS ============================== -->
+  <section class="page" data-page="settings" hidden>
+    <div class="page-head"><div><h2>Settings</h2><p>Team defaults, channel connections, and who can do what.</p></div></div>
+
+    <div class="stack">
+      <section class="panel">
+        <div class="panel-h"><span class="panel-t">Team defaults</span>
+          <button class="btn sm" data-route="rules" style="margin-left:auto">Open match rules</button></div>
+        <div class="panel-b" id="set-defaults"><div class="loading">Loading</div></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-h"><span class="panel-t">Channels</span></div>
+        <div class="panel-b" style="padding:0">
+          <div class="tw tw-short">
+            <table>
+              <thead><tr><th>Channel</th><th>Source table</th><th class="num">Rows</th>
+                <th class="num">Unmapped</th><th>Last run</th></tr></thead>
+              <tbody id="set-channels"><tr><td colspan="5" class="loading">Loading channels</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-h"><span class="panel-t">Members &amp; roles</span></div>
+        <div class="panel-b" style="padding:0">
+          <div class="tw tw-short">
+            <table>
+              <thead><tr><th>Member</th><th>Role</th><th>Status</th></tr></thead>
+              <tbody id="set-members"><tr><td colspan="3" class="loading">Loading members</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-h"><span class="panel-t">This console</span></div>
+        <div class="panel-b" id="set-about"></div>
+      </section>
+    </div>
+  </section>
+
+  </div>
+</div>
+
+<!-- ============================== CONFIRMATION MODAL ============================== -->
+<div class="backdrop" id="confirm" hidden role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+  <div class="modal">
+    <div class="modal-h">
+      <h2 id="confirm-title">
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 8.5v4.5M12 16.5v.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M10.3 3.9 2.6 17.2A2 2 0 0 0 4.3 20.2h15.4a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" stroke="currentColor" stroke-width="1.7"/></svg>
+        Confirm this run</h2>
+      <p>This writes mapping rows to the database and calls the LLM. Read the scope below before confirming.</p>
+    </div>
+    <div class="modal-b" id="confirm-body"></div>
+    <div class="modal-f">
+      <button class="btn" id="confirm-cancel">Cancel</button>
+      <button class="btn danger" id="confirm-go" disabled>Start run</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============================== RUN DETAIL MODAL ==============================
+     Carried over unchanged from the history page: same markup, same ids, same
+     renderers. It is the one screen that already reads the way it should, and
+     it is now reachable from Runs, History and the log browser alike. -->
+<div class="rd-backdrop" id="rd" hidden role="dialog" aria-modal="true" aria-labelledby="rd-title">
+  <div class="rd">
+    <div class="rd-head">
+      <div>
+        <h2 id="rd-title">Run</h2>
+        <div class="sub" id="rd-sub"></div>
+      </div>
+      <span id="rd-status"></span>
+      <button class="rd-close" id="rd-close" aria-label="Close">&times;</button>
+    </div>
+
+    <div class="rd-meta" id="rd-meta"></div>
+    <div class="rd-metrics" id="rd-metrics"></div>
+
+    <div class="rd-tabs" role="tablist">
+      <button class="tab" role="tab" aria-selected="true" data-rd="overview">Overview</button>
+      <button class="tab" role="tab" aria-selected="false" data-rd="groups">
+        Groups <span class="cnt" id="rd-c-groups">0</span></button>
+      <button class="tab" role="tab" aria-selected="false" data-rd="failures">
+        Failures <span class="cnt bad" id="rd-c-failures">0</span></button>
+      <button class="tab" role="tab" aria-selected="false" data-rd="console">
+        Console <span class="cnt" id="rd-c-console">0</span></button>
+      <button class="tab" role="tab" aria-selected="false" data-rd="config">Configuration</button>
+    </div>
+
+    <div class="rd-body">
+      <div id="rd-overview"></div>
+      <div id="rd-groups" hidden></div>
+      <div id="rd-failures" hidden></div>
+      <div id="rd-console" hidden></div>
+      <div id="rd-config" hidden></div>
+    </div>
+
+    <div class="rd-foot">
+      <span class="m" id="rd-file"></span>
+      <span style="display:flex;gap:8px">
+        <button class="btn" id="rd-copy">Copy run ID</button>
+        <button class="btn" id="rd-raw">Raw log</button>
+      </span>
+    </div>
+  </div>
+</div>
+
+<script src="/static/console.js"></script>
+<script src="/static/shell/rundetail.js"></script>
+<script src="/static/shell/runs.js"></script>
+<script src="/static/shell/catalog.js"></script>
+<script src="/static/shell/rules.js"></script>
+<script src="/static/shell/history.js"></script>
+<script src="/static/shell/alerts.js"></script>
+<script src="/static/shell/settings.js"></script>
+<script src="/static/shell/app.js"></script>
+</body>
+</html>

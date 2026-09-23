@@ -1,0 +1,254 @@
+/* Shell for the seven-page console: nav rail, topbar, and the page types the
+ * three-page console never had (Catalog, Alerts, Settings).
+ *
+ * Layered ON TOP of console.css rather than replacing it. Every panel, table,
+ * pill, pager and -- critically -- the whole run-detail modal is already
+ * styled there and used verbatim here. Forking the stylesheet would mean two
+ * definitions of `.pill` drifting apart, and the modal is the part of this
+ * console that took the longest to get right.
+ */
+
+/* ---------------- rail ----------------
+   Fixed, dark, and outside the page flow, so switching pages never moves it.
+   Its own colour is stated literally rather than taken from --surface: the
+   rail stays dark in both themes by design, and a token that flips would
+   turn it white in light mode. */
+.navrail{
+  position:fixed;inset:0 auto 0 0;width:var(--rail-w,74px);z-index:40;
+  display:flex;flex-direction:column;align-items:center;gap:4px;
+  background:#121821;padding:16px 0 14px;
+}
+:root[data-theme="dark"] .navrail{background:#0B0E13}
+:root:not([data-theme="light"]){
+  @media (prefers-color-scheme:dark){ .navrail{background:#0B0E13} }
+}
+.rail-mark{width:34px;height:34px;border-radius:7px;display:grid;place-items:center;
+  color:#EDF1F6;margin-bottom:14px}
+.rail-new{width:38px;height:38px;border-radius:8px;display:grid;place-items:center;
+  background:var(--accent);color:var(--accent-ink);border:none;cursor:pointer;
+  margin-bottom:16px;transition:transform .12s}
+.rail-new:active{transform:scale(.92)}
+.rail-nav{display:flex;flex-direction:column;gap:2px;width:100%;align-items:center}
+.rail-btn{width:44px;height:40px;border-radius:8px;border:none;cursor:pointer;
+  display:grid;place-items:center;background:transparent;color:#8A97A8;position:relative}
+.rail-btn:hover{background:rgba(255,255,255,.08);color:#EDF1F6}
+/* aria-current is the state, so the style hangs off it -- there is no second
+   "active" class that can disagree with what a screen reader is told. */
+.rail-btn[aria-current="page"]{background:color-mix(in srgb,var(--accent) 22%,transparent);
+  color:#8FC0FF}
+.rail-btn[aria-current="page"]::before{content:"";position:absolute;left:-1px;top:8px;
+  bottom:8px;width:2.5px;border-radius:2px;background:var(--accent)}
+.rail-btn .dot-badge{position:absolute;top:6px;right:7px;width:7px;height:7px;
+  border-radius:50%;background:var(--crit);border:1.5px solid #121821}
+:root[data-theme="dark"] .rail-btn .dot-badge{border-color:#0B0E13}
+.rail-spacer{flex:1}
+.rail-foot{display:flex;flex-direction:column;gap:2px;align-items:center}
+.content{margin-left:var(--rail-w,74px);min-height:100vh}
+@media(max-width:520px){
+  :root{--rail-w:58px}
+  .rail-mark svg,.rail-new svg,.rail-btn svg{width:17px;height:17px}
+}
+
+/* ---------------- topbar ----------------
+   Sticky, because the breadcrumb and the alert bell are the two things you
+   want reachable from the bottom of a 400-row table. */
+.appbar{position:sticky;top:0;z-index:30;display:flex;align-items:center;gap:14px;
+  padding:12px 22px;background:color-mix(in srgb,var(--ground) 90%,transparent);
+  backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+.crumb{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--ink-3);
+  white-space:nowrap}
+.crumb b{color:var(--ink);font-weight:600}
+.crumb .sep{color:var(--line);font-size:11px}
+.searchbox{flex:1;max-width:340px;display:flex;align-items:center;gap:8px;
+  background:var(--surface-2);border:1px solid var(--line);border-radius:7px;
+  padding:7px 10px;color:var(--ink-3)}
+.searchbox input{border:none;background:none;outline:none;font:inherit;font-size:13px;
+  color:var(--ink);flex:1;min-width:0}
+.searchbox input::placeholder{color:var(--ink-3)}
+.kbd{font-family:var(--mono);font-size:10.5px;color:var(--ink-3);background:var(--surface);
+  border:1px solid var(--line);border-radius:4px;padding:1px 5px;flex:none}
+.appbar-right{margin-left:auto;display:flex;align-items:center;gap:10px}
+.iconbtn{width:32px;height:32px;border-radius:7px;border:1px solid transparent;
+  background:none;color:var(--ink-2);cursor:pointer;display:grid;place-items:center;
+  position:relative}
+.iconbtn:hover{background:var(--surface-2);border-color:var(--line-soft)}
+.iconbtn .dot-badge{position:absolute;top:3px;right:3px;width:6.5px;height:6.5px;
+  border-radius:50%;background:var(--crit);border:1.5px solid var(--ground)}
+.theme-toggle .i-moon{display:none}
+:root[data-theme="dark"] .theme-toggle .i-sun{display:none}
+:root[data-theme="dark"] .theme-toggle .i-moon{display:block}
+:root:not([data-theme="light"]){
+  @media (prefers-color-scheme:dark){
+    .theme-toggle .i-sun{display:none}
+    .theme-toggle .i-moon{display:block}
+  }
+}
+.whobox{display:flex;align-items:center;gap:8px;padding:4px 8px 4px 4px;
+  border-radius:999px;border:1px solid var(--line-soft)}
+.avatar{width:24px;height:24px;border-radius:50%;background:var(--accent-soft);
+  color:var(--accent);display:grid;place-items:center;font-weight:600;font-size:10.5px;
+  flex:none}
+.who-name{font-size:12.5px;color:var(--ink-2);font-weight:500}
+.who-name a{color:var(--accent);text-decoration:none;margin-left:8px}
+
+/* `hidden` must actually hide.
+   Any rule that sets `display` outranks the attribute's UA default, so
+   .note{display:flex} rendered every hidden note as an empty coloured bar --
+   a red banner with no text sitting above the runs table. Stated once, for
+   everything, rather than as a [hidden] exception per component. */
+[hidden]{display:none!important}
+
+/* ---------------- page frame ---------------- */
+.page[hidden]{display:none}
+.page-head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;
+  margin-bottom:18px;flex-wrap:wrap}
+.page-head h2{font-size:22px;font-weight:600;margin:0 0 4px;letter-spacing:-.015em}
+.page-head p{margin:0;font-size:13px;color:var(--ink-3);max-width:58ch}
+
+/* ---------------- stat tiles ----------------
+   One hairline grid, not five floating cards: these are four readings off the
+   same instrument and should look like one strip. */
+.tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--line-soft);
+  border-radius:9px;overflow:hidden;border:1px solid var(--line-soft)}
+@media(max-width:700px){.tiles{grid-template-columns:repeat(2,1fr)}}
+.tile{background:var(--surface);padding:14px 15px;display:flex;flex-direction:column;gap:3px}
+.tile .n{font-size:27px;font-weight:650;letter-spacing:-.02em;
+  font-variant-numeric:tabular-nums;line-height:1.15}
+.tile .k{font-size:11.5px;color:var(--ink-3)}
+.tile.run .n{color:var(--accent)} .tile.skip .n{color:var(--mute)}
+.tile.warnv .n{color:var(--warn)} .tile.critv .n{color:var(--crit)}
+
+/* ---------------- toolbar above a table ---------------- */
+.tbar{display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap}
+.tbar .searchbox{max-width:240px;flex:none}
+.tbar select{width:auto;padding:7px 9px;font-size:12.5px}
+.tbar .spacer{flex:1}
+
+/* ---------------- note variants ----------------
+   console.css defines .note as warn-coloured with an .info variant. The rail
+   design needs a critical one too; severity is a class on the same object
+   rather than a separate component. */
+.note.crit{background:var(--crit-soft);
+  border-color:color-mix(in srgb,var(--crit) 32%,transparent)}
+.note.crit svg{color:var(--crit)}
+.note a{color:var(--ink)}
+
+/* ---------------- stage tracker ---------------- */
+.stages{display:flex;align-items:flex-start;gap:0;margin-bottom:18px}
+.stage{display:flex;flex-direction:column;align-items:flex-start;flex:1;position:relative;
+  padding-right:10px}
+.stage-line{position:absolute;top:13px;left:calc(50% + 15px);right:calc(-50% + 15px);
+  height:1.6px;background:var(--line)}
+.stage:last-child .stage-line{display:none}
+.stage.done .stage-line{background:var(--ok)}
+.stage-dot{width:26px;height:26px;border-radius:50%;display:grid;place-items:center;
+  border:1.6px solid var(--line);background:var(--surface);color:var(--ink-3);flex:none;
+  z-index:1;font-family:var(--mono);font-size:11px}
+.stage.done .stage-dot{background:var(--ok);border-color:var(--ok);color:#fff}
+.stage.active .stage-dot{border-color:var(--accent);color:var(--accent);
+  background:var(--accent-soft)}
+.stage.active .stage-dot i{width:7px;height:7px;border-radius:50%;background:var(--accent);
+  animation:p 1.5s ease-in-out infinite}
+.stage-label{font-size:12px;font-weight:600;color:var(--ink-2);margin-top:8px}
+.stage.done .stage-label,.stage.active .stage-label{color:var(--ink)}
+.stage-sub{font-size:11px;color:var(--ink-3);margin-top:1px;font-family:var(--mono)}
+@media(max-width:700px){
+  .stages{flex-direction:column;gap:14px}
+  .stage{flex-direction:row;align-items:center;gap:10px;padding-right:0}
+  .stage-line{display:none!important}
+  .stage-label,.stage-sub{margin-top:0}
+}
+
+/* The same radio-pill pattern as "Products to run", laid out side by side --
+   two options do not need a stacked list, and sitting on one row reads as the
+   either/or it is. The checked styling comes from console.css via the ids. */
+.seg.seg-row{flex-direction:row;gap:6px}
+.seg.seg-row label{flex:1;align-items:center}
+.seg.seg-row .tx b{white-space:nowrap}
+#sb-cat:checked ~ label[for=sb-cat],
+#sb-sku:checked ~ label[for=sb-sku]{border-color:var(--accent);background:var(--accent-soft)}
+#sb-cat:checked ~ label[for=sb-cat] .ic,
+#sb-sku:checked ~ label[for=sb-sku] .ic{background:var(--accent);color:var(--accent-ink)}
+
+/* ---------------- saved scopes / segmented control ---------------- */
+.saved{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px}
+.saved button{font:inherit;font-size:11.5px;font-weight:500;color:var(--ink-2);
+  background:var(--surface-2);border:1px solid var(--line-soft);border-radius:999px;
+  padding:5px 10px;cursor:pointer}
+.saved button:hover{border-color:var(--line)}
+.saved button.active{background:var(--accent-soft);border-color:var(--accent);
+  color:var(--accent);font-weight:600}
+.segbtns{display:inline-flex;gap:2px;background:var(--surface-2);
+  border:1px solid var(--line-soft);border-radius:8px;padding:2px}
+.segbtns button{font:inherit;font-size:12.5px;font-weight:500;padding:6px 12px;
+  border-radius:6px;border:none;background:none;color:var(--ink-3);cursor:pointer}
+.segbtns button[aria-selected=true]{background:var(--surface);color:var(--ink);
+  font-weight:600;box-shadow:0 1px 2px rgba(20,24,33,.08)}
+
+/* ---------------- tabpanel ---------------- */
+.tabpanel{padding:16px}
+.tabpanel[hidden]{display:none}
+.grp{font-size:13px;font-weight:600;color:var(--ink);margin:0 0 10px;padding-top:16px;
+  border-top:1px solid var(--line-soft)}
+.grp:first-child{padding-top:0;border-top:none}
+.grp span{font-weight:400;color:var(--ink-3)}
+
+/* ---------------- catalog ----------------
+   Two panels, list and detail. The detail column is fixed-width because it
+   holds label/value pairs, which read badly when stretched. */
+.csplit{display:grid;grid-template-columns:1fr 360px;gap:16px;align-items:start}
+@media(max-width:980px){.csplit{grid-template-columns:1fr}}
+.prod-h{padding:15px 16px;border-bottom:1px solid var(--line-soft)}
+.prod-h .pn{font-size:15px;font-weight:600;letter-spacing:-.01em}
+.prod-h .ps{font-size:12px;color:var(--ink-3);margin-top:3px;font-family:var(--mono)}
+tr.rowlink{cursor:pointer}
+tr.rowsel td{background:var(--accent-soft)}
+.meta{display:flex;flex-wrap:wrap;border:1px solid var(--line-soft);border-radius:8px;
+  background:var(--sunken);overflow:hidden}
+.meta div{flex:1;min-width:110px;padding:10px 15px;border-left:1px solid var(--line-soft)}
+.meta div:first-child{border-left:none}
+.meta .k{display:block;font-size:10.5px;color:var(--ink-3);letter-spacing:.03em;
+  margin-bottom:3px}
+.meta .v{font-family:var(--mono);font-size:13.5px;font-weight:500;
+  font-variant-numeric:tabular-nums;color:var(--ink)}
+
+/* ---------------- alerts ----------------
+   Cards rather than table rows: each one carries a paragraph of explanation
+   and its own resolving action, neither of which fits a cell. */
+.alert-card{display:flex;gap:12px;padding:14px 16px;border:1px solid var(--line);
+  border-radius:10px;background:var(--surface);align-items:flex-start}
+.alert-card + .alert-card{margin-top:10px}
+.alert-card[hidden]{display:none}
+.alert-card .a-ic{width:34px;height:34px;border-radius:8px;display:grid;place-items:center;
+  flex:none;background:var(--mute-soft);color:var(--mute)}
+.alert-card.sev-crit .a-ic{background:var(--crit-soft);color:var(--crit)}
+.alert-card.sev-warn .a-ic{background:var(--warn-soft);color:var(--warn)}
+.alert-card.sev-ok .a-ic{background:var(--ok-soft);color:var(--ok)}
+.alert-card .a-body{flex:1;min-width:0}
+.alert-card h4{margin:0 0 3px;font-size:13.5px;font-weight:600}
+.alert-card p{margin:0;font-size:12.5px;color:var(--ink-2)}
+.alert-card .a-meta{margin-top:7px;font-size:11.5px;color:var(--ink-3);font-family:var(--mono)}
+.alert-card .a-actions{display:flex;gap:8px;margin-top:11px;flex-wrap:wrap}
+.btn.sm{padding:6px 11px;font-size:12.5px}
+
+/* ---------------- settings ---------------- */
+.setrow{display:flex;align-items:center;gap:14px;padding:11px 0;
+  border-bottom:1px solid var(--line-soft)}
+.setrow:last-child{border-bottom:none}
+.setrow .st{flex:1;min-width:0}
+.setrow .st b{font-size:13px;font-weight:600;display:block}
+.setrow .st span{font-size:12px;color:var(--ink-3)}
+.setrow .sv{font-family:var(--mono);font-size:13px;color:var(--ink-2);flex:none}
+
+/* ---------------- empty & loading ----------------
+   A table that is waiting and a table that has nothing look different, so an
+   operator can tell "still fetching" from "nothing matched". */
+.empty{padding:26px 14px;text-align:center;color:var(--ink-3);font-size:12.5px}
+.loading{padding:26px 14px;text-align:center;color:var(--ink-3);font-size:12.5px}
+.loading::after{content:"";display:inline-block;width:10px;text-align:left;
+  animation:dots 1.2s steps(4,end) infinite}
+@keyframes dots{0%{content:""}25%{content:"."}50%{content:".."}75%{content:"..."}}
+@media(prefers-reduced-motion:reduce){.loading::after{animation:none;content:"…"}}
+
+/* The shell owns its own gutter; console.css's .wrap is reused inside it. */
+.shellwrap{max-width:1340px;margin:0 auto;padding-inline:22px;padding-block:22px 64px}
