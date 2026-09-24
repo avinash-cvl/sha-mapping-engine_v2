@@ -33,6 +33,16 @@
     document.body.style.overflow = "hidden";
   }
 
+  /* Arm the button after the dialog is already up.
+   *
+   * A caller whose confirmation depends on a slow query opens the dialog
+   * first with a spinner -- a click that waits silently on an unchanged
+   * button reads as "nothing happened" and invites a second one -- then
+   * calls this when it knows what confirming should do. */
+  function arm(action) {
+    ACTION = action;
+  }
+
   $("confirm-cancel").addEventListener("click", close);
   $("confirm").addEventListener("click", (e) => {
     if (e.target === $("confirm")) close();
@@ -61,5 +71,5 @@
     }
   });
 
-  window.ConfirmDialog = { open, close };
+  window.ConfirmDialog = { open, arm, close };
 })();

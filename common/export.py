@@ -35,7 +35,6 @@ import sqlalchemy as sa
 # The SELECT list, verbatim from what the team shares. Written out rather than
 # built from a column list so it can be read against the original at a glance.
 _SELECT = """
-    p.review_status,
     p.channel,
     p.id,
     p.sku,
@@ -68,7 +67,11 @@ _SELECT = """
     m.confidence_level,
     m.lexical_score,
     m.vector_score,
-    m.approved_at
+    m.approved_at,
+
+    -- Last, at the team's request: the verdict is what you scroll to after
+    -- reading the match, not what you meet before it.
+    p.review_status
 """
 
 _FROM = """
@@ -82,13 +85,14 @@ LEFT JOIN [staging].[himalaya_products] AS sp
 
 # Column order for the file, matching the SELECT above.
 COLUMNS = [
-    "review_status", "channel", "id", "sku", "title", "ingredient",
+    "channel", "id", "sku", "title", "ingredient",
     "product_benefit", "product_code", "product_name", "product_group",
     "master_category", "master_subcategory", "master_pack_size", "master_uom",
     "oneds_category", "oneds_subcategory", "oneds_pack_size", "oneds_uom",
     "final_score", "llm_reasoning", "match_rank", "brand", "mapping_status",
     "mapping_id", "relationship_type", "ensemble_score", "confidence_level",
     "lexical_score", "vector_score", "approved_at",
+    "review_status",   # last
 ]
 
 SCOPES = ("unreviewed", "rejected", "approved", "all")

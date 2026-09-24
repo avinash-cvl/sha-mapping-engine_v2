@@ -200,20 +200,39 @@
 
   async function exportRun(runId) {
     const run = ALL.find((r) => r.execution_id === runId);
+
+    /* The count query spans two views over ~190k rows and takes a few
+       seconds. Opening the dialog first, with a spinner, means the click has
+       a visible effect immediately -- waiting silently on a button that
+       looks untouched reads as "nothing happened" and invites a second
+       click. */
+    const btn = $("rows").querySelector(`.run-export[data-run="${runId}"]`);
+    if (btn) { btn.disabled = true; btn.textContent = "…"; }
+
+    $("confirm-title").innerHTML =
+      `<svg width="19" height="19" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4v10M8 10l4 4 4-4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 16.5v2A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5v-2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+       Export this run`;
+    $("confirm-lede").textContent = "Counting the rows this export would contain…";
+    $("confirm-body").innerHTML =
+      `<div class="m-sec"><div class="loading">Counting rows</div></div>`;
+    $("confirm-go").textContent = "Download";
+    $("confirm-go").disabled = true;
+    window.ConfirmDialog.open(null);
+
     let preview;
     try {
       preview = await api("/export/preview?scope=unreviewed&run_id="
         + encodeURIComponent(runId));
     } catch (e) {
+      window.ConfirmDialog.close();
       showError($("errors"), e.message);
       return;
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = "Export"; }
     }
 
-    $("confirm-title").innerHTML =
-      `<svg width="19" height="19" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4v10M8 10l4 4 4-4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 16.5v2A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5v-2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
-       Export this run`;
-    $("confirm-lede").textContent =
-      "A CSV with the same columns as the SQL the team shares — ready to send on.";
+    // Title is already set above; only the body needs replacing now that the
+    // count is in.
     $("confirm-body").innerHTML =
       `<div class="m-sec">
          <h3>The run</h3>
@@ -244,11 +263,26 @@
              which is usually more than this run alone processed.</li>
          </ul>
        </div>`;
+    $("confirm-lede").textContent =
+      "A CSV with the same columns as the SQL the team shares — ready to send on.";
     $("confirm-go").textContent = `Download ${fmt(preview.rows)} rows`;
     $("confirm-go").disabled = !preview.rows;
 
-    window.ConfirmDialog.open(async () => {
+    // The dialog is already open with a spinner; this is what confirming does.
+    window.ConfirmDialog.arm(async () => {
       download({ scope: "unreviewed", run_id: runId });
+      /* The dialog closes the moment this returns, but the server is still
+         streaming. A note on the page says the download is running, since
+         the browser shows nothing until the first bytes arrive. */
+      const note = document.createElement("div");
+      note.className = "note info";
+      note.innerHTML =
+        `<div><b>Preparing ${fmt(preview.rows)} rows.</b> The file appears in your
+           downloads once the server has streamed it — a large export takes a
+           few seconds.</div>`;
+      $("errors").innerHTML = "";
+      $("errors").appendChild(note);
+      setTimeout(() => note.remove(), 12000);
     });
   }
 
@@ -375,7 +409,18 @@
     const params = { scope: $("x-scope").value };
     if ($("x-channel").value) params.channel = $("x-channel").value;
     if ($("x-brand").value) params.brand = $("x-brand").value;
+
+    /* The browser gives no event for "download started", so the button says
+       it is working for a few seconds rather than looking untouched while
+       the server streams the first rows. */
+    $("x-go").disabled = true;
+    const label = $("x-go").textContent;
+    $("x-go").textContent = "Preparing…";
     download(params);
+    setTimeout(() => {
+      $("x-go").disabled = false;
+      $("x-go").textContent = label;
+    }, 4000);
   });
 
   $("cmp-open").addEventListener("click", () => compare().catch(() => {}));
