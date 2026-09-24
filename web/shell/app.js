@@ -38,6 +38,7 @@
     "runs":      { label: "Runs" },
     "runs-new":  { label: "Runs", sub: "New run" },
     "catalog":   { label: "Catalog" },
+    "rejected":  { label: "Rejected matches" },
     "rules":     { label: "Match rules" },
     "history":   { label: "History" },
     "alerts":    { label: "Alerts" },

@@ -44,6 +44,7 @@ number of broken ones. That needs a regression run behind it, not a commit.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 
@@ -259,6 +260,135 @@ def listing(
             for r in rows
         ],
     }
+
+
+@dataclass(frozen=True)
+class ResetRejectedResult:
+    channel: str
+    rows_found: int         # rejected rows matching the scope
+    rows_reset: int         # flipped back to PENDING
+    mappings_deleted: int   # mapping rows removed with them
+    skus: list[str]         # exactly what was reset -- the re-run's scope
+
+    def as_dict(self) -> dict:
+        return asdict(self)
+
+
+def preview_reset(conn, channel: str, category: str | None = None) -> ResetRejectedResult:
+    """What reset_rejected would do. Reads only.
+
+    Shares its selection with the apply below so the number shown to the
+    operator and the number changed cannot drift apart -- the same reason
+    recovery.py splits preview from apply.
+    """
+    source = db_models.get_table(conn.engine, "staging", f"{channel}_products")
+    where = [_rejected_clause(source)]
+    if category:
+        where.append(source.c.category == category)
+
+    skus = conn.execute(
+        sa.select(source.c.sku).where(*where).order_by(source.c.sku)
+    ).scalars().all()
+
+    return ResetRejectedResult(
+        channel=channel, rows_found=len(skus), rows_reset=0,
+        mappings_deleted=0, skus=list(skus),
+    )
+
+
+def reset_rejected(
+    conn,
+    channel: str,
+    *,
+    category: str | None = None,
+    actor: str,
+) -> ResetRejectedResult:
+    """Clear the rejected matches and queue their SKUs for a fresh run.
+
+    Four changes, one transaction:
+
+      * the mapping rows go, because they ARE the rejected match -- leaving
+        them means the listing still shows the match a human turned down,
+      * mapping_status returns to PENDING, because step 6 selects only
+        PENDING and anything else is skipped in silence,
+      * match_rank and mapping_id are cleared, because they point at the rows
+        being deleted and would leave a queued row looking mapped,
+      * review_status is cleared, because the verdict was about a match that
+        no longer exists.
+
+    Returns the SKU list, which is the point: once review_status is cleared
+    these rows are no longer identifiable as previously-rejected, so the
+    caller has to carry the list into the re-run. Nothing else can recover it.
+
+    Steward-approved rows are never touched. _rejected_clause cannot match
+    one, and that is not a flag a caller can pass.
+    """
+    source = db_models.get_table(conn.engine, "staging", f"{channel}_products")
+    mapping = db_models.get_table(conn.engine, "staging", f"{channel}_product_mapping")
+
+    before = preview_reset(conn, channel, category)
+    if before.rows_found == 0:
+        return before
+
+    where = [_rejected_clause(source)]
+    if category:
+        where.append(source.c.category == category)
+
+    ids = conn.execute(sa.select(source.c.id).where(*where)).scalars().all()
+
+    # Chunked: SQL Server caps a statement at 2,100 parameters and IN (...)
+    # spends one per value, so a large rejection backlog would otherwise fail
+    # with a driver error naming neither the limit nor the cause.
+    CHUNK = 1000
+    deleted = 0
+    for i in range(0, len(ids), CHUNK):
+        batch = ids[i:i + CHUNK]
+        deleted += conn.execute(
+            sa.delete(mapping).where(mapping.c[f"{channel}_product_id"].in_(batch))
+        ).rowcount or 0
+
+    values = {"mapping_status": "PENDING", "review_status": None,
+              "reviewed_by": None, "reviewed_at": None, "reviewer_comment": None}
+    for optional in ("match_rank", "mapping_id"):
+        if hasattr(source.c, optional):
+            values[optional] = None
+
+    reset = 0
+    for i in range(0, len(ids), CHUNK):
+        reset += conn.execute(
+            sa.update(source)
+            .where(source.c.id.in_(ids[i:i + CHUNK]))
+            .values(**values)
+        ).rowcount or 0
+
+    # audit.activity_log carries CHECK (isjson(input) = 1), so the payload is
+    # a JSON document rather than prose.
+    activity = db_models.get_table(conn.engine, "audit", "activity_log")
+    conn.execute(
+        sa.insert(activity).values(
+            entity=f"staging.{channel}_products",
+            entity_key=f"{channel}/{category or 'all'}"[:1000],
+            action="REJECTED_ROWS_RESET",
+            input=json.dumps({
+                "channel": channel,
+                "category": category,
+                "rows_found": before.rows_found,
+                "rows_reset": reset,
+                "mappings_deleted": deleted,
+                "sample_skus": before.skus[:10],
+            }),
+            logged_by=actor,
+        )
+    )
+
+    # One transaction: the mappings go, the rows re-queue, and the trail
+    # saying who did it lands together -- or none of it does.
+    conn.commit()
+
+    return ResetRejectedResult(
+        channel=channel, rows_found=before.rows_found, rows_reset=reset,
+        mappings_deleted=deleted, skus=before.skus,
+    )
 
 
 def offenders(conn, channel: str, limit: int = 20) -> list[dict]:

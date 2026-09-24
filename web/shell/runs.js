@@ -17,6 +17,10 @@
   let PLAN = null;          // last confirmation plan
   let QUEUE = [];           // runs launched from this browser, in order
   let STREAMS = [];         // open EventSources, closed on teardown
+  /* Callbacks another page asked to be told about when the queue finishes --
+     the Rejected page uses one to consume its reset list. Cleared as they
+     fire, so a second run does not re-notify the first caller. */
+  const QUEUE_DONE_HOOKS = [];
 
   /* ------------------------------------------------------------ helpers */
 
@@ -340,11 +344,6 @@
 
   /* ------------------------------------------------------------ confirm */
 
-  /* The dialog is shared between launching a run and rejecting a match, so
-     the confirm button dispatches to whatever set this rather than being
-     hard-wired to one of them. */
-  let CONFIRM_ACTION = null;
-
   function runBody() {
     return {
       ...scopeBody(),
@@ -365,8 +364,8 @@
     const p = PLAN;
     const blocked = p.blocked_by.length;
 
-    /* Restored, because rejectMatch() borrows this dialog and rewrites both. */
-    CONFIRM_ACTION = launch;
+    /* Title and lede are rewritten every time: three callers share this
+       dialog and each leaves its own copy behind. */
     $("confirm-title").innerHTML =
       `<svg width="19" height="19" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 8.5v4.5M12 16.5v.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M10.3 3.9 2.6 17.2A2 2 0 0 0 4.3 20.2h15.4a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" stroke="currentColor" stroke-width="1.7"/></svg>
        Confirm this run`;
@@ -437,13 +436,7 @@
     $("confirm-go").disabled = true;
     $("confirm-go").textContent = blocked ? "Blocked" : "Start run";
     $("ack")?.addEventListener("change", (e) => { $("confirm-go").disabled = !e.target.checked; });
-    $("confirm").hidden = false;
-    document.body.style.overflow = "hidden";
-  }
-
-  function closeConfirm() {
-    $("confirm").hidden = true;
-    document.body.style.overflow = "";
+    window.ConfirmDialog.open(launch);
   }
 
   /* Errors and dialog lifecycle belong to the confirm handler that invokes
@@ -586,6 +579,13 @@
     };
 
     await Promise.all([loadRuns().catch(() => {}), loadResults().catch(() => {})]);
+
+    /* Drained rather than iterated in place: a hook that fails must not stop
+       the others, and none may fire twice on a later run. */
+    while (QUEUE_DONE_HOOKS.length) {
+      const hook = QUEUE_DONE_HOOKS.shift();
+      try { await hook(QUEUE); } catch { /* the hook owns its own reporting */ }
+    }
   }
 
   $("cancelBtn").addEventListener("click", async () => {
@@ -717,88 +717,6 @@
       : `<tr><td colspan="4" class="empty">No failures on this page.</td></tr>`;
   }
 
-  /* ------------------------------------------------------------ rejected */
-
-  let REJ = { offset: 0, limit: 25 };
-
-  async function loadRejected() {
-    if (!$("ch").value) {
-      $("rejBody").innerHTML =
-        `<tr><td colspan="5" class="empty">Pick a channel to see its rejections.</td></tr>`;
-      $("c-rejected").textContent = "0";
-      $("offenders").innerHTML = "";
-      $("rejPager").innerHTML = "";
-      return;
-    }
-    const params = new URLSearchParams({
-      channel: $("ch").value,
-      limit: String(REJ.limit), offset: String(REJ.offset),
-    });
-    if ($("cat").value) params.set("category", $("cat").value);
-    if ($("rejEngine").value) params.set("engine", $("rejEngine").value);
-    if ($("rejSearch").value.trim()) params.set("q", $("rejSearch").value.trim());
-
-    const [d, off] = await Promise.all([
-      api("/rejected?" + params),
-      api(`/rejected/offenders?channel=${encodeURIComponent($("ch").value)}`).catch(() => []),
-    ]);
-
-    $("c-rejected").textContent = fmt(d.total);
-    $("rejCap").textContent = d.total
-      ? `${fmt(d.total)} rejected on ${$("ch").value}` : "";
-
-    /* A product code collecting several rejections is the decoy-node
-       signature: a gate target too small to hold an alternative, so
-       everything routed there comes back as the same product. Surfaced
-       above the list because it is the finding, not a row in it. */
-    const repeat = off.filter((o) => o.rejections > 1);
-    $("offenders").innerHTML = repeat.length
-      ? `<div class="note" style="margin-top:14px">
-           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 8.5v4.5M12 16.5v.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M10.3 3.9 2.6 17.2A2 2 0 0 0 4.3 20.2h15.4a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" stroke="currentColor" stroke-width="1.7"/></svg>
-           <div><b>${repeat.length} master product${repeat.length === 1 ? "" : "s"}
-             attracting repeat rejections.</b>
-             ${repeat.slice(0, 3).map((o) =>
-               `<span class="m">${esc(o.product_code)}</span> ${esc(o.product_name || "")}
-                — ${fmt(o.rejections)}&times;`).join("; ")}.
-             A code that keeps being rejected is usually a gate target too small to
-             offer an alternative — check it in
-             <a href="#catalog" data-route="catalog">Catalog</a>.</div></div>`
-      : "";
-
-    $("rejBody").innerHTML = d.rows.length
-      ? d.rows.map((r) => `<tr>
-          <td class="t-title">${esc(r.title || r.sku)}
-            <div class="t-sub m">${esc(r.brand || "")} · ${esc(r.sku)}</div></td>
-          <td class="t-title" style="color:var(--crit)">${esc(r.rejected_name || "—")}
-            <div class="t-sub m">${esc(r.rejected_code || "")}</div></td>
-          <td class="t-sub" style="margin:0">${esc(who(r.reviewed_by))}
-            ${r.reviewed_at ? `<div class="t-sub m">${new Date(r.reviewed_at)
-              .toLocaleDateString(undefined, { day: "2-digit", month: "short" })}</div>` : ""}
-            ${r.comment ? `<div class="t-sub" style="max-width:280px">${esc(r.comment)}</div>` : ""}</td>
-          <td class="num">${r.score == null ? "—" : r.score.toFixed(2)}</td>
-          <td><button class="btn sm rej-undo" data-sku="${esc(r.sku)}">Withdraw</button></td>
-        </tr>`).join("")
-      : `<tr><td colspan="5" class="empty">Nothing has been rejected on this channel.</td></tr>`;
-
-    $("rejPager").innerHTML = "";
-    $("rejPager").appendChild(pager({
-      total: d.total, offset: d.offset, limit: d.limit,
-      onGo: (offset, limit) => { REJ = { offset, limit }; loadRejected().catch(() => {}); },
-    }));
-
-    $("rejBody").querySelectorAll(".rej-undo").forEach((b) =>
-      b.addEventListener("click", async () => {
-        b.disabled = true;
-        try {
-          await api(`/rejected?channel=${encodeURIComponent($("ch").value)}`
-            + `&sku=${encodeURIComponent(b.dataset.sku)}`, { method: "DELETE" });
-          await loadRejected();
-        } catch (e) {
-          showError($("errors"), e.message);
-          b.disabled = false;
-        }
-      }));
-  }
 
   /* The reason is the point of the record, so it gets a real field rather
      than window.prompt -- which is unstyled, truncates, and is suppressed
@@ -832,7 +750,7 @@
        </div>`;
     $("confirm-go").textContent = "Reject match";
     $("confirm-go").disabled = false;
-    CONFIRM_ACTION = async () => {
+    window.ConfirmDialog.open(async () => {
       await api("/rejected", {
         method: "POST",
         body: JSON.stringify({
@@ -840,10 +758,11 @@
           comment: $("rej-comment").value.trim() || null,
         }),
       });
-      await Promise.all([loadResults(), loadRejected()]);
-    };
-    $("confirm").hidden = false;
-    document.body.style.overflow = "hidden";
+      await loadResults();
+      /* The Rejected page owns the backlog; tell it to refresh if it has
+         already been opened, rather than reaching into its state from here. */
+      window.Pages?.rejected?.refresh?.();
+    });
     $("rej-comment").focus();
   }
 
@@ -874,12 +793,8 @@
   /* The results table is scoped by the same channel/category as the run, so
      it follows the pickers rather than staying on whatever was loaded first. */
   const rescope = () => {
-    RES.offset = 0; REJ.offset = 0;
+    RES.offset = 0;
     loadResults().catch(() => {});
-    /* The rejected count sits on a tab label, so it follows the channel even
-       while that tab is closed -- a tab reading 0 until you click it is
-       worse than no count. */
-    loadRejected().catch(() => {});
   };
 
   $("ch").addEventListener("change", () => { fillCategories(); scheduleResolve(); rescope(); });
@@ -892,27 +807,8 @@
   document.querySelectorAll('input[name="t"]').forEach((r) =>
     r.addEventListener("change", () => { if (PREVIEW) renderPreview(); }));
 
-  $("confirm-cancel").addEventListener("click", closeConfirm);
-  $("confirm-go").addEventListener("click", async () => {
-    const action = CONFIRM_ACTION;
-    if (!action) return;
-    const label = $("confirm-go").textContent;
-    $("confirm-go").disabled = true;
-    $("confirm-go").textContent = "Working…";
-    try {
-      await action();
-      closeConfirm();
-    } catch (e) {
-      showError($("errors"), e.message);
-      closeConfirm();
-    } finally {
-      $("confirm-go").textContent = label;
-    }
-  });
-  $("confirm").addEventListener("click", (e) => { if (e.target === $("confirm")) closeConfirm(); });
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && !$("confirm").hidden) closeConfirm();
-  });
+  /* Backdrop click, Escape and the confirm button are all wired in
+     confirm.js -- three pages open that dialog now. */
 
   let resTimer = null;
   $("resSearch").addEventListener("input", () => {
@@ -929,19 +825,7 @@
       document.querySelectorAll(".tabpanel[data-panel]").forEach((p) =>
         (p.hidden = p.dataset.panel !== t.dataset.tab));
       if (t.dataset.tab === "gate") loadGate().catch(() => {});
-      if (t.dataset.tab === "rejected") {
-        loadRejected().catch((e) => showError($("errors"), e.message));
-      }
     }));
-
-  let rejTimer = null;
-  $("rejSearch").addEventListener("input", () => {
-    clearTimeout(rejTimer);
-    rejTimer = setTimeout(() => { REJ.offset = 0; loadRejected().catch(() => {}); }, 300);
-  });
-  $("rejEngine").addEventListener("change", () => {
-    REJ.offset = 0; loadRejected().catch(() => {});
-  });
 
   $("saved-last").addEventListener("click", () => {
     try {
@@ -980,6 +864,40 @@
       }
       await resolve();
       await loadResults().catch(() => {});
+    },
+  };
+
+  /* Launching a SKU-scoped run from another page.
+   *
+   * Exposed rather than reimplemented: the Rejected page needs to run exactly
+   * the SKUs it just reset, and a second launch path would eventually differ
+   * from this one in some detail -- which worker count it sends, whether it
+   * opens a stream -- and the difference would only show up in production.
+   * The caller gets the same queue tracker and the same confirmation.
+   */
+  window.RunLauncher = {
+    async launchSkus({ channel, skus, engine = null, onDone = null }) {
+      const body = {
+        channel, engine, category: null, subcategory: null, skus,
+        use_llm: $("llm").checked,
+        workers: Number($("w").value),
+        batch_size: Number($("bs").value) || 500,
+        reset_failed: false,
+      };
+      const res = await api("/runs", { method: "POST", body: JSON.stringify(body) });
+
+      /* Shown on New run, because that is where the queue tracker lives --
+         sending the operator to a page with no progress on it would be
+         worse than moving them. */
+      $("ch").value = channel;
+      fillCategories();
+      window.Shell?.go?.("runs-new");
+      startQueue(res.runs);
+      if (onDone) QUEUE_DONE_HOOKS.push(onDone);
+      return res;
+    },
+    async plan(body) {
+      return api("/plan", { method: "POST", body: JSON.stringify(body) });
     },
   };
 

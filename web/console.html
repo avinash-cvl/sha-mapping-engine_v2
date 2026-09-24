@@ -29,6 +29,9 @@
     <button class="rail-btn" data-route="catalog" title="Catalog" aria-label="Catalog">
       <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M12 3.5 4 7.2v9.6L12 20.5l8-3.7V7.2L12 3.5Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M4 7.2 12 11l8-3.8M12 11v9.5" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
     </button>
+    <button class="rail-btn" data-route="rejected" title="Rejected matches" aria-label="Rejected matches">
+      <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="8.4" stroke="currentColor" stroke-width="1.7"/><path d="m9.2 9.2 5.6 5.6M14.8 9.2l-5.6 5.6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+    </button>
     <button class="rail-btn" data-route="rules" title="Match rules" aria-label="Match rules">
       <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M4 7h9M17 7h3M4 17h3M11 17h9" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="13" cy="7" r="2.3" stroke="currentColor" stroke-width="1.6"/><circle cx="8" cy="17" r="2.3" stroke="currentColor" stroke-width="1.6"/></svg>
     </button>
@@ -229,7 +232,6 @@
           <div class="tabs" role="tablist" aria-label="Run outcome">
             <button class="tab" role="tab" aria-selected="true" data-tab="results">Results <span class="cnt" id="c-results">0</span></button>
             <button class="tab" role="tab" aria-selected="false" data-tab="failures">Failures <span class="cnt bad" id="c-failures">0</span></button>
-            <button class="tab" role="tab" aria-selected="false" data-tab="rejected">Rejected <span class="cnt" id="c-rejected">0</span></button>
             <button class="tab" role="tab" aria-selected="false" data-tab="log">Log</button>
             <button class="tab" role="tab" aria-selected="false" data-tab="gate">Gate health <span class="cnt" id="c-gate">0</span></button>
           </div>
@@ -267,33 +269,6 @@
                 <tbody id="failBody"><tr><td colspan="4" class="empty">No failures recorded.</td></tr></tbody>
               </table>
             </div>
-          </div>
-
-          <div class="tabpanel" data-panel="rejected" hidden>
-            <div class="note info" style="margin-top:0">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 8v5M12 16.5v.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.8"/></svg>
-              <div>A rejection is a verdict on the <b>pairing</b>, not the listing — the
-                SKU stays eligible and a re-run will process it again. What matters is
-                that it does not land on the same product code twice.</div>
-            </div>
-
-            <div id="offenders"></div>
-
-            <div class="tbar" style="margin-top:14px">
-              <div class="searchbox"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.2" stroke="currentColor" stroke-width="1.7"/><path d="m19 19-4-4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg><input id="rejSearch" type="search" placeholder="Filter rejections…" aria-label="Filter rejections"></div>
-              <select id="rejEngine" aria-label="Filter by engine">
-                <option value="">All engines</option><option value="himalaya">Himalaya</option><option value="competitor">Competitor</option></select>
-              <span class="spacer"></span>
-              <span class="hint" id="rejCap"></span>
-            </div>
-            <div class="tw">
-              <table>
-                <thead><tr><th>Source listing</th><th>Rejected match</th>
-                  <th>Reviewer</th><th class="num">Score</th><th></th></tr></thead>
-                <tbody id="rejBody"><tr><td colspan="5" class="empty">Pick a channel to see its rejections.</td></tr></tbody>
-              </table>
-            </div>
-            <div id="rejPager"></div>
           </div>
 
           <div class="tabpanel" data-panel="log" hidden>
@@ -347,6 +322,70 @@
         <div class="panel-b"><p class="hint" style="margin:0">Every competitor listing the engine has matched to a master product is listed here — the reverse of the Results table.</p></div>
       </div>
     </div>
+  </section>
+
+  <!-- ============================== REJECTED ============================== -->
+  <section class="page" data-page="rejected" hidden>
+    <div class="page-head">
+      <div><h2>Rejected matches</h2><p>Pairings a reviewer judged wrong — and the master
+        products they keep landing on.</p></div>
+      <select id="rej-channel" aria-label="Channel" style="width:auto;min-width:160px"></select>
+    </div>
+
+    <div class="tiles" style="margin-bottom:16px">
+      <div class="tile critv"><span class="n" id="rej-t-total">—</span><span class="k">Rejected on this channel</span></div>
+      <div class="tile warnv"><span class="n" id="rej-t-repeat">—</span><span class="k">Products rejected more than once</span></div>
+      <div class="tile"><span class="n" id="rej-t-codes">—</span><span class="k">Distinct products rejected</span></div>
+      <div class="tile"><span class="n" id="rej-t-worst">—</span><span class="k">Most rejections on one product</span></div>
+    </div>
+
+    <div class="note info">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 8v5M12 16.5v.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.8"/></svg>
+      <div>A rejection is a verdict on the <b>pairing</b>, not the listing — the SKU stays
+        eligible and a re-run will process it again. What matters is that it does not land
+        on the same product code twice. Reject a match from the Results table on
+        <a href="#runs-new" data-route="runs-new">New run</a>.</div>
+    </div>
+
+    <div id="offenders"></div>
+
+    <section class="panel" style="margin-top:16px">
+      <div class="panel-h"><span class="panel-t">Clear and re-run</span></div>
+      <div class="panel-b">
+        <p class="hint" style="margin:0 0 12px;max-width:80ch">Step 1 deletes the rejected
+          mapping rows and returns their SKUs to <span class="m">PENDING</span>. Step 2 runs
+          the engine over exactly those SKUs. They are separate because the first is not
+          reversible, and because clearing the rejection is what makes the SKUs eligible
+          for the second.</p>
+        <div class="actions" style="margin-top:0">
+          <button class="btn danger" id="rej-reset">Reset for re-run</button>
+          <button class="btn primary" id="rej-rerun" disabled>Re-run these SKUs</button>
+          <span class="stale" id="rej-step-note">Nothing reset yet — step 2 needs a list
+            from step 1.</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" style="margin-top:16px">
+      <div class="panel-h"><span class="panel-t">Rejections</span>
+        <span class="stale" style="margin-left:auto" id="rejCap"></span></div>
+      <div class="panel-b">
+        <div class="tbar">
+          <div class="searchbox"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.2" stroke="currentColor" stroke-width="1.7"/><path d="m19 19-4-4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg><input id="rejSearch" type="search" placeholder="Filter rejections…" aria-label="Filter rejections"></div>
+          <select id="rejEngine" aria-label="Filter by engine">
+            <option value="">All engines</option><option value="himalaya">Himalaya</option><option value="competitor">Competitor</option></select>
+          <span class="spacer"></span>
+        </div>
+        <div class="tw">
+          <table>
+            <thead><tr><th>Source listing</th><th>Rejected match</th>
+              <th>Reviewer</th><th class="num">Score</th><th></th></tr></thead>
+            <tbody id="rejBody"><tr><td colspan="5" class="loading">Loading rejections</td></tr></tbody>
+          </table>
+        </div>
+        <div id="rejPager"></div>
+      </div>
+    </section>
   </section>
 
   <!-- ============================== MATCH RULES ============================== -->
@@ -617,9 +656,11 @@
 </div>
 
 <script src="/static/console.js"></script>
+<script src="/static/shell/confirm.js"></script>
 <script src="/static/shell/rundetail.js"></script>
 <script src="/static/shell/runs.js"></script>
 <script src="/static/shell/catalog.js"></script>
+<script src="/static/shell/rejected.js"></script>
 <script src="/static/shell/rules.js"></script>
 <script src="/static/shell/history.js"></script>
 <script src="/static/shell/alerts.js"></script>

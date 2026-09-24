@@ -29,6 +29,13 @@ def decidable_sku(conn):
 
     Restored to exactly what it was, whatever the test did -- including the
     case where the test itself leaves it rejected.
+
+    The reset tests below DELETE this row's mapping rows, which the teardown
+    cannot undo. That is accepted rather than worked around: a deleted mapping
+    is exactly what the next run rewrites, the row is left correctly marked
+    PENDING so that run will pick it up, and faking a restore would mean the
+    test no longer exercises the thing it is testing. What teardown guarantees
+    is that no review verdict is left behind that nobody made.
     """
     source = db_models.get_table(conn.engine, "staging", f"{CHANNEL}_products")
     mapping = db_models.get_table(conn.engine, "staging", f"{CHANNEL}_product_mapping")
@@ -46,14 +53,26 @@ def decidable_sku(conn):
     if row is None:
         pytest.skip(f"no unreviewed {CHANNEL} listing with a rank-1 match")
 
+    was = conn.execute(
+        sa.select(source.c.mapping_status).where(source.c.id == row.id)
+    ).scalar()
+
     yield row.sku
 
-    conn.execute(
-        sa.update(source).where(source.c.id == row.id).values(
-            review_status=None, reviewed_by=None,
-            reviewed_at=None, reviewer_comment=None,
-        )
-    )
+    # The verdict always goes. mapping_status is put back only when the row
+    # still has mapping rows -- where the reset really did delete them,
+    # PENDING is the correct state and restoring the old status would leave a
+    # row claiming to be matched with nothing behind it.
+    values = {"review_status": None, "reviewed_by": None,
+              "reviewed_at": None, "reviewer_comment": None}
+    still_mapped = conn.execute(
+        sa.select(sa.func.count()).select_from(mapping)
+        .where(mapping.c[f"{CHANNEL}_product_id"] == row.id)
+    ).scalar()
+    if still_mapped:
+        values["mapping_status"] = was
+
+    conn.execute(sa.update(source).where(source.c.id == row.id).values(**values))
     conn.commit()
 
 
@@ -201,6 +220,116 @@ def test_offenders_counts_rejections_per_master_code(conn, decidable_sku):
     hit = next((r for r in rows if r["product_code"] == result.product_code), None)
     assert hit is not None
     assert hit["rejections"] >= 1
+
+
+def test_reset_deletes_the_mapping_and_requeues_the_row(conn, decidable_sku):
+    """The four changes that make a rejected SKU runnable again.
+
+    The mapping rows go because they ARE the rejected match; the status goes
+    back to PENDING because step 6 selects only PENDING; match_rank and
+    mapping_id are cleared because they point at the deleted rows; and the
+    verdict goes because it was about a match that no longer exists.
+    """
+    source = db_models.get_table(conn.engine, "staging", f"{CHANNEL}_products")
+    mapping = db_models.get_table(conn.engine, "staging", f"{CHANNEL}_product_mapping")
+
+    row_id = conn.execute(
+        sa.select(source.c.id).where(source.c.sku == decidable_sku)
+    ).scalar()
+    before_mappings = conn.execute(
+        sa.select(sa.func.count()).select_from(mapping)
+        .where(mapping.c[f"{CHANNEL}_product_id"] == row_id)
+    ).scalar()
+    if not before_mappings:
+        pytest.skip("that row has no mapping rows to delete")
+
+    rejection.reject(conn, CHANNEL, decidable_sku, actor=ACTOR)
+    result = rejection.reset_rejected(conn, CHANNEL, actor=ACTOR)
+
+    assert decidable_sku in result.skus
+    assert result.mappings_deleted >= before_mappings
+
+    after = conn.execute(
+        sa.select(source.c.mapping_status, source.c.review_status,
+                  source.c.match_rank, source.c.mapping_id)
+        .where(source.c.id == row_id)
+    ).first()
+    assert after.mapping_status == "PENDING"
+    assert after.review_status is None
+    assert after.match_rank is None
+    assert after.mapping_id is None
+
+    assert conn.execute(
+        sa.select(sa.func.count()).select_from(mapping)
+        .where(mapping.c[f"{CHANNEL}_product_id"] == row_id)
+    ).scalar() == 0
+
+
+def test_reset_returns_the_sku_list_because_nothing_else_can(conn, decidable_sku):
+    """Clearing review_status makes these rows indistinguishable from any
+    other PENDING row, so the returned list is the ONLY record of what was
+    reset. A caller that drops it cannot recover the scope for the re-run."""
+    rejection.reject(conn, CHANNEL, decidable_sku, actor=ACTOR)
+    result = rejection.reset_rejected(conn, CHANNEL, actor=ACTOR)
+
+    assert result.skus, "reset must name what it touched"
+    assert decidable_sku in result.skus
+    assert result.rows_reset == len(result.skus)
+
+    # And the evidence really is gone.
+    assert not any(
+        r["sku"] == decidable_sku
+        for r in rejection.listing(conn, CHANNEL, limit=500)["rows"]
+    )
+
+
+def test_reset_leaves_approved_rows_alone(conn, decidable_sku):
+    """_rejected_clause cannot match an approved row, and that is not a flag
+    a caller can pass."""
+    source = db_models.get_table(conn.engine, "staging", f"{CHANNEL}_products")
+    approved_before = conn.execute(
+        sa.select(sa.func.count()).select_from(source)
+        .where(sa.func.upper(sa.func.ltrim(sa.func.rtrim(source.c.review_status)))
+               == "APPROVED")
+    ).scalar()
+
+    rejection.reject(conn, CHANNEL, decidable_sku, actor=ACTOR)
+    rejection.reset_rejected(conn, CHANNEL, actor=ACTOR)
+
+    approved_after = conn.execute(
+        sa.select(sa.func.count()).select_from(source)
+        .where(sa.func.upper(sa.func.ltrim(sa.func.rtrim(source.c.review_status)))
+               == "APPROVED")
+    ).scalar()
+    assert approved_after == approved_before
+
+
+def test_reset_with_nothing_rejected_is_a_no_op(conn):
+    """Called on a clean channel it must report zero rather than raising or,
+    worse, deleting something."""
+    source = db_models.get_table(conn.engine, "staging", f"{CHANNEL}_products")
+    if conn.execute(
+        sa.select(sa.func.count()).select_from(source)
+        .where(rejection._rejected_clause(source))
+    ).scalar():
+        pytest.skip("channel has rejections; this test needs a clean one")
+
+    result = rejection.reset_rejected(conn, CHANNEL, actor=ACTOR)
+    assert result.rows_found == 0
+    assert result.rows_reset == 0
+    assert result.mappings_deleted == 0
+
+
+def test_preview_matches_what_reset_touches(conn, decidable_sku):
+    """Preview and apply share a selection so the number shown to the
+    operator and the number changed cannot drift apart."""
+    rejection.reject(conn, CHANNEL, decidable_sku, actor=ACTOR)
+
+    preview = rejection.preview_reset(conn, CHANNEL)
+    result = rejection.reset_rejected(conn, CHANNEL, actor=ACTOR)
+
+    assert preview.rows_found == result.rows_reset
+    assert sorted(preview.skus) == sorted(result.skus)
 
 
 def test_rejected_clause_does_not_swallow_unreviewed_rows(conn):

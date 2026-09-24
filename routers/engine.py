@@ -1658,6 +1658,45 @@ def reject_match(
         raise HTTPException(409, str(exc))
 
 
+class ResetRejectedRequest(BaseModel):
+    channel: str
+    category: str | None = None
+
+
+@router.post("/rejected/reset/preview")
+def preview_reset_rejected(
+    req: ResetRejectedRequest,
+    conn: db.Connection = Depends(get_conn),
+) -> dict:
+    """What the reset would touch. Reads only, so the confirmation dialog
+    shows a figure produced by the same selection the apply uses."""
+    _validate(req.channel, None)
+    return rejection.preview_reset(conn, req.channel, req.category).as_dict()
+
+
+@router.post("/rejected/reset")
+def reset_rejected(
+    req: ResetRejectedRequest,
+    user: auth.User = Depends(auth.current_user),
+    conn: db.Connection = Depends(get_conn),
+) -> dict:
+    """Delete the rejected matches and re-queue their SKUs.
+
+    Destructive: the mapping rows for every rejected listing on this channel
+    are removed. That is the point -- they ARE the match a human turned down
+    -- but it is not reversible, which is why the console gates it behind a
+    typed confirmation rather than a single click.
+
+    The returned SKU list is the only record of what was reset: clearing
+    review_status makes these rows indistinguishable from any other PENDING
+    row, so the caller must carry the list into the re-run.
+    """
+    _validate(req.channel, None)
+    return rejection.reset_rejected(
+        conn, req.channel, category=req.category, actor=user.email
+    ).as_dict()
+
+
 @router.delete("/rejected")
 def withdraw_rejection(
     channel: str,
