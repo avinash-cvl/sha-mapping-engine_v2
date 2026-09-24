@@ -73,13 +73,22 @@ GO
 -- ===========================================================================
 -- All three checks in ONE batch, ending in THROW.
 --
--- RAISERROR at severity 16 does not stop sqlcmd: it prints and carries on to
--- the next batch, so an earlier version of this file reported three missing
+-- RAISERROR at severity 16 does not stop the script: it prints and execution
+-- carries on to the next batch, so an earlier version reported three missing
 -- tables and then announced "Pre-flight passed" and built everything anyway.
--- THROW aborts the batch, and :on error exit (below) aborts the script.
+--
+-- No sqlcmd directives here. `:on error exit` would have aborted the script
+-- in sqlcmd, but it is a CLIENT directive, not T-SQL -- SSMS rejects it with
+-- "Incorrect syntax near ':'" unless SQLCMD Mode is switched on, which killed
+-- this whole batch and let the rest of the file run unguarded. The file has
+-- to behave the same in SSMS, sqlcmd and Azure Data Studio, so the guard is
+-- expressed in SQL alone: this batch writes a flag into a temp table, and
+-- every following batch opens with SET NOEXEC ON unless that flag says the
+-- pre-flight passed. NOEXEC makes the server parse but not run what follows,
+-- which is exactly "skip the rest of the file" in every client.
+--
 -- The checks are reported together so a wrong-database run names every
 -- problem at once rather than one per re-run.
-:on error exit
 
 DECLARE @missing NVARCHAR(MAX) = '';
 
@@ -98,12 +107,20 @@ IF OBJECT_ID('audit.activity_log', 'U') IS NULL
         + '  * audit.activity_log -- the console writes its audit trail there '
         + '(resets, rejections) and will not create it.';
 
+-- The flag every later batch checks. A temp table rather than a variable,
+-- because a variable does not survive GO -- and GO is what separates the
+-- batches this has to gate.
+IF OBJECT_ID('tempdb..#console_setup') IS NOT NULL DROP TABLE #console_setup;
+CREATE TABLE #console_setup (ok BIT NOT NULL);
+INSERT INTO #console_setup (ok) VALUES (CASE WHEN @missing = '' THEN 1 ELSE 0 END);
+
 IF @missing <> ''
 BEGIN
     DECLARE @msg NVARCHAR(MAX) =
-        'Pre-flight FAILED. Nothing has been created. Missing:' + @missing
+        'Pre-flight FAILED. Nothing will be created. Missing:' + @missing
         + CHAR(10) + 'Point this file at the engine database, or install the '
         + 'engine schema first.';
+    -- THROW ends THIS batch. The temp table above is what stops the rest.
     THROW 50001, @msg, 1;
 END
 
@@ -114,6 +131,7 @@ GO
 -- ===========================================================================
 -- 0 -- schema
 -- ===========================================================================
+IF NOT EXISTS (SELECT 1 FROM #console_setup WHERE ok = 1) SET NOEXEC ON;
 IF SCHEMA_ID('audit') IS NULL
 BEGIN
     EXEC('CREATE SCHEMA audit');
@@ -135,6 +153,7 @@ GO
 -- at all. "Have we run zepto lip makeup?" is unanswerable from it. That table
 -- is left alone; this one answers the question.
 -- ===========================================================================
+IF NOT EXISTS (SELECT 1 FROM #console_setup WHERE ok = 1) SET NOEXEC ON;
 IF OBJECT_ID('audit.engine_run', 'U') IS NULL
 BEGIN
     CREATE TABLE audit.engine_run (
@@ -210,6 +229,7 @@ GO
 -- brand filter runs" gave one term two meanings in one database. The console
 -- reads `engine` and nothing else.
 -- -----------------------------------------------------------------------
+IF NOT EXISTS (SELECT 1 FROM #console_setup WHERE ok = 1) SET NOEXEC ON;
 IF  COL_LENGTH('audit.engine_run', 'pipeline') IS NOT NULL
 AND COL_LENGTH('audit.engine_run', 'engine')   IS NULL
 BEGIN
@@ -238,6 +258,7 @@ GO
 -- An outcome delta is not interpretable without this. "+5 AutoMatch" could
 -- come from a rules.py fix, a weight change, or different input data.
 -- ===========================================================================
+IF NOT EXISTS (SELECT 1 FROM #console_setup WHERE ok = 1) SET NOEXEC ON;
 IF OBJECT_ID('audit.engine_run_config', 'U') IS NULL
 BEGIN
     CREATE TABLE audit.engine_run_config (
@@ -268,6 +289,7 @@ GO
 -- breaks three reads here as a clean "+5". Drilling into which rows moved is
 -- done against staging.<channel>_product_mapping while the result is live.
 -- ===========================================================================
+IF NOT EXISTS (SELECT 1 FROM #console_setup WHERE ok = 1) SET NOEXEC ON;
 IF OBJECT_ID('audit.engine_run_outcome', 'U') IS NULL
 BEGIN
     CREATE TABLE audit.engine_run_outcome (
@@ -302,6 +324,18 @@ GO
 --
 -- CREATE OR ALTER so a re-run refreshes the definition without a drop.
 -- ===========================================================================
+-- Built through EXEC rather than written inline.
+--
+-- Two reasons, both learned the hard way. CREATE VIEW must be the first
+-- statement in its batch, so it cannot share one with the NOEXEC guard the
+-- CREATE TABLE batches use. And NOEXEC stops execution but NOT compilation,
+-- so an inline CREATE VIEW still gets bound against audit.engine_run and
+-- reports "Invalid object name" on a database where the pre-flight already
+-- refused to create it -- an error about a table nobody asked for. Inside
+-- EXEC the body is just a string until the guard has let us get this far.
+IF NOT EXISTS (SELECT 1 FROM #console_setup WHERE ok = 1) SET NOEXEC ON;
+
+EXEC('
 CREATE OR ALTER VIEW audit.vw_engine_run_compare
 AS
 SELECT
@@ -314,7 +348,8 @@ SELECT
     -- Flags that a delta may not be engine behaviour at all.
     CASE WHEN b.source_row_count <> a.source_row_count THEN 1 ELSE 0 END
                                         AS input_population_changed,
-    CASE WHEN ISNULL(b.git_sha,'') <> ISNULL(a.git_sha,'') THEN 1 ELSE 0 END
+    -- Doubled quotes: this whole body is a string literal passed to EXEC.
+    CASE WHEN ISNULL(b.git_sha,'''') <> ISNULL(a.git_sha,'''') THEN 1 ELSE 0 END
                                         AS code_changed
 FROM audit.engine_run b
 CROSS JOIN audit.engine_run a
@@ -322,7 +357,7 @@ LEFT  JOIN audit.engine_run_outcome ob ON ob.execution_id = b.execution_id
 FULL  JOIN audit.engine_run_outcome oa ON oa.execution_id = a.execution_id
                                       AND oa.status = ob.status
 WHERE b.execution_id <> a.execution_id;
-GO
+');
 
 PRINT 'Created or refreshed view: audit.vw_engine_run_compare';
 GO
@@ -341,6 +376,7 @@ GO
 -- from "reviewed and approved" from "reviewed and rejected". Writing a
 -- default would erase the first of those three states.
 -- ===========================================================================
+IF NOT EXISTS (SELECT 1 FROM #console_setup WHERE ok = 1) SET NOEXEC ON;
 -- Re-stated for this batch: SET options do not carry across GO, and the
 -- filtered index below refuses to be created under QUOTED_IDENTIFIER OFF.
 SET QUOTED_IDENTIFIER ON;
@@ -437,6 +473,7 @@ GO
 -- ===========================================================================
 -- VERIFICATION -- what the console will find when it starts
 -- ===========================================================================
+IF NOT EXISTS (SELECT 1 FROM #console_setup WHERE ok = 1) SET NOEXEC ON;
 PRINT '';
 PRINT '=== Verification ===';
 GO
@@ -515,8 +552,27 @@ GO
 -- Password hashes are argon2id and are set through the portal, never here.
 -- ===========================================================================
 
-PRINT '';
-PRINT '=== 016 complete ===';
-PRINT 'Next: set CONSOLE_JWT_SECRET in the console environment (required),';
-PRINT 'and CONSOLE_SECURE_COOKIES=true if it is served over TLS.';
+-- NOEXEC is a SESSION setting: left on, every statement the operator ran
+-- next in the same window would be parsed and silently discarded.
+SET NOEXEC OFF;
+GO
+
+IF NOT EXISTS (SELECT 1 FROM #console_setup WHERE ok = 1)
+BEGIN
+    PRINT '';
+    PRINT '*** 016 did NOT run: pre-flight failed. See the error above. ***';
+    PRINT 'Nothing was created.';
+END
+ELSE
+BEGIN
+    PRINT '';
+    PRINT '=== 016 complete ===';
+    PRINT 'Next: set CONSOLE_JWT_SECRET in the console environment (required),';
+    PRINT 'and CONSOLE_SECURE_COOKIES=true if it is served over TLS.';
+END
+GO
+
+-- Tidied up, so a second run in the same session starts from a clean flag
+-- rather than reading the last run's verdict.
+IF OBJECT_ID('tempdb..#console_setup') IS NOT NULL DROP TABLE #console_setup;
 GO
