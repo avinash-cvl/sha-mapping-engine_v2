@@ -85,33 +85,60 @@
       ? `${fmt(d.total)} on ${$("rej-channel").value}` : "";
   }
 
+  /* The worst offenders, not all of them.
+   *
+   * On the live database this is 20 products on one channel, and rendering
+   * every one turned the callout into a 20-row table that pushed the actual
+   * rejections list below the fold -- a summary longer than what it
+   * summarises. The top few carry the finding; the rest are the same shape
+   * with smaller numbers.
+   */
+  const OFFENDERS_SHOWN = 5;
+
   function renderOffenders(off) {
     const repeat = off.filter((o) => o.rejections > 1);
     if (!repeat.length) {
       $("offenders").innerHTML = "";
       return;
     }
+    const top = repeat.slice(0, OFFENDERS_SHOWN);
+    const rest = repeat.length - top.length;
+
     $("offenders").innerHTML =
       `<div class="note" style="margin-top:14px">
          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 8.5v4.5M12 16.5v.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M10.3 3.9 2.6 17.2A2 2 0 0 0 4.3 20.2h15.4a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" stroke="currentColor" stroke-width="1.7"/></svg>
-         <div><b>${repeat.length} master product${repeat.length === 1 ? "" : "s"}
-           attracting repeat rejections.</b> A code that keeps being rejected is usually a
-           gate target too small to offer an alternative — every listing routed there comes
-           back as the same product.
+         <div style="min-width:0"><b>${fmt(repeat.length)} master product${
+             repeat.length === 1 ? "" : "s"} attracting repeat rejections.</b>
+           A code that keeps being rejected is usually a gate target too small to offer an
+           alternative — every listing routed there comes back as the same product.
            <div class="tw tw-short" style="margin-top:10px;background:var(--surface)">
              <table>
-               <thead><tr><th>Master product</th><th>Code</th><th class="num">Rejections</th><th></th></tr></thead>
-               <tbody>${repeat.map((o) => `<tr>
+               <thead><tr><th>Master product</th><th>Code</th>
+                 <th class="num">Rejections</th><th></th></tr></thead>
+               <tbody>${top.map((o) => `<tr>
                  <td class="t-title">${esc(o.product_name || "—")}</td>
                  <td class="m">${esc(o.product_code)}</td>
                  <td class="num" style="color:var(--crit);font-weight:600">${fmt(o.rejections)}</td>
-                 <td><a href="#catalog" data-route="catalog"
-                   style="color:var(--accent);font-size:12.5px;text-decoration:none;font-weight:600">Inspect &rarr;</a></td>
+                 <td><button class="btn sm off-filter" data-code="${esc(o.product_code)}"
+                   title="Show only the rejections that landed on this product">See them</button></td>
                </tr>`).join("")}</tbody>
              </table>
            </div>
+           ${rest ? `<p class="hint" style="margin:8px 0 0">Showing the ${
+             OFFENDERS_SHOWN} worst — ${fmt(rest)} more ${
+             rest === 1 ? "product has" : "products have"} 2 or more.</p>` : ""}
          </div>
        </div>`;
+
+    /* Filters the list below to that code rather than jumping to Catalog:
+       the question a repeat offender raises is "which listings landed here",
+       and the answer is already on this page. */
+    $("offenders").querySelectorAll(".off-filter").forEach((b) =>
+      b.addEventListener("click", () => {
+        $("rejSearch").value = b.dataset.code;
+        STATE.offset = 0;
+        load().catch((e) => showError($("errors"), e.message));
+      }));
   }
 
   function renderRows(d, channel) {

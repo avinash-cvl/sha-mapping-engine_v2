@@ -52,8 +52,30 @@ def health() -> dict:
     return {"status": "ok"}
 
 
+class _NoStoreStatic(StaticFiles):
+    """Serve console assets with no-store.
+
+    StaticFiles sends an ETag and Last-Modified but no Cache-Control, which
+    leaves a browser free to reuse a cached copy WITHOUT revalidating. That
+    produced the worst possible failure mode: an old rejected.js running
+    against a new server, calling endpoints that had since moved, and
+    reporting "Something went wrong. Not Found" -- a 404 that looked like a
+    broken API while every endpoint answered 200 to anything else.
+
+    The pages are a few hundred KB served from the same machine, so the
+    revalidation costs nothing measurable and buys an asset that cannot be
+    stale. Reconsider only if these are ever served over a slow link, and
+    then with a content hash in the filename rather than by relaxing this.
+    """
+
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-store, must-revalidate"
+        return response
+
+
 if os.path.isdir(WEB):
-    app.mount("/static", StaticFiles(directory=WEB), name="static")
+    app.mount("/static", _NoStoreStatic(directory=WEB), name="static")
 
     def _page(request: Request, filename: str):
         """Serve a console page, or redirect to sign-in.
