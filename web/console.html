@@ -517,6 +517,32 @@
       </section>
     </div>
 
+    <section class="panel" style="margin-top:16px">
+      <div class="panel-h"><span class="panel-t">Export mapping results</span>
+        <span class="stale" style="margin-left:auto">Same columns as the shared SQL — ready to send on</span></div>
+      <div class="panel-b">
+        <div class="tbar">
+          <select id="x-scope" aria-label="What to export">
+            <option value="unreviewed">Awaiting review — nobody has approved or rejected</option>
+            <option value="rejected">Rejected only</option>
+            <option value="approved">Approved only</option>
+            <option value="all">Everything matched</option>
+          </select>
+          <select id="x-channel" aria-label="Channel"><option value="">All channels</option></select>
+          <select id="x-brand" aria-label="Brand">
+            <option value="HIMALAYA">Himalaya only</option>
+            <option value="">All brands</option>
+          </select>
+          <span class="spacer"></span>
+          <span class="hint" id="x-count">—</span>
+          <button class="btn primary" id="x-go">Export CSV</button>
+        </div>
+        <p class="hint" style="margin:0">30 columns per row, every candidate rank —
+          review_status, sku, title, matched product, both taxonomies, scores and the
+          LLM reasoning.</p>
+      </div>
+    </section>
+
     <div id="view-logs" hidden>
       <div class="tbar">
         <div class="searchbox" style="max-width:260px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.2" stroke="currentColor" stroke-width="1.7"/><path d="m19 19-4-4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg><input id="log-q" type="search" placeholder="Filter log files…" aria-label="Filter log files"></div>

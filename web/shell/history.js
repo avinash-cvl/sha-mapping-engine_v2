@@ -31,8 +31,10 @@
   function fillChannels() {
     if ($("f-channel").dataset.filled) return;
     const names = [...new Set(ALL.map((r) => r.channel).filter(Boolean))].sort();
-    $("f-channel").innerHTML = `<option value="">All channels</option>`
+    const opts = `<option value="">All channels</option>`
       + names.map((c) => `<option>${esc(c)}</option>`).join("");
+    $("f-channel").innerHTML = opts;
+    $("x-channel").innerHTML = opts;
     $("f-channel").dataset.filled = "1";
   }
 
@@ -136,7 +138,11 @@
           <div class="prog-top"><span>${fmt(r.processed)}/${fmt(target)}</span><b>${pct}%</b></div>
           <div class="prog-bar"><i class="${barClass}" style="width:${pct}%"></i></div>
         </div>`)}</td>
-      <td><button class="btn open rd-open" data-run="${esc(r.execution_id)}">View details</button></td>
+      <td style="white-space:nowrap">
+        <button class="btn open rd-open" data-run="${esc(r.execution_id)}">View details</button>
+        <button class="btn sm run-export" data-run="${esc(r.execution_id)}"
+          title="Export this run's mapping results as CSV">Export</button>
+      </td>
     </tr>`;
   }
 
@@ -154,6 +160,13 @@
         }
       }));
 
+    /* A run export covers what that run's SCOPE holds, not a stored per-SKU
+       list -- audit.engine_run records the scope it was launched with, and
+       the confirmation says so rather than implying a record that does not
+       exist. */
+    $("rows").querySelectorAll(".run-export").forEach((b) =>
+      b.addEventListener("click", () => exportRun(b.dataset.run)));
+
     $("rows").querySelectorAll(".pick").forEach((cb) =>
       cb.addEventListener("change", () => {
         if (cb.checked) PICKED.add(cb.value); else PICKED.delete(cb.value);
@@ -164,6 +177,94 @@
         $("cmp-open").textContent = PICKED.size
           ? `Compare selected (${PICKED.size})` : "Compare selected";
       }));
+  }
+
+  /* ------------------------------------------------------------ export */
+
+  /* A download the browser starts itself, not a fetch.
+   *
+   * The file is tens of thousands of rows; pulling it into JS memory to make
+   * a blob would hold it twice for no benefit, and the server already sends
+   * Content-Disposition. A plain navigation lets the browser stream it
+   * straight to disk.
+   */
+  function download(params) {
+    const url = "/api/engine/export?" + new URLSearchParams(params);
+    const a = document.createElement("a");
+    a.href = url;
+    a.rel = "noopener";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
+
+  async function exportRun(runId) {
+    const run = ALL.find((r) => r.execution_id === runId);
+    let preview;
+    try {
+      preview = await api("/export/preview?scope=unreviewed&run_id="
+        + encodeURIComponent(runId));
+    } catch (e) {
+      showError($("errors"), e.message);
+      return;
+    }
+
+    $("confirm-title").innerHTML =
+      `<svg width="19" height="19" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4v10M8 10l4 4 4-4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 16.5v2A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5v-2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+       Export this run`;
+    $("confirm-lede").textContent =
+      "A CSV with the same columns as the SQL the team shares — ready to send on.";
+    $("confirm-body").innerHTML =
+      `<div class="m-sec">
+         <h3>The run</h3>
+         <dl class="kv">
+           <dt>Run</dt><dd>${esc(runId.slice(0, 8))}</dd>
+           <dt>Scope</dt><dd>${esc(preview.channel || "all channels")}${
+             preview.category ? " · " + esc(preview.category) : ""}</dd>
+           <dt>Engine</dt><dd>${esc(run?.engine || preview.run?.engine || "—")}</dd>
+           <dt>Processed</dt><dd>${fmt(run?.processed ?? preview.run?.processed ?? 0)} SKUs</dd>
+         </dl>
+       </div>
+       <div class="m-sec">
+         <h3>What the file holds</h3>
+         <dl class="kv">
+           <dt>Rows</dt><dd class="big">${fmt(preview.rows)}</dd>
+           <dt>Columns</dt><dd>${preview.columns.length}</dd>
+           <dt>Filter</dt><dd>awaiting review · Himalaya brand</dd>
+         </dl>
+         <p class="hint" style="margin-top:8px">Every candidate rank is included, so a
+           SKU appears up to three times — the reviewer needs to see what was passed
+           over, not only what won.</p>
+       </div>
+       <div class="m-sec">
+         <h3>One thing to know</h3>
+         <ul class="m-rules">
+           <li>A run records the <b>scope</b> it covered, not the individual SKUs it
+             touched. This exports everything currently awaiting review in that scope,
+             which is usually more than this run alone processed.</li>
+         </ul>
+       </div>`;
+    $("confirm-go").textContent = `Download ${fmt(preview.rows)} rows`;
+    $("confirm-go").disabled = !preview.rows;
+
+    window.ConfirmDialog.open(async () => {
+      download({ scope: "unreviewed", run_id: runId });
+    });
+  }
+
+  async function refreshExportCount() {
+    const params = { scope: $("x-scope").value };
+    if ($("x-channel").value) params.channel = $("x-channel").value;
+    if ($("x-brand").value) params.brand = $("x-brand").value;
+    $("x-count").textContent = "counting…";
+    try {
+      const d = await api("/export/preview?" + new URLSearchParams(params));
+      $("x-count").textContent = `${fmt(d.rows)} rows · ${d.columns.length} columns`;
+      $("x-go").disabled = !d.rows;
+    } catch (e) {
+      $("x-count").textContent = e.message;
+      $("x-go").disabled = true;
+    }
   }
 
   /* ------------------------------------------------------------ compare */
@@ -267,6 +368,16 @@
     applyFilters(0, PAGE.limit);
   });
 
+  ["x-scope", "x-channel", "x-brand"].forEach((id) =>
+    $(id).addEventListener("change", () => refreshExportCount().catch(() => {})));
+
+  $("x-go").addEventListener("click", () => {
+    const params = { scope: $("x-scope").value };
+    if ($("x-channel").value) params.channel = $("x-channel").value;
+    if ($("x-brand").value) params.brand = $("x-brand").value;
+    download(params);
+  });
+
   $("cmp-open").addEventListener("click", () => compare().catch(() => {}));
   $("cmp-close").addEventListener("click", () => { $("cmp").hidden = true; });
 
@@ -299,6 +410,7 @@
       /* The log count sits on a tab label, so it is fetched with the page
          even though the browser itself is not rendered until you open it. */
       api("/logs?limit=1").then((d) => ($("c-logs").textContent = fmt(d.total))).catch(() => {});
+      refreshExportCount().catch(() => {});
     },
   };
 })();

@@ -27,12 +27,13 @@ from datetime import datetime, timezone
 
 import sqlalchemy as sa
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
 import common.config as C
-from common import (auth, db, db_models, log_parse, recovery, rejection,
-                    run_record, scope)
+from common import (auth, db, db_models, export, log_parse, recovery,
+                    rejection, run_record, scope)
 
 # Applied to the router rather than to each route: a dependency listed here
 # cannot be forgotten when someone adds an endpoint later. Every path under
@@ -1721,3 +1722,93 @@ def withdraw_rejection(
     except LookupError as exc:
         raise HTTPException(404, str(exc))
     return {"channel": channel, "sku": sku, "withdrawn": changed}
+
+
+# ---------------------------------------------------------------- export
+@router.get("/export/preview")
+def export_preview(
+    scope_name: str = Query("unreviewed", alias="scope"),
+    channel: str | None = None,
+    category: str | None = None,
+    brand: str | None = "HIMALAYA",
+    run_id: str | None = None,
+    conn: db.Connection = Depends(get_conn),
+) -> dict:
+    """How many rows an export would contain, before downloading it.
+
+    Asked first so the UI can say "12,431 rows" rather than starting a
+    download of unknown size -- these files run to tens of thousands of rows
+    on amazon.
+    """
+    if scope_name not in export.SCOPES:
+        raise HTTPException(400, f"scope must be one of {export.SCOPES}")
+
+    run = None
+    if run_id:
+        run = export.run_scope(conn, run_id)
+        if run is None:
+            raise HTTPException(404, "no run with that id")
+        # A run records the scope it was launched with, not the SKUs it
+        # touched, so "export this run" means "export what it covered".
+        channel = run["channel"]
+        category = run["category"]
+
+    return {
+        "scope": scope_name,
+        "channel": channel,
+        "category": category,
+        "brand": brand,
+        "run": run,
+        "rows": export.count_rows(
+            conn, scope=scope_name, channel=channel, category=category, brand=brand
+        ),
+        "columns": export.COLUMNS,
+    }
+
+
+@router.get("/export")
+def export_csv(
+    scope_name: str = Query("unreviewed", alias="scope"),
+    channel: str | None = None,
+    category: str | None = None,
+    brand: str | None = "HIMALAYA",
+    run_id: str | None = None,
+    conn: db.Connection = Depends(get_conn),
+):
+    """Mapping results as CSV, in the column order the team already shares.
+
+    Streamed rather than assembled in memory: an unreviewed export across all
+    channels is tens of thousands of rows with a paragraph of llm_reasoning
+    on each, and building that as one string before sending a byte would hold
+    it all twice.
+    """
+    if scope_name not in export.SCOPES:
+        raise HTTPException(400, f"scope must be one of {export.SCOPES}")
+
+    label = scope_name
+    if run_id:
+        run = export.run_scope(conn, run_id)
+        if run is None:
+            raise HTTPException(404, "no run with that id")
+        channel = run["channel"]
+        category = run["category"]
+        label = f"run-{run_id[:8]}"
+
+    parts = [p for p in ("mappings", label, channel, category) if p]
+    filename = "_".join(str(p).replace(" ", "-") for p in parts) + ".csv"
+
+    # The CSV writing itself lives in common/export.py -- this endpoint
+    # streams what that module produces rather than keeping a second copy of
+    # the quoting and None-handling rules, which would drift.
+    def stream():
+        for chunk in export.csv_chunks(
+            conn, scope=scope_name, channel=channel,
+            category=category, brand=brand,
+        ):
+            yield chunk
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
