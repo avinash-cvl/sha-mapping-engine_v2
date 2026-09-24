@@ -19,6 +19,8 @@
 
   let STATE = { offset: 0, limit: 25 };
   let CHANNELS = [];
+  let LAST_ROWS = [];        // the page on screen, for the reset dialog
+  let CHANNEL_TOTALS = {};   // {channel: rejections} -- drives the all-channel line
 
   const who = (email) => (email || "unknown").split("@")[0];
 
@@ -38,9 +40,11 @@
       api(`/rejected?channel=${encodeURIComponent(c)}&limit=1`)
         .then((d) => d.total).catch(() => 0)));
 
+    CHANNEL_TOTALS = Object.fromEntries(CHANNELS.map((c, i) => [c, counts[i]]));
     $("rej-channel").innerHTML = CHANNELS.map((c, i) =>
       `<option value="${esc(c)}">${esc(c)}${counts[i] ? ` · ${counts[i]}` : ""}</option>`
     ).join("");
+    renderAllChannels();
 
     if (first) {
       /* Opened on a channel that actually has rejections, so the page does
@@ -71,6 +75,34 @@
     renderTiles(d, off);
     renderOffenders(off);
     renderRows(d, channel);
+  }
+
+  /* Every channel's count, beside the one being looked at.
+     The tiles below describe the selected channel only, so without this the
+     page never says how big the backlog actually is -- and the answer people
+     want first is usually the total. */
+  function renderAllChannels() {
+    const total = Object.values(CHANNEL_TOTALS).reduce((a, n) => a + n, 0);
+    const current = $("rej-channel").value;
+
+    $("rej-all").innerHTML =
+      `<span style="color:var(--ink-3)">All channels:</span>
+       <b style="font-variant-numeric:tabular-nums">${fmt(total)}</b>
+       <span style="color:var(--ink-3)">rejected &middot;</span>`
+      + CHANNELS.map((c) =>
+          `<button class="btn sm chan-jump" data-channel="${esc(c)}"
+             style="${c === current
+               ? "border-color:var(--accent);color:var(--accent);background:var(--accent-soft)"
+               : ""}">${esc(c)} <b style="font-variant-numeric:tabular-nums">${
+               fmt(CHANNEL_TOTALS[c] || 0)}</b></button>`).join("");
+
+    $("rej-all").querySelectorAll(".chan-jump").forEach((b) =>
+      b.addEventListener("click", () => {
+        $("rej-channel").value = b.dataset.channel;
+        STATE.offset = 0;
+        renderAllChannels();
+        load().catch((e) => showError($("errors"), e.message));
+      }));
   }
 
   function renderTiles(d, off) {
@@ -142,6 +174,7 @@
   }
 
   function renderRows(d, channel) {
+    LAST_ROWS = d.rows;
     $("rejBody").innerHTML = d.rows.length
       ? d.rows.map((r) => `<tr>
           <td class="t-title">${esc(r.title || r.sku)}
@@ -153,7 +186,12 @@
               .toLocaleDateString(undefined, { day: "2-digit", month: "short" })}</div>` : ""}
             ${r.comment ? `<div class="t-sub" style="max-width:300px">${esc(r.comment)}</div>` : ""}</td>
           <td class="num">${r.score == null ? "—" : r.score.toFixed(2)}</td>
-          <td><button class="btn sm rej-undo" data-sku="${esc(r.sku)}">Withdraw</button></td>
+          <td style="white-space:nowrap">
+            <button class="btn sm danger rej-one" data-sku="${esc(r.sku)}"
+              title="Delete this SKU's mappings, set it PENDING, and run the engine on it">Reset &amp; run</button>
+            <button class="btn sm rej-undo" data-sku="${esc(r.sku)}"
+              title="Undo the rejection and leave the match alone">Withdraw</button>
+          </td>
         </tr>`).join("")
       : `<tr><td colspan="5" class="empty">Nothing has been rejected on ${esc(channel)}.
            Reject a match from the Results table on New run.</td></tr>`;
@@ -166,6 +204,16 @@
         load().catch((e) => showError($("errors"), e.message));
       },
     }));
+
+    /* One row, both steps, one click.
+     *
+     * The channel-wide flow splits reset from re-run because the reset frees
+     * hundreds of SKUs and someone should look before spending LLM budget on
+     * them. For a single row that gap buys nothing -- you picked this SKU on
+     * purpose -- so the two steps run together, behind the same confirmation
+     * because the delete is still not reversible. */
+    $("rejBody").querySelectorAll(".rej-one").forEach((b) =>
+      b.addEventListener("click", () => resetOne(b.dataset.sku, channel)));
 
     $("rejBody").querySelectorAll(".rej-undo").forEach((b) =>
       b.addEventListener("click", async () => {
@@ -270,6 +318,79 @@
       renderStepState();
       await fillChannels();      // the option labels carry the counts
       await load();
+    });
+  }
+
+  /* Reset one row and run the engine on it, for testing the flow without
+     freeing every rejection on the channel. */
+  async function resetOne(sku, channel) {
+    const row = (LAST_ROWS || []).find((r) => r.sku === sku);
+
+    $("confirm-title").innerHTML =
+      `<svg width="19" height="19" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 8.5v4.5M12 16.5v.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M10.3 3.9 2.6 17.2A2 2 0 0 0 4.3 20.2h15.4a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" stroke="currentColor" stroke-width="1.7"/></svg>
+       Reset and run this one SKU`;
+    $("confirm-lede").textContent =
+      "Deletes this SKU's mapping rows and runs the engine on it immediately. "
+      + "The delete cannot be undone.";
+    $("confirm-body").innerHTML =
+      `<div class="m-sec">
+         <h3>The SKU</h3>
+         <dl class="kv">
+           <dt>Listing</dt><dd>${esc(row?.title || sku)}</dd>
+           <dt>SKU</dt><dd>${esc(sku)}</dd>
+           <dt>Channel</dt><dd>${esc(channel)}</dd>
+           <dt>Rejected match</dt><dd class="crit">${esc(row?.rejected_name || "—")}
+             ${row?.rejected_code ? `(${esc(row.rejected_code)})` : ""}</dd>
+         </dl>
+       </div>
+       <div class="m-sec">
+         <h3>What happens</h3>
+         <ul class="m-rules">
+           <li>Every mapping row for this SKU is deleted — 1, 2 or 3 of them.</li>
+           <li>mapping_status goes back to PENDING and the rejection is cleared.</li>
+           <li>The engine runs on this SKU alone, and writes a fresh match.</li>
+           <li>Nothing else on ${esc(channel)} is touched.</li>
+         </ul>
+       </div>
+       <div class="m-sec">
+         <h3>How it will run</h3>
+         <dl class="kv">
+           <dt>LLM judge</dt><dd class="${$("llm").checked ? "" : "warn"}">${
+             $("llm").checked ? "on — about 3 calls for this SKU" : "OFF — scoring only"}</dd>
+           <dt>Engine</dt><dd>both — the brand filter picks the right one</dd>
+           <dt>Workers</dt><dd>${esc($("w").value)}</dd>
+         </dl>
+         <p class="hint" style="margin-top:8px">Taken from the New run page. Change them
+           there if this SKU needs different settings.</p>
+       </div>
+       <div class="m-sec">
+         <label class="m-ack"><input type="checkbox" id="one-ack">
+           I understand this SKU's existing mappings will be deleted.</label>
+       </div>`;
+    $("confirm-go").textContent = "Reset and run";
+    $("confirm-go").disabled = true;
+    $("one-ack").addEventListener("change", (e) => {
+      $("confirm-go").disabled = !e.target.checked;
+    });
+
+    window.ConfirmDialog.open(async () => {
+      const res = await api("/rejected/reset", {
+        method: "POST",
+        body: JSON.stringify({ channel, skus: [sku] }),
+      });
+      if (!res.rows_reset) throw new Error(`${sku} was not reset — is it still rejected?`);
+
+      /* Both engines: the brand filter decides which one owns this row, and
+         guessing here would silently skip it on the wrong leg. */
+      await window.RunLauncher.launchSkus({
+        channel, skus: [sku], engine: null,
+        onDone: async () => {
+          if ($("rej-channel").dataset.filled) {
+            await fillChannels().catch(() => {});
+            await load().catch(() => {});
+          }
+        },
+      });
     });
   }
 

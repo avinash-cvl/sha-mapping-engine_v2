@@ -1,3 +1,19 @@
+"""Manual check: does the engine adopt the API's run id, and does the stream end?
+
+NOT A TEST, despite where this used to live. It has no test functions -- it is
+a script that runs top to bottom and LAUNCHES A REAL ENGINE RUN. Under
+tests/ pytest collected it by filename and executed it during every suite
+run, spending LLM budget and mutating live data as a side effect of
+collection.
+
+Run it by hand when the streaming path needs checking:
+
+    uv run python scripts/check_stream.py
+
+Credentials come from the environment rather than being hardcoded -- the
+address that was baked in here is a real shared account.
+"""
+import os
 import sys, warnings, time, json; warnings.filterwarnings("ignore")
 sys.path.insert(0, r"d:/Himalaya/sha-mapping-engine_v2")
 from fastapi.testclient import TestClient
@@ -8,8 +24,12 @@ def chk(l,g,w):
     global ok; good=g==w; ok&=good
     print(f"  {'PASS' if good else 'FAIL'}  {l:52} got={g} want={w}")
 
-c.post("/api/session/login", json={"email":"avinash.veluri@covalenseglobal.com","password":"Engine@2026"})
-r = c.post("/api/engine/runs", json={"channel":"zepto","pipeline":"himalaya",
+EMAIL = os.environ.get("CONSOLE_CHECK_EMAIL")
+PASSWORD = os.environ.get("CONSOLE_CHECK_PASSWORD")
+if not (EMAIL and PASSWORD):
+    sys.exit("set CONSOLE_CHECK_EMAIL and CONSOLE_CHECK_PASSWORD first")
+c.post("/api/session/login", json={"email": EMAIL, "password": PASSWORD})
+r = c.post("/api/engine/runs", json={"channel":"zepto","engine":"himalaya",
     "category":"lip makeup","subcategory":"lip balms","workers":2})
 chk("launch 200", r.status_code, 200)
 rid = r.json()["runs"][0]["run_id"]

@@ -8,12 +8,66 @@ person is in it, and must never leave a working login behind.
 """
 from __future__ import annotations
 
+import os
 import sys
 import pathlib
 
 import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+
+
+def pytest_configure(config):
+    """Refuse to run against a database nobody agreed to mutate.
+
+    These tests write: they create and delete accounts, reject matches, reset
+    rows and delete mapping rows. That was survivable while the DSN pointed at
+    a dev copy. It is not survivable against the live database, and the DSN is
+    a single line in .env that gets repointed when someone switches
+    environments -- which is exactly what happened, and a test then wiped 174
+    real rejections and 520 mapping rows.
+
+    So the database has to be named. Set CONSOLE_TEST_DB to the database the
+    suite is allowed to touch; if the DSN points anywhere else, the run stops
+    before a single test executes.
+
+        $env:CONSOLE_TEST_DB = "AureusSentinelv3_staging"
+
+    A safety check that can be skipped by forgetting an env var would be no
+    check at all, so the default is to refuse.
+    """
+    # .env has not been read yet at collection time -- app.py loads it on
+    # import, which happens later. Read it here, or the refusal message names
+    # an empty database and tells the reader nothing.
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(pathlib.Path(__file__).resolve().parent.parent / ".env")
+    except Exception:
+        pass
+
+    dsn = os.environ.get("SQL_SERVER_DSN", "")
+    current = ""
+    for part in dsn.split(";"):
+        if part.strip().lower().startswith("database="):
+            current = part.split("=", 1)[1].strip()
+            break
+
+    allowed = os.environ.get("CONSOLE_TEST_DB", "").strip()
+    if not allowed:
+        pytest.exit(
+            f"\n\nRefusing to run: CONSOLE_TEST_DB is not set.\n"
+            f"The DSN currently points at '{current}'. These tests WRITE -- they\n"
+            f"reject matches, reset rows and delete mapping rows.\n\n"
+            f"If '{current}' is a database you are willing to have mutated:\n"
+            f'    $env:CONSOLE_TEST_DB = "{current}"\n',
+            returncode=3,
+        )
+    if current.lower() != allowed.lower():
+        pytest.exit(
+            f"\n\nRefusing to run: the DSN points at '{current}' but\n"
+            f"CONSOLE_TEST_DB says '{allowed}'. Nothing has been touched.\n",
+            returncode=3,
+        )
 
 TEST_PASSWORD = "Fixture-Passw0rd!"
 ADMIN_EMAIL = "pytest-console-admin@local.invalid"

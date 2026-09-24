@@ -274,17 +274,29 @@ class ResetRejectedResult:
         return asdict(self)
 
 
-def preview_reset(conn, channel: str, category: str | None = None) -> ResetRejectedResult:
+def preview_reset(
+    conn,
+    channel: str,
+    category: str | None = None,
+    skus: list[str] | None = None,
+) -> ResetRejectedResult:
     """What reset_rejected would do. Reads only.
 
     Shares its selection with the apply below so the number shown to the
     operator and the number changed cannot drift apart -- the same reason
     recovery.py splits preview from apply.
+
+    `skus` narrows it to named rows, which is how one rejection is reset on
+    its own. Same code path as the channel-wide reset, just a narrower WHERE:
+    a separate single-row function would be a second definition of "what a
+    reset does", free to drift from this one.
     """
     source = db_models.get_table(conn.engine, "staging", f"{channel}_products")
     where = [_rejected_clause(source)]
     if category:
         where.append(source.c.category == category)
+    if skus:
+        where.append(source.c.sku.in_(skus))
 
     skus = conn.execute(
         sa.select(source.c.sku).where(*where).order_by(source.c.sku)
@@ -301,6 +313,7 @@ def reset_rejected(
     channel: str,
     *,
     category: str | None = None,
+    skus: list[str] | None = None,
     actor: str,
 ) -> ResetRejectedResult:
     """Clear the rejected matches and queue their SKUs for a fresh run.
@@ -326,13 +339,15 @@ def reset_rejected(
     source = db_models.get_table(conn.engine, "staging", f"{channel}_products")
     mapping = db_models.get_table(conn.engine, "staging", f"{channel}_product_mapping")
 
-    before = preview_reset(conn, channel, category)
+    before = preview_reset(conn, channel, category, skus)
     if before.rows_found == 0:
         return before
 
     where = [_rejected_clause(source)]
     if category:
         where.append(source.c.category == category)
+    if skus:
+        where.append(source.c.sku.in_(skus))
 
     ids = conn.execute(sa.select(source.c.id).where(*where)).scalars().all()
 
@@ -367,11 +382,18 @@ def reset_rejected(
     conn.execute(
         sa.insert(activity).values(
             entity=f"staging.{channel}_products",
-            entity_key=f"{channel}/{category or 'all'}"[:1000],
+            entity_key=(
+                f"{channel}/{skus[0]}" if skus and len(skus) == 1
+                else f"{channel}/{category or 'all'}"
+            )[:1000],
             action="REJECTED_ROWS_RESET",
             input=json.dumps({
                 "channel": channel,
                 "category": category,
+                # Named so the trail distinguishes "reset this one row" from
+                # "reset everything on the channel" -- they read identically
+                # otherwise, and only one of them is a bulk action.
+                "explicit_skus": len(skus) if skus else None,
                 "rows_found": before.rows_found,
                 "rows_reset": reset,
                 "mappings_deleted": deleted,

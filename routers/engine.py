@@ -1666,6 +1666,9 @@ def reject_match(
 class ResetRejectedRequest(BaseModel):
     channel: str
     category: str | None = None
+    # Narrows the reset to named rows. Absent means every rejection on the
+    # channel, which is the bulk action; one entry is "reset this row".
+    skus: list[str] | None = None
 
 
 @router.post("/rejected/reset/preview")
@@ -1676,7 +1679,9 @@ def preview_reset_rejected(
     """What the reset would touch. Reads only, so the confirmation dialog
     shows a figure produced by the same selection the apply uses."""
     _validate(req.channel, None)
-    return rejection.preview_reset(conn, req.channel, req.category).as_dict()
+    return rejection.preview_reset(
+        conn, req.channel, req.category, req.skus
+    ).as_dict()
 
 
 @router.post("/rejected/reset")
@@ -1698,7 +1703,7 @@ def reset_rejected(
     """
     _validate(req.channel, None)
     return rejection.reset_rejected(
-        conn, req.channel, category=req.category, actor=user.email
+        conn, req.channel, category=req.category, skus=req.skus, actor=user.email
     ).as_dict()
 
 

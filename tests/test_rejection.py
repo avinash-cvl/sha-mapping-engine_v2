@@ -244,7 +244,7 @@ def test_reset_deletes_the_mapping_and_requeues_the_row(conn, decidable_sku):
         pytest.skip("that row has no mapping rows to delete")
 
     rejection.reject(conn, CHANNEL, decidable_sku, actor=ACTOR)
-    result = rejection.reset_rejected(conn, CHANNEL, actor=ACTOR)
+    result = rejection.reset_rejected(conn, CHANNEL, skus=[decidable_sku], actor=ACTOR)
 
     assert decidable_sku in result.skus
     assert result.mappings_deleted >= before_mappings
@@ -270,7 +270,7 @@ def test_reset_returns_the_sku_list_because_nothing_else_can(conn, decidable_sku
     other PENDING row, so the returned list is the ONLY record of what was
     reset. A caller that drops it cannot recover the scope for the re-run."""
     rejection.reject(conn, CHANNEL, decidable_sku, actor=ACTOR)
-    result = rejection.reset_rejected(conn, CHANNEL, actor=ACTOR)
+    result = rejection.reset_rejected(conn, CHANNEL, skus=[decidable_sku], actor=ACTOR)
 
     assert result.skus, "reset must name what it touched"
     assert decidable_sku in result.skus
@@ -294,7 +294,7 @@ def test_reset_leaves_approved_rows_alone(conn, decidable_sku):
     ).scalar()
 
     rejection.reject(conn, CHANNEL, decidable_sku, actor=ACTOR)
-    rejection.reset_rejected(conn, CHANNEL, actor=ACTOR)
+    rejection.reset_rejected(conn, CHANNEL, skus=[decidable_sku], actor=ACTOR)
 
     approved_after = conn.execute(
         sa.select(sa.func.count()).select_from(source)
@@ -304,17 +304,20 @@ def test_reset_leaves_approved_rows_alone(conn, decidable_sku):
     assert approved_after == approved_before
 
 
-def test_reset_with_nothing_rejected_is_a_no_op(conn):
-    """Called on a clean channel it must report zero rather than raising or,
-    worse, deleting something."""
-    source = db_models.get_table(conn.engine, "staging", f"{CHANNEL}_products")
-    if conn.execute(
-        sa.select(sa.func.count()).select_from(source)
-        .where(rejection._rejected_clause(source))
-    ).scalar():
-        pytest.skip("channel has rejections; this test needs a clean one")
+def test_reset_with_nothing_rejected_is_a_no_op(conn, decidable_sku):
+    """Nothing rejected in scope must report zero, not raise and not delete.
 
-    result = rejection.reset_rejected(conn, CHANNEL, actor=ACTOR)
+    Scoped to ONE sku that is deliberately left unrejected, rather than
+    guarded by "skip if the channel has any rejections". That guard was the
+    only thing standing between this test and the live table, and it did not
+    hold: the test ran channel-wide and wiped 174 real zepto rejections,
+    deleting 520 mapping rows with them. A test must not be able to reach
+    rows it did not create, and a skip condition is not a mechanism -- naming
+    the sku is.
+    """
+    result = rejection.reset_rejected(
+        conn, CHANNEL, skus=[decidable_sku], actor=ACTOR
+    )
     assert result.rows_found == 0
     assert result.rows_reset == 0
     assert result.mappings_deleted == 0
@@ -325,11 +328,34 @@ def test_preview_matches_what_reset_touches(conn, decidable_sku):
     operator and the number changed cannot drift apart."""
     rejection.reject(conn, CHANNEL, decidable_sku, actor=ACTOR)
 
-    preview = rejection.preview_reset(conn, CHANNEL)
-    result = rejection.reset_rejected(conn, CHANNEL, actor=ACTOR)
+    preview = rejection.preview_reset(conn, CHANNEL, skus=[decidable_sku])
+    result = rejection.reset_rejected(conn, CHANNEL, skus=[decidable_sku], actor=ACTOR)
 
     assert preview.rows_found == result.rows_reset
     assert sorted(preview.skus) == sorted(result.skus)
+
+
+def test_no_test_here_resets_a_whole_channel():
+    """No test in this file may call reset_rejected without naming its SKUs.
+
+    These run against the live staging database. An unscoped reset there is
+    not a test, it is a bulk delete: one such call wiped 174 real zepto
+    rejections and 520 mapping rows, and the only thing that was supposed to
+    prevent it was a skip condition that did not hold.
+
+    Checked by reading this file rather than by convention, because the cost
+    of the convention slipping once is measured in other people's work.
+    """
+    import pathlib
+    import re
+
+    source = pathlib.Path(__file__).read_text(encoding="utf-8")
+    calls = re.findall(r"rejection\.(?:reset_rejected|preview_reset)\([^)]*\)",
+                       source, re.S)
+    unscoped = [c for c in calls if "skus=" not in c]
+    assert not unscoped, (
+        "these calls would reset every rejection on the channel: " + str(unscoped)
+    )
 
 
 def test_rejected_clause_does_not_swallow_unreviewed_rows(conn):
