@@ -335,6 +335,40 @@ def test_preview_matches_what_reset_touches(conn, decidable_sku):
     assert sorted(preview.skus) == sorted(result.skus)
 
 
+def test_reset_splits_its_skus_by_engine(conn, decidable_sku):
+    """The re-run launches one engine per leg, so the reset has to say which
+    leg each SKU belongs to.
+
+    Asking the API for both engines spawns two subprocesses, and on a
+    SKU-scoped run one of them finds nothing every time -- three such runs
+    put 272 unasked-for competitor SKUs through the LLM. The split is decided
+    here because the brand rule lives here, not in the browser.
+    """
+    rejection.reject(conn, CHANNEL, decidable_sku, actor=ACTOR)
+    result = rejection.reset_rejected(
+        conn, CHANNEL, skus=[decidable_sku], actor=ACTOR
+    )
+
+    assert set(result.by_engine) == {"himalaya", "competitor"}
+    # Every reset sku lands in exactly one leg, and the legs account for all.
+    flat = result.by_engine["himalaya"] + result.by_engine["competitor"]
+    assert sorted(flat) == sorted(result.skus)
+    assert not (set(result.by_engine["himalaya"])
+                & set(result.by_engine["competitor"]))
+
+
+def test_listing_names_the_engine_for_each_row(conn, decidable_sku):
+    """The per-row "reset and run" button needs to know which engine owns the
+    row; re-deriving the brand rule in the client would be a second copy of
+    it, free to disagree."""
+    rejection.reject(conn, CHANNEL, decidable_sku, actor=ACTOR)
+    d = rejection.listing(conn, CHANNEL, limit=500)
+
+    row = next((r for r in d["rows"] if r["sku"] == decidable_sku), None)
+    assert row is not None
+    assert row["engine"] in ("himalaya", "competitor")
+
+
 def test_no_test_here_resets_a_whole_channel():
     """No test in this file may call reset_rejected without naming its SKUs.
 

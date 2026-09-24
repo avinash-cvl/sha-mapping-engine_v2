@@ -154,3 +154,49 @@ def test_run_detail_modal_is_present():
                     "rd-groups", "rd-failures", "rd-console", "rd-config"):
         assert f'id="{element}"' in html, f"run-detail modal is missing #{element}"
     assert "rundetail.js" in html
+
+
+def test_no_script_in_tests_launches_a_run():
+    """A file in tests/ must not launch an engine run at import time.
+
+    Twice now a verification script has lived here with no test functions at
+    all: pytest collects by filename and executes the module top to bottom,
+    so `c.post("/api/engine/runs", ...)` at module scope fires on every suite
+    run. That spent LLM budget on SKUs nobody asked for and left live runs
+    registered, which made four unrelated auth tests fail with 409.
+
+    Launching a run from inside a test function is fine -- that is a choice
+    someone made. At module scope it is a side effect of collection.
+    """
+    import ast
+    import pathlib
+
+    offenders = []
+    for path in sorted(pathlib.Path(__file__).parent.glob("test_*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        # Module scope is the top-level statements that are NOT a def or a
+        # class -- parsed, not pattern-matched. A regex that tried to strip
+        # function bodies flagged test_auth.py, which calls /runs from inside
+        # a proper test function and is entirely fine.
+        module_scope = ast.Module(
+            body=[n for n in tree.body
+                  if not isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                        ast.ClassDef))],
+            type_ignores=[],
+        )
+        # A CALL to /runs, not a mention of it. test_auth.py lists the path
+        # in a parametrize table of routes to check for 401s -- naming it is
+        # not launching it.
+        launches = any(
+            isinstance(node, ast.Call)
+            and any(isinstance(a, ast.Constant) and a.value == "/api/engine/runs"
+                    for a in node.args)
+            for node in ast.walk(module_scope)
+        )
+        if launches:
+            offenders.append(path.name)
+
+    assert not offenders, (
+        "these launch an engine run at import time, which pytest triggers on "
+        "collection: " + str(offenders)
+    )

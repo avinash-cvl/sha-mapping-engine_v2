@@ -59,6 +59,17 @@ REJECTED = "Rejected"
 APPROVED = "Approved"
 
 
+def _himalaya_brands() -> set[str]:
+    """The brand set, lower-cased, read at call time.
+
+    Imported inside the function because common.config reads os.environ at
+    import time and this module is imported early -- taking a copy at module
+    scope would freeze whatever the environment looked like then.
+    """
+    import common.config as C
+    return {b.strip().lower() for b in C.HIMALAYA_BRANDS}
+
+
 @dataclass(frozen=True)
 class RejectionResult:
     channel: str
@@ -246,6 +257,16 @@ def listing(
                 "sku": r["sku"],
                 "title": r["title"],
                 "brand": r["brand"],
+                # Which engine owns this row, resolved here rather than by the
+                # client re-deriving the brand rule. A "reset and run" that
+                # guessed would either miss the row or launch a second engine
+                # that finds nothing -- the latter is what happened: every
+                # single-SKU reset spawned a competitor run with to_run=0.
+                "engine": (
+                    "himalaya"
+                    if (r["brand"] or "").strip().lower() in _himalaya_brands()
+                    else "competitor"
+                ),
                 "category": r["category"],
                 "subcategory": r["subcategory"],
                 "mapping_status": r["mapping_status"],
@@ -269,6 +290,10 @@ class ResetRejectedResult:
     rows_reset: int         # flipped back to PENDING
     mappings_deleted: int   # mapping rows removed with them
     skus: list[str]         # exactly what was reset -- the re-run's scope
+    # The same SKUs split by which engine owns them, so the re-run launches
+    # one engine per leg instead of both. Launching both spawned a run that
+    # found nothing on one side every time.
+    by_engine: dict[str, list[str]]
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -298,13 +323,22 @@ def preview_reset(
     if skus:
         where.append(source.c.sku.in_(skus))
 
-    skus = conn.execute(
-        sa.select(source.c.sku).where(*where).order_by(source.c.sku)
-    ).scalars().all()
+    # Brand comes back with the sku so the caller can launch one engine per
+    # leg. Deciding that here rather than in the client keeps the brand rule
+    # in one place.
+    rows = conn.execute(
+        sa.select(source.c.sku, source.c.brand).where(*where).order_by(source.c.sku)
+    ).all()
+
+    himalaya = _himalaya_brands()
+    by_engine: dict[str, list[str]] = {"himalaya": [], "competitor": []}
+    for sku, brand in rows:
+        side = "himalaya" if (brand or "").strip().lower() in himalaya else "competitor"
+        by_engine[side].append(sku)
 
     return ResetRejectedResult(
-        channel=channel, rows_found=len(skus), rows_reset=0,
-        mappings_deleted=0, skus=list(skus),
+        channel=channel, rows_found=len(rows), rows_reset=0,
+        mappings_deleted=0, skus=[s for s, _ in rows], by_engine=by_engine,
     )
 
 
@@ -409,7 +443,7 @@ def reset_rejected(
 
     return ResetRejectedResult(
         channel=channel, rows_found=before.rows_found, rows_reset=reset,
-        mappings_deleted=deleted, skus=before.skus,
+        mappings_deleted=deleted, skus=before.skus, by_engine=before.by_engine,
     )
 
 

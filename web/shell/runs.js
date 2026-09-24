@@ -877,6 +877,17 @@
    */
   window.RunLauncher = {
     async launchSkus({ channel, skus, engine = null, onDone = null }) {
+      /* One engine per launch, never both.
+         engine:null asks the API for both, which spawns two subprocesses --
+         and on a SKU-scoped run one of them finds nothing every time. Three
+         such runs put 272 unasked-for competitor SKUs through the LLM. A
+         caller with rows from both sides launches twice, naming each. */
+      if (!engine) {
+        throw new Error(
+          "launchSkus needs an engine ('himalaya' or 'competitor'). "
+          + "Launch once per engine rather than asking for both."
+        );
+      }
       const body = {
         channel, engine, category: null, subcategory: null, skus,
         use_llm: $("llm").checked,

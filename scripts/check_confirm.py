@@ -1,3 +1,18 @@
+"""Manual check: the confirmation dialog's plan matches what /runs launches.
+
+NOT A TEST, despite where this used to live. It has no test functions -- it
+is a script that runs top to bottom and LAUNCHES A REAL ENGINE RUN. Under
+tests/ pytest collected it by filename and executed it during every suite
+run, which processed 8 competitor SKUs nobody asked for and left a live run
+registered that made four unrelated auth tests fail with 409.
+
+Run it by hand when the confirm path needs checking:
+
+    uv run python scripts/check_confirm.py
+
+Credentials come from the environment rather than being hardcoded.
+"""
+import os
 import sys, warnings; warnings.filterwarnings("ignore")
 sys.path.insert(0, r"d:/Himalaya/sha-mapping-engine_v2")
 from fastapi.testclient import TestClient
@@ -8,7 +23,11 @@ def chk(l,g,w):
     print(f"  {'PASS' if good else 'FAIL'}  {l:50} got={g} want={w}")
 
 chk("plan needs auth", c.post("/api/engine/plan", json={"channel":"zepto"}).status_code, 401)
-c.post("/api/session/login", json={"email":"admin@covalenseglobal.com","password":"Admin@123"})
+EMAIL = os.environ.get("CONSOLE_CHECK_EMAIL")
+PASSWORD = os.environ.get("CONSOLE_CHECK_PASSWORD")
+if not (EMAIL and PASSWORD):
+    sys.exit("set CONSOLE_CHECK_EMAIL and CONSOLE_CHECK_PASSWORD first")
+c.post("/api/session/login", json={"email": EMAIL, "password": PASSWORD})
 
 body = {"channel":"zepto","engine":"competitor","category":"lip makeup",
         "subcategory":"lip balms","workers":4,"use_llm":True}

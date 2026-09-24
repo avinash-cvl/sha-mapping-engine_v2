@@ -245,10 +245,21 @@
   function renderStepState() {
     const ready = !!RESET_BATCH?.skus?.length;
     $("rej-rerun").disabled = !ready;
-    $("rej-step-note").textContent = ready
-      ? `${fmt(RESET_BATCH.skus.length)} SKU${RESET_BATCH.skus.length === 1 ? "" : "s"} `
-        + `reset on ${RESET_BATCH.channel} and waiting for a run.`
-      : "Nothing reset yet — step 2 needs a list from step 1.";
+    if (!ready) {
+      $("rej-step-note").textContent =
+        "Nothing reset yet — step 2 needs a list from step 1.";
+      return;
+    }
+    /* Named per engine, because that is how many runs this will launch --
+       one each, never both at once on the same SKUs. */
+    const legs = Object.entries(RESET_BATCH.byEngine || {})
+      .filter(([, l]) => l.length)
+      .map(([e, l]) => `${fmt(l.length)} ${e}`);
+    $("rej-step-note").textContent =
+      `${fmt(RESET_BATCH.skus.length)} SKU${RESET_BATCH.skus.length === 1 ? "" : "s"} `
+      + `reset on ${RESET_BATCH.channel}`
+      + (legs.length ? ` — ${legs.join(", ")}` : "")
+      + `. Will run ${legs.length || 1} engine${legs.length === 1 ? "" : "s"}, one at a time.`;
   }
 
   async function openResetConfirm() {
@@ -314,7 +325,7 @@
       const result = await api("/rejected/reset", {
         method: "POST", body: JSON.stringify({ channel }),
       });
-      RESET_BATCH = { channel, skus: result.skus };
+      RESET_BATCH = { channel, skus: result.skus, byEngine: result.by_engine || {} };
       renderStepState();
       await fillChannels();      // the option labels carry the counts
       await load();
@@ -357,7 +368,9 @@
          <dl class="kv">
            <dt>LLM judge</dt><dd class="${$("llm").checked ? "" : "warn"}">${
              $("llm").checked ? "on — about 3 calls for this SKU" : "OFF — scoring only"}</dd>
-           <dt>Engine</dt><dd>both — the brand filter picks the right one</dd>
+           <dt>Engine</dt><dd>${row?.engine === "himalaya"
+             ? "Himalaya (oneds_master)" : row?.engine === "competitor"
+             ? "Competitor (oneds_competitor)" : "both"}</dd>
            <dt>Workers</dt><dd>${esc($("w").value)}</dd>
          </dl>
          <p class="hint" style="margin-top:8px">Taken from the New run page. Change them
@@ -380,10 +393,16 @@
       });
       if (!res.rows_reset) throw new Error(`${sku} was not reset — is it still rejected?`);
 
-      /* Both engines: the brand filter decides which one owns this row, and
-         guessing here would silently skip it on the wrong leg. */
+      /* One engine, named by the server.
+         Launching both spawned a competitor run that found 0 rows every
+         time -- a wasted subprocess and a meaningless row in run history.
+         The engine comes from /rejected rather than being re-derived here:
+         the brand rule lives in one place and the client is not it. */
+      if (!row?.engine) {
+        throw new Error(`Cannot tell which engine owns ${sku} — reload the page.`);
+      }
       await window.RunLauncher.launchSkus({
-        channel, skus: [sku], engine: null,
+        channel, skus: [sku], engine: row.engine,
         onDone: async () => {
           if ($("rej-channel").dataset.filled) {
             await fillChannels().catch(() => {});
@@ -394,26 +413,37 @@
     });
   }
 
+  /* Never both engines at once.
+   *
+   * A reset batch can hold rows from either side, but launching engine:null
+   * spawns two subprocesses and one of them routinely finds nothing -- three
+   * such runs put 272 unasked-for competitor SKUs through the LLM. So the
+   * batch is split by the engine the server assigned each row, and only the
+   * sides that actually have rows are launched, one at a time.
+   */
   async function rerun() {
     if (!RESET_BATCH?.skus?.length) return;
-    const { channel, skus } = RESET_BATCH;
+    const { channel, byEngine } = RESET_BATCH;
+
+    const legs = Object.entries(byEngine).filter(([, list]) => list.length);
+    if (!legs.length) return;
 
     $("rej-rerun").disabled = true;
-    $("rej-step-note").textContent = "Starting the run…";
     try {
-      await window.RunLauncher.launchSkus({
-        channel, skus,
-        /* Both engines: a reset batch can hold Himalaya and competitor
-           listings alike, and the brand filter decides which is which. */
-        engine: null,
-        onDone: async () => {
-          /* Consumed, so the same batch cannot be run twice -- a second run
-             over the same SKUs costs LLM spend for no new information. */
-          RESET_BATCH = null;
-          renderStepState();
-          if ($("rej-channel").dataset.filled) await load().catch(() => {});
-        },
-      });
+      for (const [engine, list] of legs) {
+        $("rej-step-note").textContent =
+          `Running ${fmt(list.length)} ${engine} SKU${list.length === 1 ? "" : "s"}…`;
+        await window.RunLauncher.launchSkus({
+          channel, skus: list, engine,
+          onDone: async () => {
+            /* Consumed, so the same batch cannot be run twice -- a second
+               run over the same SKUs costs LLM spend for nothing new. */
+            RESET_BATCH = null;
+            renderStepState();
+            if ($("rej-channel").dataset.filled) await load().catch(() => {});
+          },
+        });
+      }
     } catch (e) {
       showError($("errors"), e.message);
       renderStepState();
