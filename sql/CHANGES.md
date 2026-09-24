@@ -143,3 +143,48 @@ CREATE INDEX IX_engine_run_scope
 
 `audit.pipeline_execution_log` and `pipeline_name` are **not** touched — that
 is the existing meaning and it stays.
+
+---
+
+## 016 — Console setup, as one file
+
+**Applied to dev:** 2026-09-24
+**Applied to prod:** _not yet_
+
+`sql/016_console_setup.sql` is the single file to run by hand against any
+database the console will point at. It supersedes running `015` and the `015a`
+rename separately — it creates the tables as `engine` from the start, and
+renames `pipeline` → `engine` only where an older `015` left that column
+behind.
+
+Idempotent, verified by running it twice against a scratch database: the
+second run skips every object and changes nothing.
+
+**Creates:** `audit.engine_run`, `audit.engine_run_config`,
+`audit.engine_run_outcome`, `audit.vw_engine_run_compare`, and the four
+review columns (`review_status`, `reviewer_comment`, `reviewed_by`,
+`reviewed_at`) on each `staging.<channel>_products` table **if missing** —
+on the reference database they already exist, so that block is a no-op.
+
+**Does not create a user.** The console authenticates against `config.users`,
+which the steward review portal also owns; an INSERT there grants access to
+that portal too. Grant console access by promoting an existing account:
+
+```sql
+UPDATE config.users SET role = 'ADMIN', updated_at = SYSUTCDATETIME()
+WHERE email = 'someone@covalenseglobal.com';
+```
+
+**Pre-flight aborts** on a database that is not an engine database, naming
+every missing table at once and creating nothing — verified against an empty
+database: 0 objects before, 0 after.
+
+Two things that only surfaced by running it rather than reading it:
+
+* `sqlcmd` connects with `QUOTED_IDENTIFIER OFF`, which filtered indexes
+  refuse. The file now sets it explicitly per batch, and the index is wrapped
+  in TRY/CATCH — it is an optimisation, and letting it abort the batch once
+  left a channel without its review columns entirely.
+* `RAISERROR` at severity 16 does not stop `sqlcmd`. The original pre-flight
+  printed three failures and then announced "Pre-flight passed" and built
+  everything anyway. It uses `THROW` plus `:on error exit` now.

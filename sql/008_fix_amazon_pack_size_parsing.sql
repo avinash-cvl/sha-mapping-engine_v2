@@ -50,8 +50,7 @@
 -- Measured over all 153,822 amazon rows: ML 38658, GM 29385, KG 3915,
 -- TAB 2521, OZ 2331, CAP 1986, L 1954.
 
-USE [AureusSentinel_Latest]
-GO
+
 SET ANSI_NULLS ON
 GO
 SET QUOTED_IDENTIFIER ON

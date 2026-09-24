@@ -49,8 +49,7 @@
 -- original CASE handled plus the spelled-out forms, and the known-bad rows.
 -- Measured on staging.zepto_products; see the commit message for counts.
 
-USE [AureusSentinel_Latest]
-GO
+
 SET ANSI_NULLS ON
 GO
 SET QUOTED_IDENTIFIER ON

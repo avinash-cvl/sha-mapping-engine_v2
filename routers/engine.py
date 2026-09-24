@@ -1549,7 +1549,12 @@ def settings_members(conn: db.Connection = Depends(get_conn)) -> list[dict]:
             "name": r["name"],
             "email": r["email"],
             "role": (r["role"] or "").upper(),
-            "is_active": str(r["status"] or "").strip().upper() in ("ACTIVE", "1", "TRUE", "Y"),
+            # config.users.status is a BIT, not a label. Comparing it as text
+            # made bool(1) render as "1" -> matched, but bool(0) render as
+            # "0" -> also truthy under some drivers; and a driver returning
+            # True/False made str() give "True", which matched nothing. bool()
+            # is what the column actually means.
+            "is_active": bool(r["status"]),
             "last_login_at": r["last_login_at"].isoformat() if r["last_login_at"] else None,
         }
         for r in rows
