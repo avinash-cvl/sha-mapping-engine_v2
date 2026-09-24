@@ -108,7 +108,11 @@
 /* ---------------- stat tiles ----------------
    One hairline grid, not five floating cards: these are four readings off the
    same instrument and should look like one strip. */
-.tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--line-soft);
+/* Column count follows the content: auto-fit keeps five tiles even and lets
+   a four-tile strip fill the row, instead of a hard 4 that wraps the fifth
+   onto a line of its own. */
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+  gap:1px;background:var(--line-soft);
   border-radius:9px;overflow:hidden;border:1px solid var(--line-soft)}
 @media(max-width:700px){.tiles{grid-template-columns:repeat(2,1fr)}}
 .tile{background:var(--surface);padding:14px 15px;display:flex;flex-direction:column;gap:3px}

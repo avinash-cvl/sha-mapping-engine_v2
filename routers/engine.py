@@ -1812,3 +1812,81 @@ def export_csv(
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+# ---------------------------------------------------------------- unmatched
+@router.get("/unmatched")
+def unmatched(
+    channel: str | None = None,
+    engine: str | None = None,
+    limit: int = Query(200, le=2000),
+    conn: db.Connection = Depends(get_conn),
+) -> dict:
+    """Rows the engine has never produced a match for.
+
+    PENDING with zero mapping rows. Every other screen reports what a run DID;
+    this one reports what it did not, which is the harder thing to notice --
+    a run can report "177 of 177 processed" and still leave rows behind if
+    they were re-queued after it took its snapshot of what to select.
+
+    Four such rows survived the 24 Sep rejected re-run exactly that way: the
+    reset wrote them to PENDING a moment after the engine had already chosen
+    its batch, so they were neither processed nor reported as skipped.
+    """
+    if channel:
+        _validate(channel, engine)
+    channels = [channel] if channel else list(CHANNELS)
+
+    himalaya = [b.strip().lower() for b in C.HIMALAYA_BRANDS]
+    rows: list[dict] = []
+    totals: dict[str, int] = {}
+
+    for ch in channels:
+        try:
+            src = db_models.get_table(conn.engine, "staging", f"{ch}_products")
+            mapping = db_models.get_table(conn.engine, "staging", f"{ch}_product_mapping")
+        except Exception:
+            continue
+
+        where = [
+            sa.or_(src.c.mapping_status == "PENDING", src.c.mapping_status.is_(None)),
+            sa.not_(sa.exists().where(mapping.c[f"{ch}_product_id"] == src.c.id)),
+        ]
+        if engine:
+            where.append(scope._brand_clause(src, engine))
+
+        totals[ch] = conn.execute(
+            sa.select(sa.func.count()).select_from(src).where(*where)
+        ).scalar() or 0
+
+        for r in conn.execute(
+            sa.select(src.c.sku, src.c.title, src.c.brand, src.c.category,
+                      src.c.subcategory, src.c.mapping_status, src.c.review_status)
+            .where(*where).order_by(src.c.category, src.c.subcategory, src.c.sku)
+            .limit(limit)
+        ).mappings():
+            rows.append({
+                "channel": ch,
+                "sku": r["sku"],
+                "title": r["title"],
+                "brand": r["brand"],
+                "category": r["category"],
+                "subcategory": r["subcategory"],
+                "mapping_status": r["mapping_status"],
+                "review_status": r["review_status"],
+                "engine": (
+                    "himalaya"
+                    if (r["brand"] or "").strip().lower() in himalaya
+                    else "competitor"
+                ),
+            })
+
+    return {
+        "total": sum(totals.values()),
+        "by_channel": totals,
+        "rows": rows[:limit],
+        "note": (
+            "PENDING with no mapping rows at all. These are runnable now -- "
+            "the scope resolver counts them in to_run."
+        ),
+    }

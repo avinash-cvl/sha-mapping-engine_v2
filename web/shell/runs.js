@@ -148,6 +148,60 @@
       }));
   }
 
+  /* ------------------------------------------------------- never matched */
+
+  /* Rows the engine has no answer for at all.
+   *
+   * Every other figure on this page reports what a run DID. This reports what
+   * it did not, which is the harder thing to notice: a run can say "177 of
+   * 177 processed" and still leave rows behind, because it selects its batch
+   * once at the start and anything re-queued after that moment is simply not
+   * in it. Four rows survived the rejected re-run exactly that way.
+   */
+  async function loadUnmatched() {
+    const d = await api("/unmatched?engine=himalaya&limit=200");
+    $("tile-unmatched").textContent = fmt(d.total);
+
+    if (!d.total) {
+      $("unmatched-note").hidden = true;
+      return;
+    }
+    const byChannel = Object.entries(d.by_channel)
+      .filter(([, n]) => n)
+      .map(([ch, n]) => `${esc(ch)} ${fmt(n)}`)
+      .join(", ");
+
+    $("unmatched-note").hidden = false;
+    $("unmatched-body").innerHTML =
+      `<b>${fmt(d.total)} Himalaya listing${d.total === 1 ? " has" : "s have"}
+         no match at all.</b> PENDING with zero mapping rows — ${byChannel}.
+       A run reports the batch it selected, so a row re-queued after that
+       moment is neither processed nor reported as skipped.
+       <div class="tw tw-short" style="margin-top:10px;background:var(--surface)">
+         <table>
+           <thead><tr><th>Listing</th><th>Channel</th><th>Category</th><th>SKU</th></tr></thead>
+           <tbody>${d.rows.slice(0, 10).map((r) => `<tr>
+             <td class="t-title">${esc(r.title || "—")}</td>
+             <td><span class="tag">${esc(r.channel)}</span></td>
+             <td class="cell-cat">${esc(r.category || "—")}
+               <div class="sc">${esc(r.subcategory || "")}</div></td>
+             <td class="m">${esc(r.sku)}</td>
+           </tr>`).join("")}</tbody>
+         </table>
+       </div>
+       ${d.rows.length > 10
+         ? `<p class="hint" style="margin:8px 0 0">Showing 10 of ${fmt(d.total)}.</p>` : ""}
+       <div class="actions" style="margin-top:10px">
+         <button class="btn sm" id="unmatched-copy">Copy SKU list</button>
+         <span class="stale">Paste into New run → Scope by → SKU list to process them.</span>
+       </div>`;
+
+    $("unmatched-copy").addEventListener("click", () => {
+      navigator.clipboard?.writeText(d.rows.map((r) => r.sku).join("\n"));
+      $("unmatched-copy").textContent = `Copied ${fmt(d.rows.length)}`;
+    });
+  }
+
   /* ------------------------------------------------------------ composer */
 
   function fillChannels() {
@@ -849,8 +903,14 @@
       fillChannels();
       fillCategories();
       await loadRuns();
+      await loadUnmatched().catch(() => {});
     },
-    refresh() { return loadRuns().catch(() => {}); },
+    refresh() {
+      return Promise.all([
+        loadRuns().catch(() => {}),
+        loadUnmatched().catch(() => {}),
+      ]);
+    },
   };
 
   window.Pages["runs-new"] = {

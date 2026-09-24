@@ -88,6 +88,12 @@
       <div class="tile"><span class="n" id="tile-queued">—</span><span class="k">Queued</span></div>
       <div class="tile warnv"><span class="n" id="tile-failed">—</span><span class="k">Failed today</span></div>
       <div class="tile critv"><span class="n" id="tile-stuck">—</span><span class="k">Stuck — needs reconcile</span></div>
+      <div class="tile warnv"><span class="n" id="tile-unmatched">—</span><span class="k">Never matched</span></div>
+    </div>
+
+    <div class="note" id="unmatched-note" hidden>
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 8.5v4.5M12 16.5v.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M10.3 3.9 2.6 17.2A2 2 0 0 0 4.3 20.2h15.4a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" stroke="currentColor" stroke-width="1.7"/></svg>
+      <div style="min-width:0" id="unmatched-body"></div>
     </div>
 
     <div class="note crit" id="stuck-note" hidden>
