@@ -339,20 +339,29 @@ def divide_to_unit_size(
     to divide is the unit word being read as a quantity.
 
     Returns raw_value unchanged (not None) when the guard does not clear --
-    "leave it alone" means exactly that, not "discard the reading".
+    "leave it alone" means exactly that, not "discard the reading". That
+    includes a value that isn't actually numeric: the master's
+    normalized_pack_size carries the literal string 'NULL' on some rows
+    (normalize_pack() downstream already treats that as "no usable size"),
+    and this function must be exactly as tolerant of it -- an unguarded
+    float() here crashed step 3 on the very first such row, which is not a
+    corrupt-data problem this function gets to turn into a run failure.
     """
+    if raw_value is None or count is None or not (1 < count <= _MAX_DIVISIBLE_COUNT):
+        return raw_value
+    try:
+        numeric = float(raw_value)
+    except (TypeError, ValueError):
+        return raw_value
     if (
-        raw_value is not None
-        and count is not None
-        and 1 < count <= _MAX_DIVISIBLE_COUNT
-        and float(raw_value) % count == 0
-        and float(raw_value) / count > 0
+        numeric % count == 0
+        and numeric / count > 0
         # ...and the seller/master did not write this number themselves. See
         # _title_states(): a figure the title states is the DECLARED
         # per-unit size, not a combined total to be divided.
-        and not _title_states(title, float(raw_value))
+        and not _title_states(title, numeric)
     ):
-        return float(raw_value) / count
+        return numeric / count
     return raw_value
 
 
