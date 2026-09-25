@@ -337,7 +337,21 @@ TYPE_HARD_INCOMPAT: list[tuple[str, str]] = [
     ("gift", "powder"),
     ("hair", "wash"), ("hair", "cream"), ("hair", "serum"), ("hair", "gel"),
     ("hair", "mask"), ("hair", "toner"),
-    ("diaper", "wash"), ("diaper", "cream"), ("diaper", "serum"),
+    # NOT ("diaper", "cream"): a "diaper RASH CREAM" listing matches both
+    # vocabulary terms at once (_type_cluster is longest-match-wins, so
+    # "diaper rash" (11 chars) beats "cream" (5) and the source is read as
+    # pure "diaper" even though its own title says "cream" too), and the
+    # master genuinely files diaper-rash treatments under BABY CREAMS
+    # alongside plain baby creams that don't repeat the word "diaper"
+    # ("BABY RASH RELIEF CREAM WITH PURE COW GHEE"). With the pair listed,
+    # that correct candidate took hard_incompatible=True and a x0.40
+    # penalty purely for not saying "diaper" in its own title -- measured on
+    # blinkit 559220, where the wrong "DIAPER RASH CREAM" candidate (whose
+    # title happens to repeat "diaper") won at 0.99 over the right one's
+    # crippled score. Diaper PANTS vs a cream still won't score well on the
+    # other five blended signals -- they share almost no text or semantic
+    # overlap -- so dropping this pair costs nothing there.
+    ("diaper", "wash"), ("diaper", "serum"),
     ("nursing", "wash"), ("nursing", "cream"), ("nursing", "serum"),
     ("nursing", "gel"), ("nursing", "mask"), ("nursing", "lip"),
     ("powder", "wash"), ("powder", "serum"), ("powder", "gel"),
