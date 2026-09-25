@@ -78,7 +78,20 @@ PET_GROOM = "COMPANION CARE - GROOMING"
 PET_SUPP = "COMPANION CARE - SUPPLEMENTS"
 
 ORGANIC = r"\borganic\b|\bcertified organic\b|\busda\b"
-MENS_CUE = r"\bfor men\b|\bmen'?s\b|\bmens\b|\bhomme\b|\bbeard\b"
+# Bare "men" (no apostrophe, no "for") is the majority spelling on these
+# listings -- "Himalaya Men Active Sport Face Wash", "Himalaya MEN Power
+# Glow Licorice Face Wash" -- and its absence here meant those listings
+# never reached the MENS-CARE master node at all: the source's own category
+# gate resolved to the generic ('face wash', 'face wash') node instead of
+# ('MENS CARE', 'FACE WASH'), so the correct candidate was never even a
+# retrieval hit, no matter how the scorer weighed it. Measured on blinkit
+# 371833 (title has no apostrophe) and 67 other himalaya rows across
+# zepto/blinkit/amazon with the same bare spelling.
+MENS_CUE = r"\bfor men\b|\bmen'?s\b|\bmens\b|\bhomme\b|\bbeard\b|\bmen\b"
+# Vetoes MENS_CUE above whenever the title also says "women" -- "For Both
+# Men And Women", "For Women & Men" are unisex lines, not the Mens-Care
+# range, and bare \bmen\b alone cannot tell the two apart.
+NOT_UNISEX = r"\bwomen\b"
 KIDS_CUE = r"\bkids?\b|\bchildren\b|\bbaby\b|\btoddler\b|\bjunior\b"
 
 PACKS = {}
@@ -101,9 +114,9 @@ PACKS["face care"] = CategoryPack(
              subcats=("face creams", "night creams"),
              title=r"\bpigmentation\b|\bdark spot\b|\bmelasma\b|\bde[- ]?tan\b"),
         Rule("men's face wash", MENS, "FACE WASH", 0.88,
-             subcats=("face wash",), title=MENS_CUE),
+             subcats=("face wash",), title=MENS_CUE, not_title=NOT_UNISEX),
         Rule("men's face cream", MENS, "FACE CREAMS", 0.86,
-             subcats=("face creams", "night creams"), title=MENS_CUE),
+             subcats=("face creams", "night creams"), title=MENS_CUE, not_title=NOT_UNISEX),
         Rule("micellar water", FACE_OTH, "MICELLAR WATER", 0.92,
              title=r"\bmicellar\b"),
         Rule("cleansing milk / toner", FACE_CLN, "TONER / MILK", 0.90,
@@ -206,7 +219,7 @@ PACKS["hair care"] = CategoryPack(
              subcats=("hair regrowth treatments", "hair lotions")),
         Rule("men's hair gel", MENS, "HAIR GELS", 0.90, subcats=("hair gels",)),
         Rule("men's hair cream", MENS, "HAIR CREAMS", 0.86,
-             subcats=("hair creams",), title=MENS_CUE),
+             subcats=("hair creams",), title=MENS_CUE, not_title=NOT_UNISEX),
         Rule("henna", HAIR, "HENNA", 0.93, subcats=("hennas",)),
         Rule("conditioner", HAIR, "CONDITIONER", 0.93, subcats=("conditioners",)),
         Rule("hair oil", HAIR, "HAIR OILS", 0.94, subcats=("hair oil",)),
