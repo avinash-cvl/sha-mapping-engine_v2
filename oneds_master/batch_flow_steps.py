@@ -525,8 +525,27 @@ def step_3_build_master_lookup(
         # would be worse than the status quo: pack_score() treats a unit
         # mismatch as a hard 0.0, and the master says 'GM' where the source
         # says 'g'. Hence normalize_pack() on both halves.
-        pack = stage_attributes.normalize_pack(
+        #
+        # normalized_pack_size is the COMBINED size on a multipack row too --
+        # "PURE HANDS ... 2N X 750ML ... PRICE OFF" carries 1500, not the 750
+        # per unit. Left undivided, that 1500 met a genuine 750ml single's
+        # pack_value=750 and pack_score() read 750/1500=0.5 as a mismatch,
+        # steering the ensemble at the SINGLE unit over the correct 2-pack --
+        # measured on blinkit SKUs 489760/489763, both "pack of 2" listings
+        # whose own staging pack_size (1500, divided by pack_no=2 on the
+        # source side per divide_to_unit_size) should have matched the
+        # 2-pack, not lost to it. divide_to_unit_size() is the same divide,
+        # guarded the same way, that extract_attributes() already applies to
+        # the source column -- reused here rather than re-derived so the two
+        # sides can never drift on what "combined vs unit" means.
+        master_count = stage_attributes.parse_pack_count(row.normalized_title)
+        pack_size_value = stage_attributes.divide_to_unit_size(
             getattr(row, "normalized_pack_size", None),
+            row.normalized_title,
+            master_count,
+        )
+        pack = stage_attributes.normalize_pack(
+            pack_size_value,
             getattr(row, "normalized_uom", None),
         )
         if pack is None:
@@ -553,7 +572,7 @@ def step_3_build_master_lookup(
             pack_type=getattr(row, "pack_type", None) or "",
             # The master carries no count column -- "(PACK OF 3)", "24x10g",
             # "6N(5N+FREE 1N)" and "54'S" all live in the title only.
-            pack_count=stage_attributes.parse_pack_count(row.normalized_title),
+            pack_count=master_count,
             text=(
                 row.search_text
                 or row.normalized_title
@@ -1208,6 +1227,92 @@ def step_6b_apply_crosswalk_shortcircuit(
     logger.info("STEP 6B COMPLETED")
 
     return resolved, remaining
+
+
+def step_6b_persist_crosswalk_resolved(
+    conn: db.Connection,
+    source_table: str,
+    run_id: str,
+    resolved: list[MatchResult],
+) -> int:
+    """Write the crosswalk's answer for rows the short-circuit pulled out.
+
+    WHY THIS EXISTS
+
+    step_6b_apply_crosswalk_shortcircuit's docstring has always said "caller
+    is responsible for persisting `resolved`", and for a long time no caller
+    did. A short-circuited row was removed from the batch, never scored,
+    never written to <channel>_product_mapping, and left at PENDING -- while
+    the run counted it as processed. Four rows reached that state on 24 Sep
+    and were absent from every downstream reader: not a failure, not a skip,
+    just missing.
+
+    It stayed hidden because the review portal normally writes the crosswalk
+    entry and the source row together, so the row was already resolved before
+    the engine ever saw it and the missing write changed nothing. Only a row
+    reset back to PENDING exposes the gap.
+
+    WHAT IT DELIBERATELY DOES NOT DO
+
+    It does not re-derive mapping_status. An approved row's status is its
+    own -- AutoMatch, StewardReview, LowConfidence, whatever it held when the
+    steward approved it -- and the approval itself lives in review_status,
+    not here. Stamping a fresh engine tier over that would let a run silently
+    change how a governed row reads in the portal, which is exactly what the
+    original comment warned against even as the code did nothing at all.
+
+    So the existing status is read back and re-applied. A row that somehow
+    has none falls back to 'AutoMatch', which is what a rank-1 crosswalk
+    match is.
+
+    Returns the number of SKUs persisted.
+    """
+    if not resolved:
+        return 0
+
+    # channel_key is derived from source_table, the same way step_15 does it
+    # -- there is no separate "which channel" argument anywhere in this
+    # pipeline, only the table name the whole group loop already carries.
+    channel_key = get_channel_from_source_table(source_table)
+    channel_tables = db_models.resolve_channel_tables(conn.engine, channel_key)
+    source_products = channel_tables.products
+
+    persisted = 0
+    for result in resolved:
+        source_row_id = result.source.source_row_id
+
+        # The status the row already carries, so the approval's meaning
+        # survives the run untouched.
+        existing = conn.execute(
+            sa.select(source_products.c.mapping_status)
+            .where(source_products.c.id == source_row_id)
+        ).scalar()
+        status = existing if existing and existing != "PENDING" else "AutoMatch"
+
+        try:
+            db.persist_sku_disposition(
+                conn=conn,
+                channel_tables=channel_tables,
+                batch_id=run_id,
+                results=[result],
+                mapping_status=status,
+                audit_entries=[],
+            )
+            persisted += 1
+        except Exception:
+            # One SKU failing must not abandon the rest: each disposition is
+            # its own transaction, and a crosswalk row that cannot be written
+            # is a row to investigate, not a reason to lose the others.
+            logger.exception(
+                "STEP 6B: could not persist crosswalk result for sku=%s",
+                getattr(result.source, "sku", "?"),
+            )
+
+    logger.info(
+        "STEP 6B PERSISTED | %d / %d crosswalk-resolved SKUs written",
+        persisted, len(resolved),
+    )
+    return persisted
 
 
 # ============================================================

@@ -203,12 +203,22 @@ def _title_states(text: str | None, value: float) -> bool:
     across 686 himalaya multipack rows this costs nothing: on every row where
     the divide is genuinely right the combined total does not appear in the
     title ("Baby Lotion (400Ml) (Pack Of 2)" carries 400, never 800).
+
+    The lookbehind rejects a preceding DIGIT or '.' (so "150" inside "1500"
+    is not a false hit on "150"), but deliberately allows a preceding letter
+    -- "3X30ML" and "2X100ML" glue the multiplier straight onto the number
+    with no space, and the per-unit size stated right there ("30", "100") is
+    exactly as declared as it would be with a space before it. A plain word
+    boundary treated 'X' as disqualifying, so "PURE HANDS 90ML (3X30ML)"
+    (normalized_pack_size already the correct per-unit 30) failed this check,
+    divide_to_unit_size() halved an already-correct 30ml to 15ml, and
+    pack_score() then read the row as a 2x mismatch against itself.
     """
     if not text:
         return False
     # Integral values are written without the ".0" ("60", not "60.0").
     needle = f"{value:.10g}"
-    return re.search(rf"(?<![\w.]){re.escape(needle)}(?![\d.])", text) is not None
+    return re.search(rf"(?<![\d.]){re.escape(needle)}(?![\d.])", text) is not None
 
 
 def parse_pack_count(text: str | None) -> int | None:
@@ -301,6 +311,51 @@ def pack_score(
     return min(source_value, master_value) / max(source_value, master_value)
 
 
+def divide_to_unit_size(
+    raw_value: float | None,
+    title: str | None,
+    count: int | None,
+) -> float | None:
+    """A structured pack_size column back down to a single unit's size, when
+    it looks like it is stating the COMBINED size of `count` units.
+
+    Shared between the source and master sides of step 3/5: a "Pack of 3" of
+    a 30g sheet mask can arrive as a staging column reading 90g (source) or
+    as a master title's own normalized_pack_size reading 90g against a
+    "3N X 30G" title (master) -- both are the same shape of number, and
+    pack_score() needs both folded to the per-unit 30g or it compares a
+    combined total against a unit size and calls that a mismatch.
+    Un-guarded division is unsafe on either side, so this is the one place
+    both call into rather than two copies of the same guard drifting apart.
+
+    Guarded by divisibility: a clean quotient means the value really was
+    count x unit. A tablet count or a mg strength that merely happens to sit
+    alongside a pack count would not divide evenly, and is left alone.
+    _MAX_DIVISIBLE_COUNT guards against a count that is really a weight:
+    "Himalaya Baby Powder (Pack of 200 Gram)" parses to count=200, and
+    dividing its 200g by that yields a 1g baby powder. A genuine retail
+    multipack is small -- measured across 686 himalaya multipack rows, every
+    true one is <= 12 -- so a larger "count" against a pack_size it happens
+    to divide is the unit word being read as a quantity.
+
+    Returns raw_value unchanged (not None) when the guard does not clear --
+    "leave it alone" means exactly that, not "discard the reading".
+    """
+    if (
+        raw_value is not None
+        and count is not None
+        and 1 < count <= _MAX_DIVISIBLE_COUNT
+        and float(raw_value) % count == 0
+        and float(raw_value) / count > 0
+        # ...and the seller/master did not write this number themselves. See
+        # _title_states(): a figure the title states is the DECLARED
+        # per-unit size, not a combined total to be divided.
+        and not _title_states(title, float(raw_value))
+    ):
+        return float(raw_value) / count
+    return raw_value
+
+
 def extract_attributes(source: SourceProduct) -> SourceProduct:
     """Populate pack_value/pack_unit via rules. sub_brand/variant are left
     None here -- flow.py calls agents.attribute_fallback.extract() for rows
@@ -326,29 +381,9 @@ def extract_attributes(source: SourceProduct) -> SourceProduct:
         # handled above) and dividing again would be wrong. This path is only
         # reached when the title is silent, which is exactly when the staging
         # column is the sole source and its combined reading goes unchallenged.
-        #
-        # Guarded by divisibility: a clean quotient means the value really was
-        # count x unit. A tablet count or a mg strength that merely happens to
-        # sit alongside a pack_no would not divide evenly, and is left alone.
-        # _MAX_DIVISIBLE_COUNT guards against a count that is really a weight:
-        # "Himalaya Baby Powder (Pack of 200 Gram)" parses to count=200, and
-        # dividing its 200g by that yields a 1g baby powder. A genuine retail
-        # multipack is small -- measured across 686 himalaya multipack rows,
-        # every true one is <= 12 -- so a larger "count" against a pack_size it
-        # happens to divide is the unit word being read as a quantity.
-        staging_value = source.pack_value
-        if (
-            staging_value is not None
-            and source.pack_count is not None
-            and 1 < source.pack_count <= _MAX_DIVISIBLE_COUNT
-            and float(staging_value) % source.pack_count == 0
-            and float(staging_value) / source.pack_count > 0
-            # ...and the seller did not write this number themselves. See
-            # _title_states(): a figure the title states is the DECLARED
-            # per-unit size, not a combined total to be divided.
-            and not _title_states(source.title, float(staging_value))
-        ):
-            staging_value = float(staging_value) / source.pack_count
+        staging_value = divide_to_unit_size(
+            source.pack_value, source.title, source.pack_count
+        )
         parsed = normalize_pack(staging_value, source.pack_unit)
     if parsed is None and source.pack_unit is None:
         # A size with no unit at all. The staging uom column is NULL on a
