@@ -438,6 +438,27 @@ PACKS["medication & remedies"] = CategoryPack(
     # cough & cold fell through to the generic KOFLET rule below.
     him_lookup=_scoped(OTX_F, PH_F, BABY_TOI),
     rules=[
+        # "cough & cold" is a 1DS subcategory name, not a Himalaya dosage
+        # form -- it covers Koflet syrup/lozenges AND the unrelated Cold
+        # Balm line, which the blanket KOFLET rule below used to swallow
+        # whole. "Himalaya Cold Balm" (title says nothing about syrup or
+        # lozenges) gated to KOFLET and scored 0.77 against a
+        # syrup+balm-combo master row, never even reaching the correct
+        # plain COLD BALM 10g (health & wellness's own "balm format" rule,
+        # line 424 above, never runs here -- it lives in a different pack
+        # this category doesn't consult). Ordered before KOFLET so an
+        # unambiguous balm title wins first.
+        #
+        # not_title excludes bundle language: "Kolfet Syrup+Cold Balm...
+        # Free" and "Cold Balm Combo" are genuinely ambiguous about which
+        # product is the primary one, and stay on the KOFLET path below
+        # rather than this rule guessing which side of the bundle it is.
+        # Deliberately NOT \bwith\b alone -- "Cold Balm Rapid Action WITH
+        # Eucalyptus" names an ingredient, not a second product, and a bare
+        # "with" veto would have excluded it from its own correct rule.
+        Rule("cold balm (not a cough syrup/lozenge)", OTX_O, "BALMS", 0.84,
+             subcats=("cough & cold",), title=r"\bbalm\b",
+             not_title=r"\bcombo\b|\bkit\b|\bfree\b|\+|\bsyrup\b"),
         Rule("cough formulation", OTX_F, "KOFLET", 0.80, subcats=("cough & cold",)),
         # 'syrups' names a dosage form and nothing else. Ten unrelated Himalaya
         # brands ship as syrups, so no category-level rule can resolve it.
