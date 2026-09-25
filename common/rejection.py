@@ -97,6 +97,124 @@ def _rejected_clause(source):
     ) == REJECTED.upper()
 
 
+def _approved_clause(source):
+    """Rows a steward has approved. Mirrors scope._approved_clause -- kept
+    local rather than imported so this module has no dependency on scope.py,
+    which itself imports rejection. Same wording, so the two can never
+    silently disagree about what "approved" means."""
+    if not hasattr(source.c, "review_status"):
+        return sa.false()
+    return sa.func.upper(
+        sa.func.ltrim(sa.func.rtrim(source.c.review_status))
+    ) == APPROVED.upper()
+
+
+def _not_approved_clause(source):
+    """Rows a steward has NOT approved -- includes rejected AND unreviewed.
+
+    Same wording as scope._not_approved_clause (not imported, for the same
+    reason _approved_clause above isn't): NULL is not 'APPROVED', so this is
+    spelled out as IS NULL OR <> 'APPROVED' rather than negating the approved
+    clause, which the three-valued-logic trap would silently turn into
+    "excludes every unreviewed row".
+    """
+    if not hasattr(source.c, "review_status"):
+        return sa.true()
+    return sa.or_(
+        source.c.review_status.is_(None),
+        sa.func.upper(
+            sa.func.ltrim(sa.func.rtrim(source.c.review_status))
+        ) != APPROVED.upper(),
+    )
+
+
+# Scopes a reset/listing/preview can be parameterized over. "rejected" is the
+# original, narrower scope every existing caller still gets by default;
+# "non_approved" is the new, wider one the review screen needs (unreviewed +
+# rejected, but never a steward-approved row -- reset_rejected's guarantee
+# that approved rows are never touched holds for both).
+_SCOPE_CLAUSES = {
+    "rejected": _rejected_clause,
+    "non_approved": _not_approved_clause,
+}
+
+# Applied to every preview_reset/reset_rejected WHERE unconditionally, in
+# addition to whatever _scope_clause(scope) already excludes. An approval
+# writes a crosswalk row that step 6B short-circuits on forever -- deleting
+# its mapping row here would leave the crosswalk and the mapping table
+# disagreeing, silently, until the next run "fixes" it back. That is not a
+# failure this function gets to risk on a scope string being right, so the
+# exclusion is spelled out here a second time rather than trusted to
+# _SCOPE_CLAUSES alone.
+NOT_APPROVED_GUARD = _not_approved_clause
+
+
+def _scope_clause(scope: str):
+    try:
+        return _SCOPE_CLAUSES[scope]
+    except KeyError:
+        raise ValueError(f"scope must be one of {tuple(_SCOPE_CLAUSES)}, got {scope!r}") from None
+
+
+def _engine_clause(source, engine: str | None):
+    """Rows belonging to one engine, by the same brand-membership rule
+    listing()/review_listing() use to label a row "himalaya" or "competitor".
+
+    Not imported from scope.py: scope.py imports this module, so importing
+    scope back would be circular. engine=None matches everything -- the
+    unfiltered case every existing caller of counts() still gets.
+    """
+    if engine is None:
+        return sa.true()
+    himalaya = _himalaya_brands()
+    if not hasattr(source.c, "brand"):
+        return sa.true()
+    in_himalaya = sa.func.lower(sa.func.ltrim(sa.func.rtrim(source.c.brand))).in_(himalaya)
+    if engine == "himalaya":
+        return in_himalaya
+    if engine == "competitor":
+        return sa.or_(source.c.brand.is_(None), sa.not_(in_himalaya))
+    raise ValueError(f"engine must be 'himalaya' or 'competitor', got {engine!r}")
+
+
+def counts(conn, channel: str, engine: str | None = None) -> dict:
+    """Approved / rejected / non-approved totals for one channel.
+
+    non_approved is NOT approved_total's complement restricted to
+    "unreviewed" -- it is everything that isn't approved, rejected rows
+    included, matching _not_approved_clause exactly so this number and the
+    engine's own selection count never disagree. pending is the number of
+    those that are also untouched by review (NULL review_status), which is
+    the more useful figure to show next to "rejected" on a three-way tile.
+
+    `engine` narrows every tile to "himalaya" or "competitor" rows only, by
+    the same brand rule the grid labels rows with. None (the default) counts
+    the whole channel, unchanged from before this parameter existed.
+    """
+    source = db_models.get_table(conn.engine, "staging", f"{channel}_products")
+    engine_where = _engine_clause(source, engine)
+
+    def count(clause) -> int:
+        return conn.execute(
+            sa.select(sa.func.count()).select_from(source).where(clause, engine_where)
+        ).scalar() or 0
+
+    approved = count(_approved_clause(source))
+    rejected = count(_rejected_clause(source))
+    non_approved = count(_not_approved_clause(source))
+    total = count(sa.true())
+
+    return {
+        "channel": channel,
+        "engine": engine,
+        "approved": approved,
+        "rejected": rejected,
+        "non_approved": non_approved,
+        "pending": non_approved - rejected,
+        "total": total,
+    }
+
+
 def reject(
     conn,
     channel: str,
@@ -283,6 +401,124 @@ def listing(
     }
 
 
+_STATUS_FILTERS = {
+    "approved": _approved_clause,
+    "rejected": _rejected_clause,
+    "non_approved": _not_approved_clause,
+    # "pending" narrows non_approved to rows nobody has touched at all --
+    # non_approved alone would still include rejected rows, which is the
+    # wrong list to hand someone who asked for "everything still pending".
+    "pending": lambda source: sa.and_(
+        _not_approved_clause(source),
+        sa.not_(_rejected_clause(source)),
+    ),
+    "all": lambda source: sa.true(),
+}
+
+
+def review_listing(
+    conn,
+    channel: str,
+    *,
+    status: str = "all",
+    category: str | None = None,
+    engine_filter=None,
+    q: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict:
+    """Every record on the channel, filterable by review status.
+
+    The general-purpose grid behind the counts screen: "all" shows approved,
+    rejected and pending side by side so an operator can run any individual
+    SKU from one place, rather than needing to know in advance which of the
+    three lists it's in. `status` narrows it the same way the count tiles do
+    -- same clauses as counts() above, so a tile's number and the rows behind
+    it when clicked can never disagree.
+
+    Ordered by sku rather than reviewed_at: most rows here have never been
+    reviewed at all, so reviewed_at is NULL for the majority and would sort
+    them arbitrarily.
+    """
+    if status not in _STATUS_FILTERS:
+        raise ValueError(f"status must be one of {tuple(_STATUS_FILTERS)}, got {status!r}")
+
+    source = db_models.get_table(conn.engine, "staging", f"{channel}_products")
+    mapping = db_models.get_table(conn.engine, "staging", f"{channel}_product_mapping")
+
+    join = source.outerjoin(
+        mapping,
+        sa.and_(
+            mapping.c[f"{channel}_product_id"] == source.c.id,
+            mapping.c.match_rank == 1,
+        ),
+    )
+    where = [_STATUS_FILTERS[status](source)]
+    if category:
+        where.append(source.c.category == category)
+    if engine_filter is not None:
+        where.append(engine_filter(source))
+    if q:
+        like = f"%{q}%"
+        where.append(sa.or_(
+            source.c.sku.like(like),
+            source.c.title.like(like),
+            mapping.c.product_code.like(like),
+            mapping.c.product_name.like(like),
+        ))
+
+    total = conn.execute(
+        sa.select(sa.func.count()).select_from(join).where(*where)
+    ).scalar() or 0
+
+    rows = conn.execute(
+        sa.select(
+            source.c.sku, source.c.title, source.c.brand,
+            source.c.category, source.c.subcategory,
+            source.c.mapping_status, source.c.review_status,
+            source.c.reviewed_by, source.c.reviewed_at, source.c.reviewer_comment,
+            mapping.c.product_code, mapping.c.product_name,
+            mapping.c.final_score, mapping.c.llm_reasoning,
+        )
+        .select_from(join).where(*where)
+        .order_by(source.c.sku)
+        .offset(offset).limit(limit)
+    ).mappings().all()
+
+    himalaya = _himalaya_brands()
+    return {
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "rows": [
+            {
+                "sku": r["sku"],
+                "title": r["title"],
+                "brand": r["brand"],
+                "engine": (
+                    "himalaya"
+                    if (r["brand"] or "").strip().lower() in himalaya
+                    else "competitor"
+                ),
+                "category": r["category"],
+                "subcategory": r["subcategory"],
+                "mapping_status": r["mapping_status"],
+                # Normalised rather than passed through raw: NULL and '' both
+                # mean "never reviewed" and the frontend needs one spelling.
+                "review_status": (r["review_status"] or "").strip() or None,
+                "matched_code": r["product_code"],
+                "matched_name": r["product_name"],
+                "score": float(r["final_score"]) if r["final_score"] is not None else None,
+                "reasoning": r["llm_reasoning"],
+                "reviewed_by": r["reviewed_by"],
+                "reviewed_at": r["reviewed_at"].isoformat() if r["reviewed_at"] else None,
+                "comment": r["reviewer_comment"],
+            }
+            for r in rows
+        ],
+    }
+
+
 @dataclass(frozen=True)
 class ResetRejectedResult:
     channel: str
@@ -304,6 +540,9 @@ def preview_reset(
     channel: str,
     category: str | None = None,
     skus: list[str] | None = None,
+    *,
+    scope: str = "rejected",
+    engine: str | None = None,
 ) -> ResetRejectedResult:
     """What reset_rejected would do. Reads only.
 
@@ -315,9 +554,29 @@ def preview_reset(
     its own. Same code path as the channel-wide reset, just a narrower WHERE:
     a separate single-row function would be a second definition of "what a
     reset does", free to drift from this one.
+
+    `scope` picks which rows are eligible at all -- "rejected" (the default,
+    everything every existing caller already gets) or "non_approved" (also
+    includes never-reviewed rows, for the review screen's bulk reset). Either
+    way a steward-approved row can never be selected -- and NOT_APPROVED_GUARD
+    below excludes one a second time, unconditionally, regardless of which
+    scope is passed. Belt and suspenders on purpose: this function is the
+    only thing standing between a UI bug and deleting a crosswalk-backed
+    mapping, so "the scope clause happens to also exclude it" is not enough
+    -- an approved row must be structurally impossible to select here even
+    if _SCOPE_CLAUSES grows a new, careless scope later.
+
+    `engine` narrows it further to "himalaya" or "competitor" rows by brand,
+    same rule as counts()/review_listing(). This is what makes a true
+    channel-wide "reset every Non-Approved Himalaya SKU" possible without
+    naming a single sku.
     """
     source = db_models.get_table(conn.engine, "staging", f"{channel}_products")
-    where = [_rejected_clause(source)]
+    where = [
+        _scope_clause(scope)(source),
+        _engine_clause(source, engine),
+        NOT_APPROVED_GUARD(source),
+    ]
     if category:
         where.append(source.c.category == category)
     if skus:
@@ -349,6 +608,8 @@ def reset_rejected(
     category: str | None = None,
     skus: list[str] | None = None,
     actor: str,
+    scope: str = "rejected",
+    engine: str | None = None,
 ) -> ResetRejectedResult:
     """Clear the rejected matches and queue their SKUs for a fresh run.
 
@@ -367,23 +628,51 @@ def reset_rejected(
     these rows are no longer identifiable as previously-rejected, so the
     caller has to carry the list into the re-run. Nothing else can recover it.
 
-    Steward-approved rows are never touched. _rejected_clause cannot match
-    one, and that is not a flag a caller can pass.
+    Steward-approved rows are never touched regardless of `scope` -- neither
+    _rejected_clause nor _not_approved_clause can match one, and that is not
+    a flag a caller can pass. `skus` is honoured even for a sku that isn't
+    currently rejected/non-approved (e.g. a caller resetting an arbitrary,
+    manually-entered SKU) as long as it isn't approved: the scope clause is
+    what keeps an approved row untouched, not a requirement that the row
+    already look reset-worthy.
     """
     source = db_models.get_table(conn.engine, "staging", f"{channel}_products")
     mapping = db_models.get_table(conn.engine, "staging", f"{channel}_product_mapping")
 
-    before = preview_reset(conn, channel, category, skus)
+    before = preview_reset(conn, channel, category, skus, scope=scope, engine=engine)
     if before.rows_found == 0:
         return before
 
-    where = [_rejected_clause(source)]
+    where = [
+        _scope_clause(scope)(source),
+        _engine_clause(source, engine),
+        NOT_APPROVED_GUARD(source),
+    ]
     if category:
         where.append(source.c.category == category)
     if skus:
         where.append(source.c.sku.in_(skus))
 
     ids = conn.execute(sa.select(source.c.id).where(*where)).scalars().all()
+
+    # Second, independent check on the actual rows about to be mutated --
+    # not just "the WHERE clause should have excluded them" but "assert none
+    # of the ids selected are approved" against the live table state in this
+    # same transaction. A mismatch here means the guard above has a bug, and
+    # this function refuses to touch anything rather than delete on faith.
+    if ids:
+        approved_among_selected = conn.execute(
+            sa.select(sa.func.count())
+            .select_from(source)
+            .where(source.c.id.in_(ids), _approved_clause(source))
+        ).scalar() or 0
+        if approved_among_selected:
+            raise AssertionError(
+                f"reset_rejected selected {approved_among_selected} steward-approved "
+                f"row(s) on {channel} -- refusing to reset anything. This means the "
+                f"scope/engine guard clauses disagree with the table; report this "
+                f"before retrying."
+            )
 
     # Chunked: SQL Server caps a statement at 2,100 parameters and IN (...)
     # spends one per value, so a large rejection backlog would otherwise fail
@@ -420,9 +709,11 @@ def reset_rejected(
                 f"{channel}/{skus[0]}" if skus and len(skus) == 1
                 else f"{channel}/{category or 'all'}"
             )[:1000],
-            action="REJECTED_ROWS_RESET",
+            action="REJECTED_ROWS_RESET" if scope == "rejected" else "NON_APPROVED_ROWS_RESET",
             input=json.dumps({
                 "channel": channel,
+                "scope": scope,
+                "engine": engine,
                 "category": category,
                 # Named so the trail distinguishes "reset this one row" from
                 # "reset everything on the channel" -- they read identically

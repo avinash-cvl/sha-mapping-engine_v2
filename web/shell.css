@@ -121,6 +121,7 @@
 .tile .k{font-size:11.5px;color:var(--ink-3)}
 .tile.run .n{color:var(--accent)} .tile.skip .n{color:var(--mute)}
 .tile.warnv .n{color:var(--warn)} .tile.critv .n{color:var(--crit)}
+.tile.okv .n{color:var(--ok)}
 
 /* ---------------- toolbar above a table ---------------- */
 .tbar{display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap}

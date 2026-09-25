@@ -1724,6 +1724,103 @@ def withdraw_rejection(
     return {"channel": channel, "sku": sku, "withdrawn": changed}
 
 
+# ------------------------------------------------------------------ review
+# Approved / Rejected / Non-Approved counts, and the general grid + reset
+# flow that generalizes the rejected-only one above to cover the wider
+# non_approved scope and arbitrary manually-entered SKUs. See
+# common/rejection.py's counts()/review_listing()/reset_rejected(scope=...).
+@router.get("/review/counts")
+def review_counts(
+    channel: str,
+    engine: str | None = None,
+    conn: db.Connection = Depends(get_conn),
+) -> dict:
+    """Approved / rejected / non-approved / pending totals for one channel,
+    optionally narrowed to one engine's rows (himalaya or competitor)."""
+    _validate(channel, engine)
+    try:
+        return rejection.counts(conn, channel, engine=engine)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@router.get("/review")
+def list_review(
+    channel: str,
+    status: str = "all",
+    category: str | None = None,
+    engine: str | None = None,
+    q: str | None = None,
+    limit: int = Query(50, le=500),
+    offset: int = Query(0, ge=0),
+    conn: db.Connection = Depends(get_conn),
+) -> dict:
+    """The grid behind the counts screen: every record, filterable by
+    approved / rejected / non_approved / pending / all, so any individual SKU
+    can be run from the same place regardless of which bucket it's in."""
+    _validate(channel, engine)
+    engine_filter = (
+        (lambda src: scope._brand_clause(src, engine)) if engine else None
+    )
+    try:
+        return rejection.review_listing(
+            conn, channel, status=status, category=category,
+            engine_filter=engine_filter, q=q, limit=limit, offset=offset,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+class ResetReviewRequest(BaseModel):
+    channel: str
+    category: str | None = None
+    # Named rows -- the manual-SKU box, or a single row's "Reset & run".
+    # Absent means the channel-wide action, which is why `engine` below is
+    # required whenever this is absent: "every non-approved row on the
+    # channel, both engines at once" is not a button this screen offers, only
+    # "every non-approved row for ONE engine" is.
+    skus: list[str] | None = None
+    # Required when skus is absent -- see above. Optional (and applied as an
+    # extra filter) when skus is given, since a manually-entered list is
+    # already an explicit scope.
+    engine: str | None = None
+
+
+@router.post("/review/reset/preview")
+def preview_reset_review(
+    req: ResetReviewRequest,
+    conn: db.Connection = Depends(get_conn),
+) -> dict:
+    """What resetting these SKUs (rejected or never-reviewed) would touch.
+    Reads only, same selection the apply below uses."""
+    _validate(req.channel, req.engine)
+    if not req.skus and not req.engine:
+        raise HTTPException(400, "engine is required for a channel-wide reset")
+    return rejection.preview_reset(
+        conn, req.channel, req.category, req.skus,
+        scope="non_approved", engine=req.engine,
+    ).as_dict()
+
+
+@router.post("/review/reset")
+def reset_review(
+    req: ResetReviewRequest,
+    user: auth.User = Depends(auth.current_user),
+    conn: db.Connection = Depends(get_conn),
+) -> dict:
+    """Reset named SKUs (rejected or never-reviewed) and queue them for a
+    fresh run. Never touches a steward-approved row, even if one is named --
+    scope="non_approved" excludes it the same way the rejected-only reset
+    excludes it under scope="rejected"."""
+    _validate(req.channel, req.engine)
+    if not req.skus and not req.engine:
+        raise HTTPException(400, "engine is required for a channel-wide reset")
+    return rejection.reset_rejected(
+        conn, req.channel, category=req.category, skus=req.skus,
+        actor=user.email, scope="non_approved", engine=req.engine,
+    ).as_dict()
+
+
 # ---------------------------------------------------------------- export
 @router.get("/export/preview")
 def export_preview(

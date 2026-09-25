@@ -32,6 +32,9 @@
     <button class="rail-btn" data-route="rejected" title="Rejected matches" aria-label="Rejected matches">
       <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="8.4" stroke="currentColor" stroke-width="1.7"/><path d="m9.2 9.2 5.6 5.6M14.8 9.2l-5.6 5.6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
     </button>
+    <button class="rail-btn" data-route="review" title="Review status" aria-label="Review status">
+      <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M4 6h16M4 12h10M4 18h7" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="m16.5 15.5 2 2 3.5-3.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
     <button class="rail-btn" data-route="rules" title="Match rules" aria-label="Match rules">
       <svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M4 7h9M17 7h3M4 17h3M11 17h9" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="13" cy="7" r="2.3" stroke="currentColor" stroke-width="1.6"/><circle cx="8" cy="17" r="2.3" stroke="currentColor" stroke-width="1.6"/></svg>
     </button>
@@ -195,7 +198,7 @@
 
           <div class="row2">
             <div class="field"><label for="w">Workers</label>
-              <select id="w"><option>2</option><option>3</option><option selected>4</option><option>6</option><option>8</option></select></div>
+              <select id="w"><option>1</option><option>2</option><option>3</option><option selected>4</option><option>6</option><option>8</option></select></div>
             <div class="field"><label for="bs">Batch size</label><input id="bs" type="text" value="500"></div>
           </div>
           <div class="toggle"><label for="llm" style="margin:0">LLM judge</label>
@@ -393,6 +396,101 @@
           </table>
         </div>
         <div id="rejPager"></div>
+      </div>
+    </section>
+  </section>
+
+  <!-- ============================== REVIEW STATUS ============================== -->
+  <section class="page" data-page="review" hidden>
+    <div class="page-head">
+      <div><h2>Review status</h2><p>Approved, rejected, and everything still waiting on a
+        verdict — reset and re-run any of them, in bulk or one SKU at a time.</p></div>
+      <div style="display:flex;gap:8px">
+        <select id="rv-channel" aria-label="Channel" style="width:auto;min-width:160px"></select>
+        <select id="rv-engine" aria-label="Engine" style="width:auto;min-width:150px">
+          <option value="himalaya" selected>Himalaya</option>
+          <option value="competitor">Competitor</option>
+          <option value="">Himalaya + Competitor (reference only)</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="tiles" style="margin-bottom:16px">
+      <div class="tile okv"><span class="n" id="rv-t-approved">—</span><span class="k">Approved</span></div>
+      <div class="tile critv"><span class="n" id="rv-t-rejected">—</span><span class="k">Rejected</span></div>
+      <div class="tile warnv"><span class="n" id="rv-t-pending">—</span><span class="k">Non-approved / pending</span></div>
+      <div class="tile"><span class="n" id="rv-t-total">—</span><span class="k">Total on this channel</span></div>
+    </div>
+
+    <div class="note info">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 8v5M12 16.5v.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.8"/></svg>
+      <div>Reset deletes a SKU's existing mapping rows, returns it to
+        <span class="m">PENDING</span>, and clears its review verdict. Re-run then puts it
+        through the engine again. A steward-approved SKU is never touched by either flow.
+        Every action below runs against <b id="rv-scope-channel">—</b> only.</div>
+    </div>
+
+    <section class="panel" style="margin-top:16px;border-color:var(--accent)">
+      <div class="panel-h"><span class="panel-t">Reset &amp; re-run — full Non-Approved backlog</span></div>
+      <div class="panel-b">
+        <p class="hint" style="margin:0 0 12px;max-width:80ch">For validating an engine
+          change: resets <b>every Non-Approved <span id="rv-full-engine-label">Himalaya</span>
+          SKU</b> on <b id="rv-full-channel-label">—</b> — mappings deleted, set back to
+          <span class="m">PENDING</span> — then runs the latest engine code over all of them.
+          Rejected and never-reviewed rows are both included; approved rows are never touched.
+          Switch the engine dropdown above to target Competitor instead.</p>
+        <div class="actions" style="margin-top:0">
+          <button class="btn danger" id="rv-full-reset">Reset &amp; re-run all Non-Approved
+            <span id="rv-full-engine-label2">Himalaya</span> SKUs</button>
+          <span class="stale" id="rv-full-note"></span>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" style="margin-top:16px">
+      <div class="panel-h"><span class="panel-t">Validate specific SKUs</span></div>
+      <div class="panel-b">
+        <p class="hint" style="margin:0 0 10px;max-width:80ch">For trying the latest engine
+          code against one or a few SKUs before running the full backlog above. Paste SKUs
+          from <b id="rv-manual-channel-label">—</b> — one per line, or comma-separated. Each
+          is reset (mappings deleted, set to <span class="m">PENDING</span>) and then run
+          through the engine. A steward-approved SKU in the list is skipped, not reset.</p>
+        <textarea id="rv-manual-skus" rows="4" placeholder="SKU001
+SKU002, SKU003
+SKU004" style="width:100%;resize:vertical;font-family:var(--mono, monospace);
+          font-size:13px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;
+          background:var(--surface);color:var(--ink)"></textarea>
+        <div class="actions" style="margin-top:10px">
+          <button class="btn primary" id="rv-manual-run">Reset &amp; run these SKUs</button>
+          <span class="stale" id="rv-manual-note"></span>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" style="margin-top:16px">
+      <div class="panel-h"><span class="panel-t">All records</span>
+        <span class="stale" style="margin-left:auto" id="rvCap"></span></div>
+      <div class="panel-b">
+        <p class="hint" style="margin:0 0 10px">Reference only — look up a SKU's current
+          status, or reset just that one row for a quick check.</p>
+        <div class="tbar">
+          <div class="searchbox"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.2" stroke="currentColor" stroke-width="1.7"/><path d="m19 19-4-4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg><input id="rvSearch" type="search" placeholder="Filter records…" aria-label="Filter records"></div>
+          <select id="rvStatus" aria-label="Filter by status">
+            <option value="all">All statuses</option>
+            <option value="approved">Approved</option>
+            <option value="rejected">Rejected</option>
+            <option value="pending">Non-approved / pending</option>
+          </select>
+          <span class="spacer"></span>
+        </div>
+        <div class="tw">
+          <table>
+            <thead><tr><th>Listing</th><th>Status</th><th>Current match</th>
+              <th class="num">Score</th><th></th></tr></thead>
+            <tbody id="rvBody"><tr><td colspan="5" class="loading">Loading records</td></tr></tbody>
+          </table>
+        </div>
+        <div id="rvPager"></div>
       </div>
     </section>
   </section>
@@ -696,6 +794,7 @@
 <script src="/static/shell/runs.js"></script>
 <script src="/static/shell/catalog.js"></script>
 <script src="/static/shell/rejected.js"></script>
+<script src="/static/shell/review.js"></script>
 <script src="/static/shell/rules.js"></script>
 <script src="/static/shell/history.js"></script>
 <script src="/static/shell/alerts.js"></script>
