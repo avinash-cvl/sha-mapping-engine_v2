@@ -36,6 +36,25 @@ _GROUP_STOPWORDS = frozenset({
 # before the subset test so the comparison is symmetric.
 _GROUP_FILLER = frozenset({"rich", "natural", "herbals", "herbal", "himalaya", "new"})
 
+# Generic marketing/quality adjectives -- a BENEFIT many unrelated product
+# lines share, not an identity any one of them owns. Unlike _GROUP_STOPWORDS
+# (form nouns: "cream", "wash") these still carry real distinguishing power
+# within their OWN group's full name ("GENTLE BABY WIPES" is a specific,
+# correctly-matchable product), so they cannot simply join that list --
+# doing that once regressed 236 currently-correct matches whose product_group
+# has no identity beyond one of these words plus a form noun. The failure
+# mode this list exists for is narrower: a group that reduces to ONLY one of
+# these words, with nothing else surviving _GROUP_STOPWORDS, is too generic
+# to identify a product on its own -- "REFRESHING TONER" reduces to
+# {"refreshing"}, which is also true of "Refreshing Cleansing Milk", a
+# completely different form of product that happens to share the adjective.
+# See product_group_match() for where this list is actually consulted.
+_GROUP_GENERIC_ADJ = frozenset({
+    "refreshing", "gentle", "nourishing", "hydrating", "moisturizing",
+    "moisturising", "soothing", "revitalizing", "rejuvinating", "toning",
+    "regular", "na", "null",
+})
+
 # Explicit multipack cues in a listing title. Mirrors the notation
 # category/core.py's pack_count() reads, kept local so stage_scoring does not
 # depend on the vendored category package.
@@ -180,18 +199,47 @@ def product_group_match(source_text: str, master: MasterProduct) -> bool:
     group must appear in the source text. Generic form words are dropped
     first, so a bare "LIP BALM" group cannot claim every lip balm listing --
     a group that reduces to nothing after that is not matchable at all.
+
+    A group that reduces to ONLY generic marketing adjectives ("refreshing",
+    "gentle", ...) is a second version of the same problem, one step
+    removed: "REFRESHING TONER" reduces to {"refreshing"} alone, which
+    passed the subset test against "Refreshing Cleansing Milk" -- a
+    different product that happens to share the adjective, not the group.
+    But those adjectives are the ONLY thing that separates "GENTLE BABY
+    WIPES" from "REFRESHING BABY WIPES" from "SOOTHING BABY WIPES", so they
+    cannot be dropped from the token set outright the way a plain
+    _GROUP_STOPWORDS entry can -- that regressed 236 rows where the
+    adjective is genuinely load-bearing. The fix is narrower: only when the
+    reduced set is nothing BUT these adjectives does the match fall back to
+    requiring the group's FULL name (adjective and form word both), so
+    "gentle baby wipes" still needs both "gentle" and "wipes" in the source
+    text, and "refreshing" alone no longer claims an unrelated cleansing
+    milk that merely uses the same adjective.
     """
     if not master.product_group:
         return False
+    lowered_group = master.product_group.lower()
     tokens = {
         word
-        for word in master.product_group.lower().split()
+        for word in lowered_group.split()
         if word not in _GROUP_STOPWORDS and word not in _GROUP_FILLER
     }
     if not tokens:
         return False
+    if tokens <= _GROUP_GENERIC_ADJ:
+        # Falling back to the full group name means the form word now has
+        # to survive the source tokenisation too -- "shampoo(400" or
+        # "soap-" from a listing's own punctuation-glued title never used
+        # to matter, because only the adjective needed to match. Strip the
+        # same punctuation from the GROUP's tokens as from the source's
+        # below, so "GENTLE BABY SHAMPOO" needs "shampoo" to appear, not
+        # "shampoo(400" to equal it literally.
+        tokens = {
+            word.strip(",.|()-")
+            for word in lowered_group.split() if word not in _GROUP_FILLER
+        }
     source_tokens = {
-        word.strip(",.|()")
+        word.strip(",.|()-")
         for word in source_text.lower().split()
         if word not in _GROUP_FILLER
     }
