@@ -25,6 +25,7 @@ from oneds_master.batch_flow_steps import (
     step_5_build_eligible_master_groups,
     step_6_get_source_batch,
     step_6b_apply_crosswalk_shortcircuit,
+    step_6b_persist_crosswalk_resolved,
     step_6c_apply_category_shortcircuit,
     step_7_build_bm25_index,
     step_7b_prepare_source_products,
@@ -1096,32 +1097,49 @@ def main() -> None:
 
                 if crosswalk_resolved:
 
-                    # A crosswalk-approved match is authoritative -- it
-                    # doesn't go through determine_mapping_status()'s score
-                    # thresholds (its ensemble_score is whatever was
-                    # recorded when a steward/auto-approve first confirmed
-                    # it, not a fresh score to re-judge), and it's already
-                    # a governed record in the crosswalk table itself --
-                    # so unlike the scored path, no mapping/candidate rows
-                    # need writing here, just the status flip. One bulk
-                    # call for the whole group's resolved set, not a
-                    # per-SKU loop.
-                    # The status is deliberately NOT rewritten.
+                    # A crosswalk-approved match is authoritative: its
+                    # ensemble_score is whatever was recorded when a steward
+                    # confirmed it, not a fresh score to re-judge, so
+                    # determine_mapping_status()'s thresholds do not apply.
                     #
-                    # These rows are already resolved -- a steward approved
-                    # them and the crosswalk holds the answer. Stamping an
-                    # engine tier over that lets a run silently change how an
-                    # approved row reads in the portal, which is the one thing
-                    # a run must never do. They are still counted as processed
-                    # and still skip retrieval, scoring and the judge.
+                    # This block used to count these rows and stop there. Its
+                    # comment said "just the status flip" and then, two lines
+                    # later, "the status is deliberately NOT rewritten" -- and
+                    # the code did neither. A short-circuited row was removed
+                    # from the batch, never scored, never written to
+                    # <channel>_product_mapping, and left at PENDING, while
+                    # total_processed counted it as done. The run reported
+                    # "173 of 173" truthfully and four rows were simply absent
+                    # from the data: not a failure, not a skip, invisible.
+                    #
+                    # It only surfaced because those four had been reset to
+                    # PENDING first. Normally the portal writes the crosswalk
+                    # and the source row together, so the missing write
+                    # changed nothing -- which is why this survived so long.
+                    #
+                    # The fix writes the crosswalk's own answer through the
+                    # same persist_sku_disposition() the scored path uses, so
+                    # the mapping rows, the status and the audit rows land in
+                    # one transaction. What it does NOT do is re-derive the
+                    # status: "Approved" is carried across as-is, because
+                    # stamping an engine tier over a governed decision is the
+                    # one thing a run must never do.
                     resolved_count = len(crosswalk_resolved)
+
+                    persisted = step_6b_persist_crosswalk_resolved(
+                        conn=conn,
+                        source_table=args.source_table,
+                        run_id=run_id,
+                        resolved=crosswalk_resolved,
+                    )
 
                     total_processed += resolved_count
 
                     logger.info(
                         "STEP 6B COMPLETED | crosswalk_resolved=%d | "
-                        "remaining=%d",
+                        "persisted=%d | remaining=%d",
                         len(crosswalk_resolved),
+                        persisted,
                         len(batch),
                     )
 
