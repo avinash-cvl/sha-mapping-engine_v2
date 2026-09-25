@@ -45,48 +45,61 @@ _MULTIPACK_CUE = re.compile(
 )
 
 
-def _type_cluster(text: str) -> str | None:
-    """Longest-match-wins vocabulary lookup, then its cluster."""
+def _type_clusters(text: str) -> frozenset[str]:
+    """Every cluster whose vocabulary a term in `text` matches -- not just the
+    longest one.
+
+    Was longest-match-wins, one cluster only: "Diaper Rash Cream" matches
+    both "diaper rash" (11 chars, cluster diaper) and "cream" (5 chars,
+    cluster cream), and length picked "diaper" alone. A title that
+    legitimately names two clusters at once (a diaper-rash product IS a
+    cream; a hair cream IS both "hair" and "cream") was then read as though
+    it were only ever one -- so it either missed the 1.0 same-cluster score
+    against a same-type candidate that happened to phrase itself the other
+    way, or worse, took a hard-incompatible 0.0 against it. Measured on
+    blinkit 559220: "DIAPER RASH CREAM" (which ALSO reads as pure "diaper")
+    outscored "BABY RASH RELIEF CREAM WITH PURE COW GHEE" (reads as "cream"
+    only, no "diaper" in ITS title) by a full type_align gap, 1.0 to 0.3,
+    despite the source genuinely being both.
+
+    Returns every matched cluster, not just one -- type_alignment_score
+    below then asks "do these two sets share anything" instead of "are
+    these two single labels equal", which is the actual question a product
+    that spans two vocabulary terms needs asked.
+    """
     lowered = text.lower()
-    matched_term: str | None = None
-    for term in C.TYPE_VOCABULARY:
-        if term in lowered and (matched_term is None or len(term) > len(matched_term)):
-            matched_term = term
-    if matched_term is None:
-        return None
+    clusters: set[str] = set()
     for cluster, terms in C.TYPE_CLUSTERS.items():
-        if matched_term in terms:
-            return cluster
-    return None
+        for term in terms:
+            if term in lowered:
+                clusters.add(cluster)
+                break
+    return frozenset(clusters)
 
 
-def _master_type_cluster(master_text: str, master_title: str | None = None) -> str | None:
-    """The master's product type, read from its TITLE in preference to its
+def _master_type_clusters(master_text: str, master_title: str | None = None) -> frozenset[str]:
+    """The master's product type(s), read from its TITLE in preference to its
     search_text.
 
     search_text has the row's own category and subcategory appended to it by
-    the ingest pipeline, and _type_cluster() is longest-match-wins over the
-    whole string -- so the category tail wins against the real product words.
-    Measured: "FACE CLEANSERS EXCL. FACE WASH" contains "face cleanser" (13
-    chars), which beats "face mask" (9) on length, and every sheet mask,
-    scrub and face pack in that category classified as "wash". ('mask',
-    'wash') is in TYPE_HARD_INCOMPAT, so the correct candidate took
-    type_align=0.0 AND a x0.4 penalty while the wrong one kept type=1.0
-    (measured on B09VH3HQBK: the correct 7004920 scored 0.0463 against a mud
-    pack's 0.2942, despite twice the text overlap, and ranked 36th of 99).
+    the ingest pipeline, and a category tail can name a cluster the product
+    itself is not. Measured: "FACE CLEANSERS EXCL. FACE WASH" contains
+    "face cleanser", which used to beat "face mask" on longest-match and
+    classified every sheet mask, scrub and face pack in that category as
+    "wash" outright. Now that a text can carry more than one cluster, the
+    title's own clusters still take priority over search_text's when the
+    title yields any at all -- the category tail is additive noise, not a
+    correction, and letting it inject an extra cluster the product doesn't
+    have would just trade one kind of wrong overlap for another.
 
-    Falls back to search_text when the title yields no cluster at all: 269
-    master rows carry abbreviated titles ("CCTP 175G + GTB", "PSSL 100ml+
+    Falls back to search_text only when the title yields no cluster at all:
+    269 master rows carry abbreviated titles ("CCTP 175G + GTB", "PSSL 100ml+
     PNFW") whose type is only recoverable from the expanded search_text.
-    Measured over all 3,662 master rows, this changes 220 (6.0%) and leaves
-    every row classifiable -- against 489 changed / 269 lost for title-only.
-    The dominant transition is wash -> mask (70 rows): scrubs, face packs and
-    sheet masks that the category tail had mis-typed.
     """
-    from_title = _type_cluster(master_title) if master_title else None
-    if from_title is not None:
+    from_title = _type_clusters(master_title) if master_title else frozenset()
+    if from_title:
         return from_title
-    return _type_cluster(master_text)
+    return _type_clusters(master_text)
 
 
 def type_alignment_score(
@@ -94,23 +107,37 @@ def type_alignment_score(
     master_text: str,
     master_title: str | None = None,
 ) -> tuple[float, bool]:
-    """Returns (score, hard_incompatible). Same cluster -> 1.0. Neither side
-    classifiable -> a neutral 0.5. Different, non-conflicting clusters ->
-    0.3. A hard-incompatible pair -> 0.0 with hard_incompatible=True, so the
-    caller applies TYPE_HARD_INCOMPAT_PENALTY on top of the raw blend.
+    """Returns (score, hard_incompatible). Any shared cluster -> 1.0. Neither
+    side classifiable -> a neutral 0.5. Disjoint, non-conflicting cluster
+    sets -> 0.3. Every pairing across two hard-incompatible cluster sets ->
+    0.0 with hard_incompatible=True, so the caller applies
+    TYPE_HARD_INCOMPAT_PENALTY on top of the raw blend.
+
+    "Shared cluster" rather than "equal cluster": a text can belong to more
+    than one cluster at once (a diaper rash cream is both "diaper" and
+    "cream"), so the comparison is a set intersection, not an equality test.
+    A hard-incompat pair only fires when EVERY cluster on one side conflicts
+    with EVERY cluster on the other -- one non-conflicting pair anywhere
+    across the two sets is enough to prove the two products are not
+    necessarily incompatible, which is what the flag is meant to capture.
 
     master_title is optional so existing callers (and oneds_competitor) keep
     working unchanged -- without it the master's type comes from master_text
     exactly as before.
     """
-    source_cluster = _type_cluster(source_text)
-    master_cluster = _master_type_cluster(master_text, master_title)
-    if source_cluster is None or master_cluster is None:
+    source_clusters = _type_clusters(source_text)
+    master_clusters = _master_type_clusters(master_text, master_title)
+    if not source_clusters or not master_clusters:
         return 0.5, False
-    if source_cluster == master_cluster:
+    if source_clusters & master_clusters:
         return 1.0, False
-    pair, reverse_pair = (source_cluster, master_cluster), (master_cluster, source_cluster)
-    if pair in C.TYPE_HARD_INCOMPAT or reverse_pair in C.TYPE_HARD_INCOMPAT:
+    pairs = [
+        (sc, mc) for sc in source_clusters for mc in master_clusters
+    ]
+    if all(
+        (sc, mc) in C.TYPE_HARD_INCOMPAT or (mc, sc) in C.TYPE_HARD_INCOMPAT
+        for sc, mc in pairs
+    ):
         return 0.0, True
     return 0.3, False
 

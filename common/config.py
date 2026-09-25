@@ -337,21 +337,20 @@ TYPE_HARD_INCOMPAT: list[tuple[str, str]] = [
     ("gift", "powder"),
     ("hair", "wash"), ("hair", "cream"), ("hair", "serum"), ("hair", "gel"),
     ("hair", "mask"), ("hair", "toner"),
-    # NOT ("diaper", "cream"): a "diaper RASH CREAM" listing matches both
-    # vocabulary terms at once (_type_cluster is longest-match-wins, so
-    # "diaper rash" (11 chars) beats "cream" (5) and the source is read as
-    # pure "diaper" even though its own title says "cream" too), and the
-    # master genuinely files diaper-rash treatments under BABY CREAMS
-    # alongside plain baby creams that don't repeat the word "diaper"
-    # ("BABY RASH RELIEF CREAM WITH PURE COW GHEE"). With the pair listed,
-    # that correct candidate took hard_incompatible=True and a x0.40
-    # penalty purely for not saying "diaper" in its own title -- measured on
-    # blinkit 559220, where the wrong "DIAPER RASH CREAM" candidate (whose
-    # title happens to repeat "diaper") won at 0.99 over the right one's
-    # crippled score. Diaper PANTS vs a cream still won't score well on the
-    # other five blended signals -- they share almost no text or semantic
-    # overlap -- so dropping this pair costs nothing there.
-    ("diaper", "wash"), ("diaper", "serum"),
+    # ("diaper", "cream") stays listed: a "diaper RASH CREAM" listing
+    # legitimately belongs to BOTH clusters at once, and stage_scoring's
+    # type_alignment_score() now checks whether a source's and a master's
+    # cluster SETS share anything before ever consulting this list -- so a
+    # diaper-rash-cream listing scores 1.0 against a cream-typed master row
+    # through that shared "cream" membership and never reaches this pair at
+    # all. This entry only fires for a genuine diaper/cream pairing that
+    # shares NO cluster (e.g. plain diaper pants vs a plain face cream),
+    # where it should still apply. See _type_clusters()'s docstring for the
+    # bug this multi-membership fix replaced: longest-match-wins used to
+    # collapse "diaper rash cream" to "diaper" alone, and a cream candidate
+    # whose own title didn't repeat "diaper" took this pair's x0.40 penalty
+    # for no reason -- measured on blinkit 559220.
+    ("diaper", "wash"), ("diaper", "cream"), ("diaper", "serum"),
     ("nursing", "wash"), ("nursing", "cream"), ("nursing", "serum"),
     ("nursing", "gel"), ("nursing", "mask"), ("nursing", "lip"),
     ("powder", "wash"), ("powder", "serum"), ("powder", "gel"),
