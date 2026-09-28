@@ -380,27 +380,39 @@ def score_candidate(
     # flat 0.5 for every candidate and count is the only signal left that
     # can separate a single from a 12-pack.
     #
-    # Suppressed when the product group matches. Count is a packaging fact;
-    # the group is product identity, and identity has to win. Measured
-    # without this guard, a Strawberry Shine "Pack of 2" listing left the
-    # correct STRAWBERRY (Pack of 3) row for a CHERRY (Pack of 2) one --
-    # trading the right product for the right carton.
-    if not group_matched:
-        source_count = source.pack_count if source.pack_count is not None else 1
-        master_count = master.pack_count if master.pack_count is not None else 1
+    # Softened (not skipped) when the product group matches. Count is a
+    # packaging fact; the group is product identity, and identity has to
+    # win -- measured, an UNSOFTENED penalty here once left a Strawberry
+    # Shine "Pack of 2" listing off the correct STRAWBERRY (Pack of 3) row
+    # for a CHERRY (Pack of 2) one, trading the right product for the right
+    # carton. But full suppression went too far the other way: two
+    # candidates that BOTH match the group and differ only by pack count
+    # ("100mlx2 UNITS" vs the plain "100ml" single) then have no count
+    # signal left to separate them at all, because nothing else in the
+    # blend reliably reads size-variant-of-the-same-line. See
+    # PACK_COUNT_MISMATCH_GROUP_MATCHED_SOFTNESS's config.py comment for the
+    # numbers behind picking a value that keeps the Strawberry/Cherry case
+    # safe while still letting same-group size variants separate.
+    source_count = source.pack_count if source.pack_count is not None else 1
+    master_count = master.pack_count if master.pack_count is not None else 1
 
-        if source_count != master_count:
-            # Scaled by agreement, so 2-vs-3 is nudged and 1-vs-48 is pushed
-            # hard. Scoring silence as 1 rather than as "one out" matters for
-            # larger packs: a distance-scaled proxy leaves 4-vs-silent at
-            # 0.97, which still beats a genuine 4-vs-2 at 0.925.
-            count_agreement = stage_attributes.pack_count_score(
-                source_count, master_count
-            )
-            ensemble *= 1.0 - (1.0 - C.PACK_COUNT_MISMATCH_PENALTY) * (
-                1.0 - count_agreement
-            )
-            penalty_applied = penalty_applied or "pack_count_mismatch"
+    if source_count != master_count:
+        # Scaled by agreement, so 2-vs-3 is nudged and 1-vs-48 is pushed
+        # hard. Scoring silence as 1 rather than as "one out" matters for
+        # larger packs: a distance-scaled proxy leaves 4-vs-silent at
+        # 0.97, which still beats a genuine 4-vs-2 at 0.925.
+        count_agreement = stage_attributes.pack_count_score(
+            source_count, master_count
+        )
+        full_penalty = 1.0 - (1.0 - C.PACK_COUNT_MISMATCH_PENALTY) * (
+            1.0 - count_agreement
+        )
+        if group_matched:
+            softness = C.PACK_COUNT_MISMATCH_GROUP_MATCHED_SOFTNESS
+            ensemble *= 1.0 - softness * (1.0 - full_penalty)
+        else:
+            ensemble *= full_penalty
+        penalty_applied = penalty_applied or "pack_count_mismatch"
 
     # The group bonus is the only multiplier above 1.0, so clamp -- every
     # downstream threshold (TIER_HIGH, determine_mapping_status) assumes a

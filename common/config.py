@@ -208,6 +208,35 @@ PACK_TYPE_MISMATCH_PENALTY = float(os.environ.get("PACK_TYPE_MISMATCH_PENALTY", 
 # the single, so this is the only signal that can separate them.
 PACK_COUNT_MISMATCH_PENALTY = float(os.environ.get("PACK_COUNT_MISMATCH_PENALTY", "0.85"))
 
+# How much of the count penalty above still applies once the candidate's
+# product_group already matches the source (see stage_scoring.score_candidate).
+# 0.0 would be full suppression (the old behaviour); 1.0 would be no
+# suppression at all (the full penalty, same as a group mismatch).
+#
+# Full suppression was too blunt: it was added so a source stating one count
+# never loses the RIGHT product line to a WRONG line that merely states a
+# matching count (measured: a Strawberry Shine "Pack of 2" losing the
+# correct Strawberry Pack-of-3 row to a same-group-less Cherry Pack-of-2).
+# But it also silences count entirely between two candidates that BOTH match
+# the group and differ only by pack size -- "100mlx2 UNITS" (count=2) vs the
+# plain "100ml" single (count=1, via silence) share one product_group, and
+# with count fully suppressed nothing else in the blend reliably tells them
+# apart. Full suppression is also not the fix for that case by itself (the
+# lexical/lexical-search gap between the two matters more there), but it
+# should not be actively hiding a real signal on any SKU where it IS the
+# deciding one.
+#
+# 0.25 is conservative: checked against the Strawberry/Cherry shape at
+# several count gaps (2-vs-3 up to 2-vs-48), the group-matched candidate
+# still wins in every case that mattered historically -- the group bonus
+# (1.08x) comfortably absorbs a softened penalty at this gap, while a softer
+# value still nudges two same-group, same-signal-otherwise candidates apart
+# by pack size. Revisit with eval/shortlist_depth.py-style measurement
+# against live data rather than raising this on intuition alone.
+PACK_COUNT_MISMATCH_GROUP_MATCHED_SOFTNESS = float(
+    os.environ.get("PACK_COUNT_MISMATCH_GROUP_MATCHED_SOFTNESS", "0.25")
+)
+
 # ---------------------------------------------------------------------------
 # CATEGORY GATE (oneds_master/category)
 # ---------------------------------------------------------------------------
