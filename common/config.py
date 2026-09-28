@@ -394,11 +394,46 @@ TYPE_HARD_INCOMPAT: list[tuple[str, str]] = [
 # ---------------------------------------------------------------------------
 # SQL SERVER 2025
 # ---------------------------------------------------------------------------
-SQL_SERVER_DSN = os.environ.get(
-    "SQL_SERVER_DSN",
-    "Driver={ODBC Driver 18 for SQL Server};"
-    "Server=localhost,1433;Database=himalaya_sku_harmonization;"
-    "Trusted_Connection=yes;TrustServerCertificate=yes;",
+# DB_AUTH_MODE picks ONE of three connection blocks in .env (local / shared /
+# prod) so switching environments is a single-line edit there, not a DSN
+# string to reassemble by hand. "local" uses Windows/trusted auth like every
+# other DSN in this file always has; "shared" and "prod" need Uid/Pwd since
+# neither is reachable with the machine's own Windows identity.
+#
+# SQL_SERVER_DSN, if set, wins outright and skips DB_AUTH_MODE entirely --
+# the same escape hatch this variable has always been, for a connection this
+# mode-based scheme can't express. Unset SQL_SERVER_DSN and an unrecognised
+# (or unset) DB_AUTH_MODE both fall through to the pre-existing hardcoded
+# default below, so a .env from before DB_AUTH_MODE existed keeps working
+# unchanged.
+def _dsn_from_mode(mode: str) -> str | None:
+    suffix = mode.upper()
+    server = os.environ.get(f"DB_SERVER_{suffix}")
+    database = os.environ.get(f"DB_DATABASE_{suffix}")
+    if not server or not database:
+        return None
+    driver = os.environ.get(f"DB_DRIVER_{suffix}", "ODBC Driver 18 for SQL Server")
+    username = os.environ.get(f"DB_USERNAME_{suffix}")
+    password = os.environ.get(f"DB_PASSWORD_{suffix}")
+    auth = (
+        f"Uid={username};Pwd={password};Encrypt=Yes;"
+        if username and password
+        else "Trusted_Connection=Yes;"
+    )
+    return (
+        f"Driver={{{driver}}};Server={server};Database={database};"
+        f"{auth}TrustServerCertificate=Yes;"
+    )
+
+
+SQL_SERVER_DSN = (
+    os.environ.get("SQL_SERVER_DSN")
+    or _dsn_from_mode(os.environ.get("DB_AUTH_MODE", ""))
+    or (
+        "Driver={ODBC Driver 18 for SQL Server};"
+        "Server=localhost,1433;Database=himalaya_sku_harmonization;"
+        "Trusted_Connection=yes;TrustServerCertificate=yes;"
+    )
 )
 
 # ---------------------------------------------------------------------------
