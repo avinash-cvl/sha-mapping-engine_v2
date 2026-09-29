@@ -737,14 +737,33 @@
   async function launch() {
     const res = await api("/runs", { method: "POST", body: JSON.stringify(runBody()) });
     clearError($("errors"));
-    startQueue(res.runs);
+    // Stamped here, from the composer fields at the exact moment of launch --
+    // not left to fall back to "whatever the composer currently shows" at
+    // render time (renderQueue()'s q.channel ?? $("ch").value), which reads
+    // as correct for a single in-flight run but mislabels every earlier
+    // queued run the moment the operator changes the channel/category picker
+    // to look at something else. The API response carries only run_id/
+    // engine/log, so this is the one place that knows the true scope.
+    const channel = $("ch").value;
+    const category = scopeMode() === "skus" ? null : ($("cat").value || null);
+    startQueue(res.runs.map((r) => ({ ...r, channel, category })));
   }
 
   /* ------------------------------------------------------------ queue */
 
   function startQueue(runs) {
-    teardownStreams();
-    QUEUE = [];
+    // Merges into whatever QUEUE already holds -- this used to reset to
+    // QUEUE = [] on every launch, which silently dropped any run already
+    // being tracked from earlier in the same page load (launch zepto, watch
+    // it, launch swiggy: zepto's entry vanished from QUEUE even though it
+    // was still running on the server). That fed disableRunIfQueued() a
+    // queue that no longer knew about zepto, so switching the scope picker
+    // back to it showed "Run" as clickable again -- looked like the guard
+    // needed a page refresh to "pick up" a run that a refresh would only
+    // ever be rediscovering through syncQueue(), not something teardown
+    // here should have thrown away in the first place. attachRuns() already
+    // merges by construction (see syncQueue()); startQueue is now just its
+    // entry point for a fresh launch rather than a separate reset path.
     attachRuns(runs);
   }
 
