@@ -29,14 +29,38 @@
       ($("rd-" + v).hidden = v !== name));
   }
 
+  let RD_RUN_ID = null;      // kept for refresh(), which open()'s args don't survive
+
   async function open({ runId = null, logName = null, run = null }) {
     RD_RUN = run;
+    RD_RUN_ID = runId;
     RD = runId
       ? await api(`/runs/${runId}/log/structured`)
       : await api(`/logs/${encodeURIComponent(logName)}`);
     render();
     rdTab("overview");
     rdOpen();
+  }
+
+  /* The log and the run row are both snapshots taken once at open() -- on a
+     still-running run they go stale exactly like every other "looks
+     finished" case in this console. Only offered for a log-backed run
+     (runId, not logName): a bare log file never changes underneath it. */
+  async function refresh() {
+    if (!RD_RUN_ID) return;
+    const btn = $("rd-refresh");
+    btn.disabled = true;
+    try {
+      const [log, runRow] = await Promise.all([
+        api(`/runs/${RD_RUN_ID}/log/structured`),
+        api(`/runs/${RD_RUN_ID}`),
+      ]);
+      RD = log;
+      RD_RUN = { ...RD_RUN, ...runRow.run };
+      render();
+    } finally {
+      btn.disabled = false;
+    }
   }
 
   function render() {
@@ -52,12 +76,16 @@
       ? `${r.engine === "himalaya" ? "Himalaya" : "Competitor"} engine · run execution details`
       : "Log file · run execution details";
 
-    const state = t.failed ? (t.successful ? "partial" : "failed") : "ok";
-    $("rd-status").innerHTML = state === "ok"
-      ? '<span class="pill p-ok"><i class="sq"></i>Success</span>'
-      : state === "partial"
-        ? '<span class="pill p-rev"><i class="sq"></i>Partial failure</span>'
-        : '<span class="pill p-fail"><i class="sq"></i>Failed</span>';
+    const running = r?.status === "running";
+    const state = running ? "running" : t.failed ? (t.successful ? "partial" : "failed") : "ok";
+    $("rd-status").innerHTML = state === "running"
+      ? '<span class="pill p-rev"><i class="sq"></i>Running</span>'
+      : state === "ok"
+        ? '<span class="pill p-ok"><i class="sq"></i>Success</span>'
+        : state === "partial"
+          ? '<span class="pill p-rev"><i class="sq"></i>Partial failure</span>'
+          : '<span class="pill p-fail"><i class="sq"></i>Failed</span>';
+    $("rd-refresh").hidden = !running;
 
     /* A log file has no run row, so started/completed fall back to the first
        and last timestamps in the log itself. Showing "—" for a run that plainly
@@ -271,6 +299,7 @@
   }
 
   /* ---- wiring ---- */
+  $("rd-refresh").addEventListener("click", () => refresh().catch(() => {}));
   $("rd-close").addEventListener("click", rdClose);
   $("rd").addEventListener("click", (e) => { if (e.target === $("rd")) rdClose(); });
   document.addEventListener("keydown", (e) => {

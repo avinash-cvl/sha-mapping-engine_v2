@@ -128,14 +128,49 @@ def _not_approved_clause(source):
     )
 
 
+def _failed_unmapped_clause(source):
+    """Rows the engine tried and raised on, with no mapping row to show for it.
+
+    mapping_status='Failed' alone is not enough: step_16_mark_completed sets it
+    on an exception, but nothing rules out a future code path leaving a
+    mapping row behind before the failure (a partial write, or a retry that
+    half-succeeds). Requiring that this exact staging row is absent from
+    <channel>_product_mapping means "safe to reset" is verified against the
+    live mapping table, not inferred from a status string alone -- the same
+    "don't trust the label, check the row" instinct NOT_APPROVED_GUARD embodies
+    for approved rows.
+
+    Never matches a channel with no mapping_status column: a channel that
+    doesn't track failure that way has nothing this scope can safely select.
+    """
+    if not hasattr(source.c, "mapping_status"):
+        return sa.false()
+    return sa.func.upper(
+        sa.func.ltrim(sa.func.rtrim(source.c.mapping_status))
+    ) == "FAILED"
+
+
+def _failed_unmapped_exists_guard(source, mapping, channel: str):
+    """NOT EXISTS a mapping row for this staging row -- see _failed_unmapped_clause."""
+    fk = f"{channel}_product_id"
+    if not hasattr(mapping.c, fk):
+        return sa.true()
+    return ~sa.exists(
+        sa.select(sa.literal(1)).where(mapping.c[fk] == source.c.id)
+    )
+
+
 # Scopes a reset/listing/preview can be parameterized over. "rejected" is the
 # original, narrower scope every existing caller still gets by default;
 # "non_approved" is the new, wider one the review screen needs (unreviewed +
 # rejected, but never a steward-approved row -- reset_rejected's guarantee
-# that approved rows are never touched holds for both).
+# that approved rows are never touched holds for both). "failed_unmapped" is
+# narrower still: only rows the engine errored on and left with no mapping
+# row at all -- see _failed_unmapped_clause.
 _SCOPE_CLAUSES = {
     "rejected": _rejected_clause,
     "non_approved": _not_approved_clause,
+    "failed_unmapped": _failed_unmapped_clause,
 }
 
 # Applied to every preview_reset/reset_rejected WHERE unconditionally, in
@@ -577,6 +612,9 @@ def preview_reset(
         _engine_clause(source, engine),
         NOT_APPROVED_GUARD(source),
     ]
+    if scope == "failed_unmapped":
+        mapping = db_models.get_table(conn.engine, "staging", f"{channel}_product_mapping")
+        where.append(_failed_unmapped_exists_guard(source, mapping, channel))
     if category:
         where.append(source.c.category == category)
     if skus:
@@ -648,6 +686,8 @@ def reset_rejected(
         _engine_clause(source, engine),
         NOT_APPROVED_GUARD(source),
     ]
+    if scope == "failed_unmapped":
+        where.append(_failed_unmapped_exists_guard(source, mapping, channel))
     if category:
         where.append(source.c.category == category)
     if skus:

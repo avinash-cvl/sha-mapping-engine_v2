@@ -32,8 +32,29 @@
 
     const out = [];
 
-    /* ---- stuck runs ---- */
-    const stale = runs.filter((r) => r.status === "stale");
+    /* ---- stuck runs ----
+     * Split by age, not just by status. A stale row from an hour ago is
+     * something an operator can still act on (reconcile it, go look at why
+     * it crashed); one from five days ago has already been seen, already
+     * dropped out of anyone's active attention, and restating it as
+     * "unresolved" every single day is exactly the kind of alert fatigue
+     * that trains people to stop reading this page. Reconciling doesn't
+     * delete the row -- audit.engine_run is the permanent record -- so
+     * ageing an old one out of the unresolved list here costs nothing real;
+     * it is still there under "All" or in History for anyone who goes
+     * looking. One day is arbitrary but matches how this page already talks
+     * about "ongoing" -- a problem still worth a human's attention today,
+     * not an artifact from last week.
+     */
+    const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+    const now = Date.now();
+    const isRecent = (r) => {
+      const at = r.ended_at || r.started_at;
+      return at ? (now - new Date(at).getTime()) < ONE_DAY_MS : true;
+    };
+    const allStale = runs.filter((r) => r.status === "stale");
+    const stale = allStale.filter(isRecent);
+    const staleOld = allStale.filter((r) => !isRecent(r));
     if (stale.length) {
       const oldest = stale.map((r) => r.started_at).filter(Boolean).sort()[0];
       out.push({
@@ -48,6 +69,23 @@
         meta: "system · ongoing",
         actions: [
           { label: "Reconcile", primary: true, run: reconcile },
+          { label: "View in history", route: "history" },
+        ],
+      });
+    }
+    /* Older ones still get a card -- just downgraded to "resolved" rather
+       than dropped outright, so History's severity filter can still surface
+       them and nothing silently vanishes from the data the page is built on. */
+    if (staleOld.length) {
+      out.push({
+        id: "stale-runs-old",
+        severity: "ok",
+        status: "resolved",
+        title: `${fmt(staleOld.length)} older stale run${staleOld.length === 1 ? "" : "s"} (1+ day)`,
+        body: `Already reconciled or aged out of active attention. Kept here for the record, `
+          + `not because anything still needs doing.`,
+        meta: "system · aged out",
+        actions: [
           { label: "View in history", route: "history" },
         ],
       });
@@ -172,7 +210,19 @@
         const original = b.textContent;
         b.textContent = "Working…";
         try {
-          await act.run();
+          const result = await act.run();
+          // reconcile() is the only action that returns something worth
+          // saying -- without this, clicking it looked identical whether it
+          // caught a freshly-crashed run or found nothing at all, which is
+          // exactly the "did this do anything?" confusion that made the
+          // button look broken in the first place.
+          if (result && typeof result.reconciled === "number") {
+            b.textContent = result.reconciled
+              ? `Reconciled ${result.reconciled}`
+              : "Nothing new to reconcile";
+            await gather();
+            return;
+          }
           await gather();
         } catch (e) {
           showError($("errors"), e.message);
@@ -184,7 +234,16 @@
   }
 
   async function reconcile() {
-    const d = await api("/runs/reconcile", { method: "POST" });
+    /* 5 minutes, not the 30-minute default: GET /runs already runs
+       reconcile_stale() at 30 minutes on every page load, including the one
+       that just rendered this very alert -- so by the time an operator can
+       click this button, anything past 30 minutes is already reconciled and
+       this call would find nothing, looking like a no-op every time. A
+       shorter cutoff here is what actually gives the button a job: catching
+       a run that died more recently than the automatic sweep reaches, so
+       "Reconcile" does something an impatient operator couldn't already get
+       by waiting for the next page load. */
+    const d = await api("/runs/reconcile?max_age_minutes=5", { method: "POST" });
     /* Refreshing the pages that counted those runs, so the tiles on Runs and
        the summary on History stop reporting a number this action just
        invalidated. */

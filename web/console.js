@@ -193,6 +193,48 @@
     return wrap;
   }
 
-  window.Console = { pager, whoami, mountUser, api, fmt, duration, pill, esc, showError, clearError, streamRun, STATUS };
+  /* One switch markup, used everywhere an LLM-judge on/off appears (New run,
+     and every "how it will run" confirm dialog). A shared function instead of
+     six hand-copied blocks means the eight UX requirements it was built to
+     (44px hit target, whole-row click, ON/OFF text, focus ring, warning
+     outside the click target, disabled-while-running) are met once and stay
+     met, rather than drifting the next time one copy gets edited and the
+     other five don't.
+     `warning`, if given, renders BELOW the row, outside the <label> -- so
+     clicking the warning text never toggles the switch it explains. */
+  function llmToggle(id, { checked = true, name = "LLM judge", warning = null } = {}) {
+    return `<div class="setting-row">
+      <label for="${id}">
+        <input type="checkbox" id="${id}" ${checked ? "checked" : ""}>
+        <span class="sw-wrap"><span class="sw-track"></span></span>
+        <span class="sw-name">${esc(name)}</span>
+        <span class="sw-state">${checked ? "ON" : "OFF"}</span>
+      </label>
+      ${warning ? `<p class="sw-warn" id="${id}-warn">${warning}</p>` : ""}
+    </div>`;
+  }
+
+  /* Keeps the ON/OFF text in sync with clicks (the CSS alone only moves the
+     pill), and -- when `isRunning` is supplied -- disables the switch while
+     that check is true, because changing use_llm mid-run cannot affect a
+     process that already read it at launch; leaving the control live just
+     invites the operator to believe a click changed a run already underway. */
+  function bindLlmToggle(id, { isRunning = null } = {}) {
+    const input = document.getElementById(id);
+    if (!input) return;
+    const row = input.closest(".setting-row");
+    const stateEl = row?.querySelector(".sw-state");
+    const sync = () => { if (stateEl) stateEl.textContent = input.checked ? "ON" : "OFF"; };
+    input.addEventListener("change", sync);
+    sync();
+    if (typeof isRunning === "function") {
+      input.disabled = !!isRunning();
+    }
+  }
+
+  window.Console = {
+    pager, whoami, mountUser, api, fmt, duration, pill, esc, showError, clearError,
+    streamRun, STATUS, llmToggle, bindLlmToggle,
+  };
 
 })();

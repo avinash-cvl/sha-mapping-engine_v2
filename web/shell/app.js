@@ -134,6 +134,27 @@
     } catch { /* whoami already redirects to /login */ }
   })();
 
+  /* ---------- environment badge ----------
+   * This used to be a hardcoded "Production" label regardless of what .env
+   * actually pointed at -- an operator on the local DB had no on-screen way
+   * to tell, which is exactly the gap that let a local-only action almost
+   * run somewhere it shouldn't have. Read live from the server on every load
+   * so the badge can never say something the connection isn't. */
+  (async () => {
+    const NAME = { local: "Local", shared: "Shared", default: "Default" };
+    try {
+      const info = await window.Console.api("/env");
+      const el = $("env-name");
+      const badge = el?.closest(".env");
+      if (!el || !badge) return;
+      badge.dataset.mode = info.mode;
+      el.textContent = (NAME[info.mode] || info.mode.toUpperCase()) + " · " + info.database;
+    } catch {
+      /* Leave the static markup as-is rather than guess -- a badge that
+         failed to load is a smaller problem than one that guessed wrong. */
+    }
+  })();
+
   window.Shell = { go };
   go(location.hash ? location.hash.slice(1) : "runs");
 })();

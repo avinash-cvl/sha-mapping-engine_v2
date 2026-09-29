@@ -63,7 +63,7 @@
       <span class="kbd">Ctrl K</span>
     </div>
     <div class="appbar-right">
-      <span class="env"><i aria-hidden="true"></i><span id="env-name">Production</span></span>
+      <span class="env" data-mode="loading"><i aria-hidden="true"></i><span id="env-name">…</span></span>
       <button class="iconbtn theme-toggle" id="themeToggle" title="Toggle theme" aria-label="Toggle colour theme">
         <svg class="i-sun" width="17" height="17" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="4" stroke="currentColor" stroke-width="1.7"/><path d="M12 3v2M12 19v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M3 12h2M19 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
         <svg class="i-moon" width="17" height="17" viewBox="0 0 24 24" fill="none"><path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a7 7 0 0 0 10.5 10.5Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
@@ -105,8 +105,7 @@
     </div>
 
     <section class="panel" style="margin-top:16px">
-      <div class="panel-h"><span class="panel-t">Recent runs</span>
-        <span class="stale" style="margin-left:auto" id="recent-live"></span></div>
+      <div class="panel-h"><span class="panel-t">Recent runs</span></div>
       <div class="panel-b">
         <div class="tbar">
           <select id="rr-channel" aria-label="Channel"><option value="">All channels</option></select>
@@ -124,13 +123,15 @@
             <option value="stale">Stuck</option>
           </select>
           <span class="spacer"></span>
+          <span class="stale" id="recent-live"></span>
+          <button class="btn sm" id="rr-refresh" type="button" title="Refresh now">Refresh</button>
         </div>
         <div class="tw tw-short">
           <table>
             <thead><tr><th>Run</th><th>Scope</th><th>Engine</th><th>Outcome</th>
-              <th class="num">Processed</th><th class="num">Failed</th>
+              <th class="num">Progress</th><th class="num">Processed</th><th class="num">Failed</th>
               <th class="num">Duration</th><th>Triggered by</th><th></th></tr></thead>
-            <tbody id="rr-rows"><tr><td colspan="9" class="loading">Loading runs</td></tr></tbody>
+            <tbody id="rr-rows"><tr><td colspan="10" class="loading">Loading runs</td></tr></tbody>
           </table>
         </div>
         <div class="tfoot" style="display:flex;align-items:center;gap:10px;margin-top:12px">
@@ -144,18 +145,19 @@
   <!-- ============================== NEW RUN ============================== -->
   <section class="page" data-page="runs-new" hidden>
     <div class="page-head">
-      <div><h2>New run</h2><p>Resolve a scope, confirm what it will touch, then queue it.</p></div>
+      <div><h2>New run</h2><p>Configure and submit a SKU mapping pipeline run.</p></div>
+      <span class="pill-status" id="ready-badge"><i class="sq"></i>Resolving…</span>
     </div>
 
     <div class="grid">
       <form class="panel" id="scope-form" onsubmit="return false" aria-label="Run scope">
-        <div class="panel-h"><span class="panel-t">Scope</span></div>
+        <div class="panel-h"><span class="panel-t">Run configuration</span></div>
         <div class="panel-b">
           <div class="saved">
             <button type="button" class="active" id="saved-last">My last scope</button>
           </div>
           <div class="field">
-            <label>Products to run</label>
+            <label>Scope</label>
             <div class="seg">
               <input type="radio" name="t" id="t-cat" value="himalaya">
               <input type="radio" name="t" id="t-comp" value="competitor" checked>
@@ -198,27 +200,57 @@
 
           <div class="row2">
             <div class="field"><label for="w">Workers</label>
-              <select id="w"><option>1</option><option>2</option><option>3</option><option selected>4</option><option>6</option><option>8</option></select></div>
+              <select id="w"><option>1</option><option>2</option><option>3</option><option selected>4</option><option>6</option><option>8</option></select>
+              <p class="hint" id="w-auto" style="margin:4px 0 0" hidden>Suggested for this scope size — pick a value yourself to keep it.</p></div>
             <div class="field"><label for="bs">Batch size</label><input id="bs" type="text" value="500"></div>
           </div>
-          <div class="toggle"><label for="llm" style="margin:0">LLM judge</label>
-            <span class="sw"><input type="checkbox" id="llm" checked><span></span></span></div>
+          <div class="setting-row">
+            <label for="llm">
+              <input type="checkbox" id="llm" checked>
+              <span class="sw-wrap"><span class="sw-track"></span></span>
+              <span class="sw-name">LLM judge</span>
+              <span class="sw-state" id="llm-state">ON</span>
+            </label>
+          </div>
           <p class="hint" style="margin:8px 0 0">Workers above 4 have produced SQL 40001 deadlocks on this instance.</p>
         </div>
       </form>
 
       <div class="stack">
         <section class="panel">
-          <div class="panel-h"><span class="panel-t">Run preview</span>
+          <div class="panel-h"><span class="panel-t" id="preview-panel-title">Run preview</span>
             <span class="stale" style="margin-left:auto" id="preview-at"></span></div>
-          <div class="panel-b" id="preview-b">
-            <div class="loading">Resolving scope</div>
+          <div class="panel-b">
+            <div class="run-ov-head" id="run-ov-head" hidden>
+              <div>
+                <b id="run-ov-title">—</b>
+                <div class="t-sub" id="run-ov-sub"></div>
+              </div>
+              <div class="run-ov-pills">
+                <span class="pill-status" id="ov-pending-pill">Pending only</span>
+                <span class="pill-status" id="ov-llm-pill">LLM Judge ON</span>
+              </div>
+            </div>
+            <div class="tiles tiles-4" id="run-ov-tiles">
+              <div class="tile"><span class="n" id="ov-pending">—</span><span class="k">Pending</span>
+                <span class="t-sub">Eligible SKUs</span></div>
+              <div class="tile"><span class="n" id="ov-running">0</span><span class="k">Running</span>
+                <span class="t-sub">Currently processing</span></div>
+              <div class="tile"><span class="n" id="ov-completed">0</span><span class="k">Completed</span>
+                <span class="t-sub">This run</span></div>
+              <div class="tile warnv"><span class="n" id="ov-failed">0</span><span class="k">Failed</span>
+                <span class="t-sub">This run</span></div>
+            </div>
+            <div id="preview-b">
+              <div class="loading">Resolving scope</div>
+            </div>
           </div>
         </section>
 
         <section class="panel" id="queue-panel" hidden>
           <div class="panel-h"><span class="panel-t">Queue</span>
-            <span style="margin-left:auto"><span class="live" id="liveTag"><i></i>Streaming</span></span></div>
+            <span style="margin-left:auto"><span class="live" id="liveTag"><i></i>Streaming</span></span>
+            <button class="btn sm" id="queue-refresh" type="button" title="Refresh now" style="margin-left:8px">Refresh</button></div>
           <div class="panel-b">
             <div class="q" id="queue-rows"></div>
             <div class="stages" id="stages" style="margin-top:18px"></div>
@@ -240,8 +272,8 @@
         <section class="panel" id="outcome-panel">
           <div class="tabs" role="tablist" aria-label="Run outcome">
             <button class="tab" role="tab" aria-selected="true" data-tab="results">Results <span class="cnt" id="c-results">0</span></button>
-            <button class="tab" role="tab" aria-selected="false" data-tab="failures">Failures <span class="cnt bad" id="c-failures">0</span></button>
-            <button class="tab" role="tab" aria-selected="false" data-tab="log">Log</button>
+            <button class="tab" role="tab" aria-selected="false" data-tab="failures">Failed <span class="cnt bad" id="c-failures">0</span></button>
+            <button class="tab" role="tab" aria-selected="false" data-tab="log">Logs</button>
             <button class="tab" role="tab" aria-selected="false" data-tab="gate">Gate health <span class="cnt" id="c-gate">0</span></button>
           </div>
 
@@ -443,6 +475,14 @@
           <button class="btn danger" id="rv-full-reset">Reset &amp; re-run all Non-Approved
             <span id="rv-full-engine-label2">Himalaya</span> SKUs</button>
           <span class="stale" id="rv-full-note"></span>
+        </div>
+        <p class="hint" style="margin:14px 0 8px;max-width:80ch">Narrower: only SKUs the
+          engine errored on (<span class="m">Failed</span>) and that have no mapping row at
+          all yet. Skips anything already mapped, even if it once failed on an earlier
+          attempt.</p>
+        <div class="actions" style="margin-top:0">
+          <button class="btn" id="rv-failed-reset">Reset &amp; re-run Failed (unmapped) only</button>
+          <span class="stale" id="rv-failed-note"></span>
         </div>
       </div>
     </section>
@@ -753,6 +793,7 @@ SKU004" style="width:100%;resize:vertical;font-family:var(--mono, monospace);
         <div class="sub" id="rd-sub"></div>
       </div>
       <span id="rd-status"></span>
+      <button class="btn sm" id="rd-refresh" type="button" title="Refresh now" hidden>Refresh</button>
       <button class="rd-close" id="rd-close" aria-label="Close">&times;</button>
     </div>
 

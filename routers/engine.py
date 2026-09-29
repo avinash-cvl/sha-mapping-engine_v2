@@ -202,6 +202,68 @@ def _validate(channel: str, engine: str | None) -> None:
         raise HTTPException(400, f"engine must be one of {tuple(ENGINE_MODULE)}")
 
 
+@router.get("/env")
+def env_info() -> dict:
+    """Which DB_AUTH_MODE block .env is actually using right now, and which
+    database that resolves to.
+
+    The console's header used to show a hardcoded "Production" label no
+    matter what .env said -- an operator on the local DB had no way to tell
+    from the screen alone, which is how a local-only action almost landed
+    somewhere it shouldn't have. This reads the same environment variables
+    common.config._dsn_from_mode() does, live, so the badge can never drift
+    from the connection actually in use the way a second hardcoded copy would.
+    """
+    mode = os.environ.get("DB_AUTH_MODE", "").strip().lower() or "default"
+    suffix = mode.upper()
+    database = os.environ.get(f"DB_DATABASE_{suffix}") or "unknown"
+    if os.environ.get("SQL_SERVER_DSN"):
+        mode = "custom (SQL_SERVER_DSN)"
+    return {"mode": mode, "database": database}
+
+
+@router.get("/pending-summary")
+def pending_summary(conn: db.Connection = Depends(get_conn)) -> dict:
+    """How many rows a run would actually pick up right now, across every
+    channel and engine, before any scope has been chosen.
+
+    Literal mapping_status='PENDING' -- the exact clause
+    step_6_get_source_batch selects on -- not rejection.counts()'s "pending"
+    (non-approved and not rejected), which also counts AutoMatch,
+    StewardReview, LowConfidence and Failed rows a run does not touch. Shown
+    on the New run page before a channel is picked, so that empty state has
+    something real to say instead of nothing.
+    """
+    by_channel = []
+    total = 0
+    for ch in CHANNELS:
+        try:
+            source = db_models.get_table(conn.engine, "staging", f"{ch}_products")
+        except Exception:
+            continue
+        if not hasattr(source.c, "mapping_status"):
+            continue
+        pending_clause = sa.func.upper(
+            sa.func.ltrim(sa.func.rtrim(source.c.mapping_status))
+        ) == "PENDING"
+        row = conn.execute(
+            sa.select(
+                sa.func.sum(sa.case(
+                    (scope._brand_clause(source, "himalaya"), 1), else_=0,
+                )).label("himalaya"),
+                sa.func.sum(sa.case(
+                    (scope._brand_clause(source, "competitor"), 1), else_=0,
+                )).label("competitor"),
+            ).where(pending_clause)
+        ).first()
+        h = int(row.himalaya or 0)
+        c = int(row.competitor or 0)
+        if h + c:
+            by_channel.append({"channel": ch, "himalaya": h, "competitor": c, "total": h + c})
+        total += h + c
+    return {"total": total, "by_channel": by_channel}
+
+
 # ---------------------------------------------------------------- reads
 @router.get("/channels")
 def channels(conn: db.Connection = Depends(get_conn)) -> dict:
@@ -813,7 +875,7 @@ def launch(req: RunRequest, user: auth.User = Depends(auth.current_user), conn: 
 
 
 @router.post("/runs/{run_id}/cancel")
-def cancel(run_id: str) -> dict:
+def cancel(run_id: str, conn: db.Connection = Depends(get_conn)) -> dict:
     r = RUNS.get(run_id)
     if r is None or r.proc is None:
         raise HTTPException(404, "no live process for that run")
@@ -821,6 +883,27 @@ def cancel(run_id: str) -> dict:
         return {"run_id": run_id, "already_finished": True}
     r.cancelled = True
     r.proc.terminate()
+
+    # terminate() only sends the signal -- it does not wait for the process to
+    # exit, and the subprocess closes its OWN audit.engine_run row on a clean
+    # exit (run_record.finish, called from batch_flow.py). A killed process
+    # never reaches that line, so without writing the row here too, status
+    # stays 'running' forever: the same "looks stuck" bug reconcile_stale()
+    # exists for, but self-inflicted by this endpoint instead of a crash.
+    # Written immediately, before the process has actually died, because the
+    # alternative (waiting on Popen.wait()) blocks this request on however
+    # long the subprocess takes to notice the signal.
+    run = db_models.get_table(conn.engine, "audit", "engine_run")
+    current = conn.execute(
+        sa.select(run.c.processed, run.c.failed)
+        .where(run.c.execution_id == run_id)
+    ).first()
+    run_record.finish(
+        conn, run_id, status="cancelled",
+        processed=current.processed if current else 0,
+        failed=current.failed if current else 0,
+        error_message="Cancelled by operator.",
+    )
     return {"run_id": run_id, "cancelled": True}
 
 
@@ -1784,6 +1867,13 @@ class ResetReviewRequest(BaseModel):
     # extra filter) when skus is given, since a manually-entered list is
     # already an explicit scope.
     engine: str | None = None
+    # "non_approved" (default, unchanged) is every rejected/never-reviewed row.
+    # "failed_unmapped" is narrower: only rows the engine errored on and left
+    # with no mapping row at all -- see rejection._failed_unmapped_clause.
+    scope: str = "non_approved"
+
+
+_RESET_SCOPES = {"non_approved", "failed_unmapped"}
 
 
 @router.post("/review/reset/preview")
@@ -1794,11 +1884,13 @@ def preview_reset_review(
     """What resetting these SKUs (rejected or never-reviewed) would touch.
     Reads only, same selection the apply below uses."""
     _validate(req.channel, req.engine)
+    if req.scope not in _RESET_SCOPES:
+        raise HTTPException(400, f"scope must be one of {tuple(_RESET_SCOPES)}")
     if not req.skus and not req.engine:
         raise HTTPException(400, "engine is required for a channel-wide reset")
     return rejection.preview_reset(
         conn, req.channel, req.category, req.skus,
-        scope="non_approved", engine=req.engine,
+        scope=req.scope, engine=req.engine,
     ).as_dict()
 
 
@@ -1813,11 +1905,13 @@ def reset_review(
     scope="non_approved" excludes it the same way the rejected-only reset
     excludes it under scope="rejected"."""
     _validate(req.channel, req.engine)
+    if req.scope not in _RESET_SCOPES:
+        raise HTTPException(400, f"scope must be one of {tuple(_RESET_SCOPES)}")
     if not req.skus and not req.engine:
         raise HTTPException(400, "engine is required for a channel-wide reset")
     return rejection.reset_rejected(
         conn, req.channel, category=req.category, skus=req.skus,
-        actor=user.email, scope="non_approved", engine=req.engine,
+        actor=user.email, scope=req.scope, engine=req.engine,
     ).as_dict()
 
 

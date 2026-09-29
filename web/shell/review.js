@@ -72,6 +72,9 @@
     $("rv-full-reset").disabled = !canRunFull;
     $("rv-full-note").textContent = canRunFull
       ? "" : "Pick Himalaya or Competitor above to enable this — not both at once.";
+    $("rv-failed-reset").disabled = !canRunFull;
+    $("rv-failed-note").textContent = canRunFull
+      ? "" : "Pick Himalaya or Competitor above to enable this — not both at once.";
   }
 
   async function load() {
@@ -207,12 +210,13 @@
        <div class="m-sec">
          <h3>How it will run</h3>
          <dl class="kv">
-           <dt>LLM judge</dt><dd class="${$("llm").checked ? "" : "warn"}">${
-             $("llm").checked ? "on" : "OFF — scoring only"}</dd>
+           <dt>LLM judge</dt><dd style="display:flex;align-items:center;gap:8px">
+             <input type="checkbox" id="rv-full-llm" checked style="width:16px;height:16px;margin:0">
+             <label for="rv-full-llm" style="margin:0;font-weight:400">Use the LLM judge for this run</label></dd>
            <dt>Workers</dt><dd>${esc($("w").value)}</dd>
          </dl>
-         <p class="hint" style="margin-top:8px">Taken from the New run page. Change them
-           there if this validation run needs different settings.</p>
+         <p class="hint" style="margin-top:8px">Workers come from the New run page; the LLM
+           judge above applies only to this run.</p>
        </div>
        <div class="m-sec">
          <label class="m-ack"><input type="checkbox" id="rv-full-ack">
@@ -226,6 +230,7 @@
     });
 
     window.ConfirmDialog.open(async () => {
+      const useLlm = $("rv-full-llm").checked;
       const result = await api("/review/reset", {
         method: "POST", body: JSON.stringify({ channel, engine }),
       });
@@ -233,9 +238,91 @@
       if (!skus.length) return;
       $("rv-full-note").textContent = `Running ${fmt(skus.length)} SKUs…`;
       await window.RunLauncher.launchSkus({
-        channel, skus, engine,
+        channel, skus, engine, use_llm: useLlm,
         onDone: async () => {
           $("rv-full-note").textContent = "";
+          await load().catch(() => {});
+        },
+      });
+    });
+  }
+
+  /* --------------------------------------- failed-only action (unmapped)
+   * Same shape as the full-backlog action above, narrowed server-side to
+   * scope=failed_unmapped: mapping_status='Failed' AND no mapping row exists
+   * for that SKU yet. A Failed row that somehow already has a mapping row is
+   * left alone rather than reset -- see rejection._failed_unmapped_clause.
+   */
+  async function openFailedResetConfirm() {
+    const { channel, engine } = currentScope();
+    if (!channel || !engine) return;
+
+    let preview;
+    try {
+      preview = await api("/review/reset/preview", {
+        method: "POST", body: JSON.stringify({ channel, engine, scope: "failed_unmapped" }),
+      });
+    } catch (e) {
+      showError($("errors"), e.message);
+      return;
+    }
+    if (!preview.rows_found) {
+      showError($("errors"), `No unmapped Failed SKUs for ${ENGINE_LABEL[engine]} on ${channel}.`);
+      return;
+    }
+
+    $("confirm-title").innerHTML =
+      `<svg width="19" height="19" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 8.5v4.5M12 16.5v.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M10.3 3.9 2.6 17.2A2 2 0 0 0 4.3 20.2h15.4a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" stroke="currentColor" stroke-width="1.7"/></svg>
+       Reset and re-run Failed (unmapped) SKUs`;
+    $("confirm-lede").textContent =
+      `Only SKUs currently marked Failed with no mapping row at all for `
+      + `${ENGINE_LABEL[engine]} on ${channel}. Nothing already mapped is touched.`;
+    $("confirm-body").innerHTML =
+      `<div class="m-sec">
+         <h3>What changes</h3>
+         <dl class="kv">
+           <dt>Channel</dt><dd>${esc(channel)}</dd>
+           <dt>Engine</dt><dd>${esc(ENGINE_LABEL[engine])} only</dd>
+           <dt>SKUs affected</dt><dd class="big">${fmt(preview.rows_found)}</dd>
+           <dt>mapping_status</dt><dd>&rarr; PENDING</dd>
+         </dl>
+       </div>
+       <div class="m-sec">
+         <h3>Sample of what is affected</h3>
+         <div class="m-cmd">${preview.skus.slice(0, 8).map(esc).join("\n")}${
+           preview.skus.length > 8 ? `\n… and ${fmt(preview.skus.length - 8)} more` : ""}</div>
+       </div>
+       <div class="m-sec">
+         <h3>How it will run</h3>
+         <dl class="kv">
+           <dt>LLM judge</dt><dd style="display:flex;align-items:center;gap:8px">
+             <input type="checkbox" id="rv-failed-llm" checked style="width:16px;height:16px;margin:0">
+             <label for="rv-failed-llm" style="margin:0;font-weight:400">Use the LLM judge for this run</label></dd>
+         </dl>
+       </div>
+       <div class="m-sec">
+         <label class="m-ack"><input type="checkbox" id="rv-failed-ack">
+           I understand ${fmt(preview.rows_found)} SKU${
+             preview.rows_found === 1 ? "" : "s"} will be reset and re-run.</label>
+       </div>`;
+    $("confirm-go").textContent = "Reset and re-run Failed";
+    $("confirm-go").disabled = true;
+    $("rv-failed-ack").addEventListener("change", (e) => {
+      $("confirm-go").disabled = !e.target.checked;
+    });
+
+    window.ConfirmDialog.open(async () => {
+      const useLlm = $("rv-failed-llm").checked;
+      const result = await api("/review/reset", {
+        method: "POST", body: JSON.stringify({ channel, engine, scope: "failed_unmapped" }),
+      });
+      const skus = result.by_engine?.[engine] || result.skus || [];
+      if (!skus.length) return;
+      $("rv-failed-note").textContent = `Running ${fmt(skus.length)} SKUs…`;
+      await window.RunLauncher.launchSkus({
+        channel, skus, engine, use_llm: useLlm,
+        onDone: async () => {
+          $("rv-failed-note").textContent = "";
           await load().catch(() => {});
         },
       });
@@ -279,6 +366,14 @@
          </ul>
        </div>
        <div class="m-sec">
+         <h3>How it will run</h3>
+         <dl class="kv">
+           <dt>LLM judge</dt><dd style="display:flex;align-items:center;gap:8px">
+             <input type="checkbox" id="rv-one-llm" checked style="width:16px;height:16px;margin:0">
+             <label for="rv-one-llm" style="margin:0;font-weight:400">Use the LLM judge for this run</label></dd>
+         </dl>
+       </div>
+       <div class="m-sec">
          <label class="m-ack"><input type="checkbox" id="rv-one-ack">
            I understand this SKU's existing mappings will be deleted.</label>
        </div>`;
@@ -289,6 +384,7 @@
     });
 
     window.ConfirmDialog.open(async () => {
+      const useLlm = $("rv-one-llm").checked;
       const res = await api("/review/reset", {
         method: "POST",
         body: JSON.stringify({ channel, skus: [sku] }),
@@ -298,7 +394,7 @@
         throw new Error(`Cannot tell which engine owns ${sku} — reload the page.`);
       }
       await window.RunLauncher.launchSkus({
-        channel, skus: [sku], engine: row.engine,
+        channel, skus: [sku], engine: row.engine, use_llm: useLlm,
         onDone: async () => { await load().catch(() => {}); },
       });
     });
@@ -369,6 +465,14 @@
            preview.skus.length > 15 ? `\n… and ${fmt(preview.skus.length - 15)} more` : ""}</div>
        </div>
        <div class="m-sec">
+         <h3>How it will run</h3>
+         <dl class="kv">
+           <dt>LLM judge</dt><dd style="display:flex;align-items:center;gap:8px">
+             <input type="checkbox" id="rv-manual-llm" checked style="width:16px;height:16px;margin:0">
+             <label for="rv-manual-llm" style="margin:0;font-weight:400">Use the LLM judge for this run</label></dd>
+         </dl>
+       </div>
+       <div class="m-sec">
          <label class="m-ack"><input type="checkbox" id="rv-manual-ack">
            I understand these SKUs' existing mappings will be deleted and cannot be restored.</label>
        </div>`;
@@ -379,6 +483,7 @@
     });
 
     window.ConfirmDialog.open(async () => {
+      const useLlm = $("rv-manual-llm").checked;
       const result = await api("/review/reset", {
         method: "POST", body: JSON.stringify({ channel, skus }),
       });
@@ -388,7 +493,7 @@
       const legs = Object.entries(result.by_engine || {}).filter(([, l]) => l.length);
       for (const [engine, list] of legs) {
         await window.RunLauncher.launchSkus({
-          channel, skus: list, engine,
+          channel, skus: list, engine, use_llm: useLlm,
           onDone: async () => { await load().catch(() => {}); },
         });
       }
@@ -399,6 +504,7 @@
 
   $("rv-manual-run").addEventListener("click", () => runManual());
   $("rv-full-reset").addEventListener("click", () => openFullResetConfirm());
+  $("rv-failed-reset").addEventListener("click", () => openFailedResetConfirm());
 
   /* ------------------------------------------------------------ wiring */
 

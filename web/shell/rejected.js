@@ -366,15 +366,16 @@
        <div class="m-sec">
          <h3>How it will run</h3>
          <dl class="kv">
-           <dt>LLM judge</dt><dd class="${$("llm").checked ? "" : "warn"}">${
-             $("llm").checked ? "on — about 3 calls for this SKU" : "OFF — scoring only"}</dd>
+           <dt>LLM judge</dt><dd style="display:flex;align-items:center;gap:8px">
+             <input type="checkbox" id="one-llm" checked style="width:16px;height:16px;margin:0">
+             <label for="one-llm" style="margin:0;font-weight:400">Use the LLM judge for this SKU</label></dd>
            <dt>Engine</dt><dd>${row?.engine === "himalaya"
              ? "Himalaya (oneds_master)" : row?.engine === "competitor"
              ? "Competitor (oneds_competitor)" : "both"}</dd>
            <dt>Workers</dt><dd>${esc($("w").value)}</dd>
          </dl>
-         <p class="hint" style="margin-top:8px">Taken from the New run page. Change them
-           there if this SKU needs different settings.</p>
+         <p class="hint" style="margin-top:8px">Workers come from the New run page; the LLM
+           judge above applies only to this SKU.</p>
        </div>
        <div class="m-sec">
          <label class="m-ack"><input type="checkbox" id="one-ack">
@@ -387,6 +388,7 @@
     });
 
     window.ConfirmDialog.open(async () => {
+      const useLlm = $("one-llm").checked;
       const res = await api("/rejected/reset", {
         method: "POST",
         body: JSON.stringify({ channel, skus: [sku] }),
@@ -402,7 +404,7 @@
         throw new Error(`Cannot tell which engine owns ${sku} — reload the page.`);
       }
       await window.RunLauncher.launchSkus({
-        channel, skus: [sku], engine: row.engine,
+        channel, skus: [sku], engine: row.engine, use_llm: useLlm,
         onDone: async () => {
           if ($("rej-channel").dataset.filled) {
             await fillChannels().catch(() => {});

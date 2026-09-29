@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import time
 
 from concurrent.futures import (
     ThreadPoolExecutor,
@@ -764,6 +765,12 @@ def main() -> None:
         # everything that finished -- step 6 only ever pulls PENDING
         # rows. That's the resume mechanism.
         total_processed = 0
+        # Cumulative across groups -- see oneds_master/batch_flow.py's
+        # identical comment for why this isn't the per-group failed_sources
+        # list, and why heartbeat()'s figures don't need to be the record of
+        # truth outcome_for() is.
+        total_failed = 0
+        last_heartbeat = time.monotonic()
 
         logger.info(
             "=================================================="
@@ -1423,6 +1430,8 @@ def main() -> None:
                                 source
                             )
 
+                            total_failed += 1
+
                             logger.error(
                                 "WORKER FAILED | "
                                 "source_id=%s | SKU=%r | "
@@ -1431,6 +1440,16 @@ def main() -> None:
                                 sku,
                                 exc,
                             )
+
+                        # Heartbeat -- see oneds_master/batch_flow.py's
+                        # identical block for why this exists and why it's
+                        # throttled to roughly once a second.
+                        now = time.monotonic()
+                        if now - last_heartbeat >= 1.0:
+                            run_record.heartbeat(
+                                conn, run_id, total_processed, total_failed
+                            )
+                            last_heartbeat = now
 
                 # =================================================
                 # PARALLEL PROCESSING SUMMARY

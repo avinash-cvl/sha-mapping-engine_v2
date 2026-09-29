@@ -8,7 +8,8 @@
 (function () {
 "use strict";
 
-  const { api, esc, fmt, duration, pill, pager, streamRun, showError, clearError } = window.Console;
+  const { api, esc, fmt, duration, pill, pager, streamRun, showError, clearError,
+    llmToggle, bindLlmToggle } = window.Console;
   const $ = (id) => document.getElementById(id);
 
   let CHANNELS = {};        // {channel: {category: [subcategory, ...]}}
@@ -58,6 +59,29 @@
     RUNS = await api("/runs?limit=200");
     renderTiles();
     renderRecent();
+    markRefreshed();
+  }
+
+  /* Auto-poll while anything on the landing table is actually running --
+     a fixed 2-minute cadence is cheap enough to leave on, but pointless (and
+     one more thing to explain) once every run shown is finished. Cleared and
+     restarted rather than left running forever, so leaving the tab open for
+     days doesn't accumulate more than one interval. */
+  let refreshTimer = null;
+  const REFRESH_MS = 120000;
+
+  function scheduleAutoRefresh() {
+    if (refreshTimer) clearInterval(refreshTimer);
+    refreshTimer = setInterval(() => {
+      if (!RUNS.some((r) => r.status === "running")) return;
+      loadRuns().catch(() => { /* next tick tries again */ });
+    }, REFRESH_MS);
+  }
+
+  function markRefreshed() {
+    const el = $("recent-live");
+    if (el) el.textContent = "Updated " + new Date().toLocaleTimeString(undefined,
+      { hour: "2-digit", minute: "2-digit", second: "2-digit" });
   }
 
   function renderTiles() {
@@ -107,6 +131,8 @@
              nothing. Shown as a bare 0 beside "Completed" it reads as a
              failure, so the row says what actually happened instead. */
           const noWork = !stale && !r.to_run && !r.processed;
+          const running = r.status === "running";
+          const pct = r.to_run ? Math.round((r.processed / r.to_run) * 100) : (noWork ? 100 : 0);
           return `<tr class="${stale ? "stale" : ""}">
             <td class="m">${esc((r.execution_id || "").slice(0, 8))}
               <div class="t-sub">${r.started_at
@@ -119,16 +145,22 @@
             <td>${noWork
               ? '<span class="pill p-no"><i class="sq"></i>Nothing to run</span>'
               : outcomePill(r)}</td>
+            <td class="num">${stale ? "—" : fmt(pct) + "%"}</td>
             <td class="num">${stale ? "—" : fmt(r.processed)}${
               noWork ? `<div class="t-sub">${fmt(r.already_mapped)} already mapped</div>` : ""}</td>
             <td class="num" ${r.failed ? 'style="color:var(--crit)"' : ""}>${
               stale ? "—" : fmt(r.failed)}</td>
             <td class="num">${stale ? "—" : runDuration(r.started_at, r.ended_at)}</td>
             <td class="m">${esc(who(r.triggered_by))}</td>
-            <td><button class="btn open rd-open" data-run="${esc(r.execution_id)}">View details</button></td>
+            <td style="white-space:nowrap;display:flex;gap:6px">
+              <button class="btn open rd-open" data-run="${esc(r.execution_id)}">View details</button>
+              ${running
+                ? `<button class="btn sm danger rr-cancel" data-run="${esc(r.execution_id)}">Cancel</button>`
+                : ""}
+            </td>
           </tr>`;
         }).join("")
-      : `<tr><td colspan="9" class="empty">No runs match these filters.</td></tr>`;
+      : `<tr><td colspan="10" class="empty">No runs match these filters.</td></tr>`;
 
     $("rr-cap").textContent = rows.length
       ? `Showing ${Math.min(8, rows.length)} of ${fmt(rows.length)} runs`
@@ -144,6 +176,21 @@
           showError($("errors"), e.message);
         } finally {
           b.disabled = false;
+        }
+      }));
+
+    $("rr-rows").querySelectorAll(".rr-cancel").forEach((b) =>
+      b.addEventListener("click", async () => {
+        if (!confirm("Cancel this run? It stops after the SKU currently in progress.")) return;
+        b.disabled = true;
+        b.textContent = "Cancelling…";
+        try {
+          await api(`/runs/${b.dataset.run}/cancel`, { method: "POST" });
+          await loadRuns();
+        } catch (e) {
+          showError($("errors"), e.message);
+          b.disabled = false;
+          b.textContent = "Cancel";
         }
       }));
   }
@@ -277,14 +324,32 @@
     resolveTimer = setTimeout(resolve, 250);
   }
 
+  // Cached for the session: the same figure until something actually
+  // changes it (a run completes, a SKU is reset), so re-showing the empty
+  // state while flipping channels back and forth doesn't refetch it. Feeds
+  // only the Pending tile in the Run overview strip -- the per-channel
+  // breakdown used to also render as a block of text under the empty state,
+  // which duplicated the same total the tile already shows.
+  let PENDING_SUMMARY = null;
+
+  async function fetchPendingSummary() {
+    try {
+      if (!PENDING_SUMMARY) PENDING_SUMMARY = await api("/pending-summary");
+    } catch { /* tile falls back to "—" */ }
+  }
+
   async function resolve() {
     if (!$("ch").value) {
       PREVIEW = null;
       renderScopeCounts();
+      // First paint before the pending-summary fetch resolves: the tile
+      // shows "—" only for that one instant, same dash the rest of the page
+      // already uses for "not known yet".
+      if (!QUEUE.length) renderOverview();
       /* In SKU mode the missing channel is not a formality: a SKU is only
          unique within a channel's table, and the same code can exist on
          several. The message says which fact is blocking the resolve. */
-      $("preview-b").innerHTML = scopeMode() === "skus"
+      const headline = scopeMode() === "skus"
         ? `<p class="empty">Pick a channel before pasting SKUs.<br>
              <span class="hint">Each channel is a separate source table, so the same
                SKU can exist on more than one — the engine cannot tell which you
@@ -292,7 +357,13 @@
         : `<p class="empty">Pick a channel to resolve a scope.<br>
              <span class="hint">A run covers one channel — the engine reads a single
                source table, so there is no all-channels mode.</span></p>`;
+      $("preview-b").innerHTML = headline;
       $("preview-at").textContent = "";
+      await fetchPendingSummary();
+      // The channel picker can be filled in while that fetch was in flight --
+      // re-rendering the tile under a scope now being resolved would show a
+      // stale total next to real data.
+      if (!$("ch").value && !QUEUE.length) renderOverview();
       return;
     }
     $("preview-b").innerHTML = `<div class="loading">Resolving scope</div>`;
@@ -317,6 +388,44 @@
     return PREVIEW?.legs.find((l) => l.engine === engine) || null;
   }
 
+  /* Auto-suggested Workers, from the scope size alone.
+   *
+   * Two tiers, not four: a worker is one thread from a pool submitted the
+   * WHOLE batch at once (see batch_flow.py's ThreadPoolExecutor), so above a
+   * handful of SKUs there is always enough work to keep every thread busy --
+   * "3 workers for 50 SKUs" saved nothing real, it was an unproven middle
+   * tier. The only case with a genuine reason to scale down is a handful of
+   * SKUs too few to meaningfully parallelise at all. Above that, go straight
+   * to 4: deadlocks were observed at 6 workers on this table in a single run
+   * (see /runs launch()'s docstring) -- a risk tied to concurrent writers,
+   * not to how many SKUs are queued behind them, so a bigger batch is not
+   * safer at a lower worker count and 4 is both the floor and the ceiling
+   * that make sense once there's real work to spread across them.
+   */
+  function suggestedWorkers(toRun) {
+    return toRun <= 5 ? 1 : 4;
+  }
+
+  // True once the operator has picked a Workers value themselves -- after
+  // that, the scope resolving again (a new category, a bigger SKU paste)
+  // must never silently overwrite a deliberate choice.
+  let workersTouched = false;
+  $("w").addEventListener("change", () => {
+    workersTouched = true;
+    $("w-auto").hidden = true;
+  });
+
+  function applyWorkerSuggestion(toRun) {
+    if (workersTouched) return;
+    const suggested = String(suggestedWorkers(toRun));
+    if ($("w").value !== suggested) {
+      $("w").value = suggested;
+      // Setting .value programmatically does not fire "change" -- and must
+      // not here, or this very handler would mark itself as user-touched.
+    }
+    $("w-auto").hidden = suggested === "4";
+  }
+
   function renderScopeCounts() {
     const h = legOf("himalaya"), c = legOf("competitor");
     $("n-cat").textContent = h ? fmt(h.to_run) : "—";
@@ -337,10 +446,103 @@
     </div>`;
   }
 
+  /* Run overview: the summary strip above the scope details (Pending /
+     Running / Completed / Failed tiles, the scope headline, the "Ready to
+     run" badge). Reads PREVIEW (scope resolve) and QUEUE (live run progress)
+     -- both already fetched for other reasons -- rather than requesting
+     anything of its own, so this can never show a number the rest of the
+     page disagrees with.
+     Two distinct states: no run launched yet (PREVIEW drives Pending, the
+     other three tiles sit at 0) and a queue actually running or finished
+     (QUEUE drives all four, since a launched run's real Running/Completed/
+     Failed figures matter more than the pre-run estimate). */
+  /* Three states, not two:
+       1. No channel picked, no run active -- the new landing view (Pending
+          tile showing the cross-channel total, "Pick a channel" badge).
+       2. A channel IS picked but nothing has been launched yet -- reverts
+          entirely to the original page: no tiles, no badge, panel retitled
+          back to "Run preview", renderPreview()'s leg card is what's on
+          screen. Requested explicitly: the new overview strip was only ever
+          meant for the empty state, not to replace the scope breakdown
+          operators already knew how to read.
+       3. A run has actually been launched (QUEUE non-empty) -- tiles and
+          badge come back, now showing live progress, regardless of what the
+          channel picker currently says (a reattached/synced run may not
+          match it at all). */
+  function renderOverview() {
+    const head = $("run-ov-head");
+    const tiles = $("run-ov-tiles");
+    const badge = $("ready-badge");
+    const title = $("preview-panel-title");
+    const engine = currentEngine();
+    const leg = legOf(engine);
+    const queueActive = QUEUE.length > 0;
+
+    if (!leg && !queueActive) {
+      title.textContent = "Run overview";
+      tiles.hidden = false;
+      badge.hidden = false;
+      head.hidden = true;
+      // Same figure the empty-state summary below already shows in words --
+      // the tile echoes it in numeral form rather than sitting on a dash
+      // while real data is one panel down. Only ever a cache hit here:
+      // fetchPendingSummary() (called from resolve()'s no-channel branch)
+      // already fetched and cached PENDING_SUMMARY by the time a render
+      // reaches this branch on any normal path.
+      $("ov-pending").textContent = PENDING_SUMMARY ? fmt(PENDING_SUMMARY.total) : "—";
+      $("ov-running").textContent = "0";
+      $("ov-completed").textContent = "0";
+      $("ov-failed").textContent = "0";
+      badge.className = "pill-status neutral";
+      badge.innerHTML = '<i class="sq"></i>Pick a channel';
+      return;
+    }
+
+    if (!queueActive) {
+      // A channel is picked, nothing launched yet -- old view, full stop.
+      title.textContent = "Run preview";
+      tiles.hidden = true;
+      head.hidden = true;
+      badge.hidden = true;
+      return;
+    }
+
+    title.textContent = "Run overview";
+    tiles.hidden = false;
+    badge.hidden = false;
+    head.hidden = false;
+    const chLabel = $("ch").value || "—";
+    const catLabel = scopeMode() === "skus"
+      ? "SKU list"
+      : `${$("cat").value || "All categories"} · ${$("sub").value || "All sub-categories"}`;
+    $("run-ov-title").textContent =
+      `${engine === "himalaya" ? "Himalaya" : "Competitor"} · ${chLabel === "—" ? "" : chLabel}`.trim();
+    $("run-ov-sub").textContent = catLabel;
+    $("ov-llm-pill").textContent = `LLM Judge ${$("llm").checked ? "ON" : "OFF"}`;
+    $("ov-llm-pill").className = "pill-status" + ($("llm").checked ? "" : " neutral");
+
+    const processed = QUEUE.reduce((a, q) => a + q.processed, 0);
+    const failed = QUEUE.reduce((a, q) => a + q.failed, 0);
+    const total = QUEUE.reduce((a, q) => a + q.to_run, 0);
+    const running = QUEUE.filter((q) => q.state === "running" || q.state === "starting").length;
+    const live = running > 0;
+    $("ov-pending-pill").textContent = live ? "Running" : "Finished";
+    $("ov-pending").textContent = fmt(Math.max(0, total - processed - running));
+    $("ov-running").textContent = fmt(running);
+    $("ov-completed").textContent = fmt(processed - failed);
+    $("ov-failed").textContent = fmt(failed);
+    badge.className = "pill-status" + (live ? "" : failed ? " neutral" : "");
+    badge.innerHTML = live
+      ? '<i class="sq"></i>Running'
+      : failed ? '<i class="sq"></i>Finished with failures' : '<i class="sq"></i>Completed';
+  }
+
   function renderPreview() {
     const engine = currentEngine();
     const leg = legOf(engine);
-    if (!leg) return;
+    if (!leg) { renderOverview(); return; }
+
+    applyWorkerSuggestion(leg.to_run);
 
     const total = leg.to_run;
     const approved = leg.approved_skipped;
@@ -386,7 +588,8 @@
            <div><b>${fmt(resettable)} row${resettable === 1 ? " sits" : "s sit"} at <span class="m">Failed</span></b>
              from a dead worker. A plain re-run skips them — tick reset below to include them.</div></div>` : "")
       + `<div class="actions">
-           <button class="btn primary" id="go" ${total ? "" : "disabled"}>
+           <button class="btn primary" id="go" ${total ? "" : "disabled"}
+             data-label="${esc(total ? `Run ${fmt(total)} SKU${total === 1 ? "" : "s"}` : "Nothing to run")}">
              ${total ? `Run ${fmt(total)} SKU${total === 1 ? "" : "s"}` : "Nothing to run"}</button>
            ${resettable ? `<label class="stale" style="display:flex;align-items:center;gap:6px;cursor:pointer">
               <input type="checkbox" id="reset-failed"> Reset &amp; include ${fmt(resettable)} failed</label>` : ""}
@@ -394,6 +597,42 @@
 
     $("preview-at").textContent = "Resolved " + new Date().toLocaleTimeString();
     $("go").addEventListener("click", openConfirm);
+    disableRunIfQueued(engine);
+    renderOverview();
+  }
+
+  /* Backend already refuses a second launch of the same channel+engine+
+     category via the 409 in /runs' launch() -- but that only surfaces after
+     Confirm, one click and a round trip after the operator committed to it.
+     A run that just finished leaves its scope's PENDING count unchanged
+     until the next resolve (nothing here re-fetches it automatically), so
+     the "Run N SKUs" button stayed fully clickable, inviting exactly that
+     click on a scope already running or just run. Disabling it up front,
+     the moment this page already knows a matching run is queued, turns an
+     error the operator has to hit into a state they can just see. */
+  function disableRunIfQueued(engine) {
+    const go = $("go");
+    if (!go) return;
+    // Only ever overrides the "nothing to run" disable, never clears it --
+    // that one is a real fact about the scope (to_run === 0), this one is
+    // about a run in progress, and if the button carries neither label it
+    // must be because there genuinely is nothing to run.
+    if (go.disabled && go.textContent === "Nothing to run") return;
+    const ch = $("ch").value;
+    const cat = scopeMode() === "skus" ? null : ($("cat").value || null);
+    const match = QUEUE.find((q) =>
+      q.engine === engine && (q.channel ?? ch) === ch && (q.category ?? cat) === cat
+      && (q.state === "running" || q.state === "starting"));
+    if (match) {
+      go.disabled = true;
+      go.textContent = "Already running this scope";
+    } else if (go.textContent === "Already running this scope") {
+      // The matching run just finished -- restore the button to what
+      // renderPreview() last computed for it, so it goes back to whatever
+      // SKU count is actually still true rather than staying stuck.
+      go.disabled = false;
+      go.textContent = go.dataset.label || go.textContent;
+    }
   }
 
   /* ------------------------------------------------------------ confirm */
@@ -504,23 +743,53 @@
   /* ------------------------------------------------------------ queue */
 
   function startQueue(runs) {
+    teardownStreams();
+    QUEUE = [];
+    attachRuns(runs);
+  }
+
+  /* Adds runs to the queue WITHOUT touching what's already there -- the
+     piece startQueue's old all-in-one version couldn't do, because it always
+     opened with teardownStreams() and a fresh QUEUE = [...]. Called both for
+     a brand new launch (from an empty queue) and by syncQueue() to fold in a
+     run that started elsewhere while this page stayed open; either way, a
+     stream already open for an existing entry is left running, not closed
+     and reopened. */
+  function attachRuns(runs) {
     /* One engine per launch now that "Both" is gone, but this still reads a
        list: /runs returns an array, and a tracker that assumed a single
        element would break silently the day it returns two. */
-    QUEUE = runs.map((r) => ({
+    const added = runs.map((r) => ({
       run_id: r.run_id,
       engine: r.engine,
       log: r.log,
+      // A run just launched from this page has no channel/category of its
+      // own yet -- it IS whatever the composer says, so falling back to the
+      // form fields is correct there. A run folded in by syncQueue is not:
+      // the composer may be empty or pointed at something else entirely, and
+      // showing its fields would label someone else's run with the wrong
+      // scope. Passing channel/category explicitly for that case is what
+      // render reads first, below.
+      channel: r.channel ?? null,
+      category: r.category ?? null,
       processed: 0, failed: 0, to_run: 0,
       state: "running",
     }));
+    QUEUE = QUEUE.concat(added);
+
     $("queue-panel").hidden = false;
     $("cancelBtn").disabled = false;
     $("cancelNote").textContent = "Cancellation takes effect after the current SKU.";
     renderQueue();
 
-    teardownStreams();
-    QUEUE.forEach((q) => {
+    const refreshBtn = $("queue-refresh");
+    refreshBtn.onclick = () => {
+      refreshBtn.disabled = true;
+      Promise.all([refreshQueue().catch(() => {}), syncQueue().catch(() => {})])
+        .finally(() => { refreshBtn.disabled = false; });
+    };
+
+    added.forEach((q) => {
       const es = streamRun(q.run_id, {
         onProgress: (d) => {
           Object.assign(q, {
@@ -550,6 +819,30 @@
     STREAMS = [];
   }
 
+  /* Manual refresh: re-reads each queued run's row directly rather than
+     waiting on the SSE stream. The stream already pushes updates as they
+     happen, but a dropped connection (proxy timeout, laptop sleep) leaves the
+     panel showing its last received tick with nothing on screen to say so --
+     this is the operator's way to force a fresh read without reloading the
+     whole page and losing the queue tracker. */
+  async function refreshQueue() {
+    await Promise.all(QUEUE.map(async (q) => {
+      try {
+        const d = await api(`/runs/${q.run_id}`);
+        Object.assign(q, {
+          processed: d.run.processed ?? q.processed,
+          failed: d.run.failed ?? q.failed,
+          to_run: d.run.to_run ?? q.to_run,
+          state: d.run.status || q.state,
+        });
+      } catch { /* leave this row's last-known state on a failed refresh */ }
+    }));
+    renderQueue();
+    if (QUEUE.every((x) => x.state !== "running" && x.state !== "starting")) {
+      onQueueFinished();
+    }
+  }
+
   function renderQueue() {
     $("queue-rows").innerHTML = QUEUE.map((q, i) => {
       const pct = q.to_run ? Math.round((q.processed / q.to_run) * 100) : 0;
@@ -557,7 +850,8 @@
       return `<div class="q-row">
         <span class="ord">${i + 1}</span>
         ${enginePill(q.engine)}
-        <span class="nm">${esc($("ch").value)} · ${esc($("cat").value || "all categories")}
+        <span class="nm">${esc(q.channel ?? $("ch").value)} · ${esc(
+          (q.channel != null ? q.category : $("cat").value) || "all categories")}
           <span>${esc(q.run_id.slice(0, 8))}</span></span>
         <span class="q-bar"><i style="width:${pct}%;background:${colour}"></i></span>
         <span class="n">${fmt(q.processed)} / ${fmt(q.to_run)}</span>
@@ -583,16 +877,26 @@
     $("progBar").setAttribute("aria-valuenow", String(processed));
     $("progBar").setAttribute("aria-valuemax", String(total));
 
+    /* "In progress" is not a per-SKU count the stream gives us -- each run
+       processes one SKU at a time, so the honest figure is how many of the
+       QUEUED RUNS are currently live, not a count of SKUs mid-flight within
+       them. One run live is 1; two concurrent runs (a second launched or
+       attached while this page was open, see syncQueue()) is 2. */
+    const inProgress = QUEUE.filter((q) => q.state === "running" || q.state === "starting").length;
+    const remaining = Math.max(0, total - processed - inProgress);
     $("progLegend").innerHTML =
       `<span><i class="sq" style="background:var(--ok)"></i>${fmt(processed - failed)} processed</span>
+       <span><i class="sq" style="background:var(--accent)"></i>${fmt(inProgress)} in progress</span>
        <span><i class="sq" style="background:var(--crit)"></i>${fmt(failed)} failed</span>
        <span><i class="sq" style="background:var(--sunken);border:1px solid var(--line)"></i>${
-         fmt(Math.max(0, total - processed))} queued</span>`;
+         fmt(remaining)} queued</span>`;
 
     $("liveTag").className = live ? "live" : "live stopped";
     $("liveTag").innerHTML = live ? "<i></i>Streaming" : "<i></i>Stopped";
 
     renderStages(live, processed, total);
+    renderOverview();
+    if ($("go")) disableRunIfQueued(currentEngine());
   }
 
   function renderStages(live, processed, total) {
@@ -857,9 +1161,21 @@
   $("skus").addEventListener("input", scheduleResolve);
   document.querySelectorAll('input[name="sb"]').forEach((r) =>
     r.addEventListener("change", applyScopeMode));
-  $("llm").addEventListener("change", () => { if (PREVIEW) renderPreview(); });
+  $("llm").addEventListener("change", () => {
+    if (PREVIEW) renderPreview(); else renderOverview();
+  });
   document.querySelectorAll('input[name="t"]').forEach((r) =>
-    r.addEventListener("change", () => { if (PREVIEW) renderPreview(); }));
+    r.addEventListener("change", () => {
+      if (PREVIEW) renderPreview();
+      /* Results has its own engine filter, independent of the composer's --
+         left alone, picking Competitor to run still showed Himalaya rows
+         mixed into Results because that dropdown silently stayed on "All
+         engines". Syncing it here means Results defaults to showing what you
+         just chose to run, not a filter nothing told it to change. */
+      $("resEngine").value = currentEngine();
+      RES.offset = 0;
+      loadResults().catch(() => {});
+    }));
 
   /* Backdrop click, Escape and the confirm button are all wired in
      confirm.js -- three pages open that dialog now. */
@@ -904,6 +1220,12 @@
       fillCategories();
       await loadRuns();
       await loadUnmatched().catch(() => {});
+      $("rr-refresh").addEventListener("click", () => {
+        $("rr-refresh").disabled = true;
+        loadRuns().catch((e) => showError($("errors"), e.message))
+          .finally(() => { $("rr-refresh").disabled = false; });
+      });
+      scheduleAutoRefresh();
     },
     refresh() {
       return Promise.all([
@@ -922,10 +1244,63 @@
         fillChannels();
         fillCategories();
       }
+      // Same sync as the "t" radio's change handler -- covers arriving on
+      // this page with Competitor (or a restored scope) already selected,
+      // so the first Results load doesn't show the unfiltered mix.
+      $("resEngine").value = currentEngine();
+      // use_llm is read once, at launch (runBody()/launchSkus) -- flipping it
+      // mid-run cannot reach a process that already started, so the switch is
+      // disabled while this page's queue is live rather than left clickable
+      // and silently doing nothing.
+      bindLlmToggle("llm", { isRunning: () => QUEUE.some(
+        (q) => q.state === "running" || q.state === "starting") });
+      await syncQueue().catch(() => {});
+      scheduleQueueSync();
       await resolve();
       await loadResults().catch(() => {});
     },
   };
+
+  /* Attaches the Queue panel to every run still actually executing on the
+     server -- not just the ones launched from this page load.
+     Two distinct gaps this closes:
+       1. A page load starting with an empty, in-memory QUEUE (a refresh, a
+          fresh tab, navigating back here) had no way back to a run still in
+          progress -- nothing before this persisted the queue anywhere but
+          this one page's JS state.
+       2. Launching ONE run from this page, then starting a SECOND one
+          elsewhere (another tab, another operator) while this page stayed
+          open: the old reattachQueue() only ever ran once, at boot, and
+          bailed immediately if QUEUE already had anything in it -- so a
+          run that started later was invisible here even though the server
+          was actively running it, right up until a full page reload.
+     Merges by run_id rather than replacing QUEUE outright, so a run this
+     page already has an open SSE stream for is left alone -- only genuinely
+     new rows get a stream opened for them. */
+  async function syncQueue() {
+    const runs = await api("/runs?limit=20");
+    const live = runs.filter((r) => r.status === "running");
+    const known = new Set(QUEUE.map((q) => q.run_id));
+    const missing = live.filter((r) => !known.has(r.execution_id));
+    if (!missing.length) return;
+    attachRuns(missing.map((r) => ({
+      run_id: r.execution_id, engine: r.engine, log: null,
+      channel: r.channel, category: r.category,
+    })));
+  }
+
+  // Catches a run started elsewhere (another tab, another operator) while
+  // this page stays open -- the SSE streams this page already has open
+  // cover progress on runs it already knows about, but nothing pushes word
+  // of a run it doesn't know exists yet. 30s: cheap enough to leave running
+  // for as long as the page is open (one small GET, compared against the
+  // in-memory QUEUE), tight enough that a second run doesn't sit invisible
+  // for minutes after someone else starts it.
+  let queueSyncTimer = null;
+  function scheduleQueueSync() {
+    if (queueSyncTimer) clearInterval(queueSyncTimer);
+    queueSyncTimer = setInterval(() => { syncQueue().catch(() => {}); }, 30000);
+  }
 
   /* Launching a SKU-scoped run from another page.
    *
@@ -936,7 +1311,14 @@
    * The caller gets the same queue tracker and the same confirmation.
    */
   window.RunLauncher = {
-    async launchSkus({ channel, skus, engine = null, onDone = null }) {
+    /* use_llm defaults to whatever the New run page's toggle is currently
+       showing, but a caller confirming its OWN "how it will run" dialog
+       (Review, Rejected) must pass the value that dialog actually displayed
+       -- reading $("llm") here unconditionally meant a launch could silently
+       use a different LLM setting than the one the operator just confirmed,
+       because that checkbox lives on a hidden page and nothing kept the two
+       in sync. */
+    async launchSkus({ channel, skus, engine = null, onDone = null, use_llm = null }) {
       /* One engine per launch, never both.
          engine:null asks the API for both, which spawns two subprocesses --
          and on a SKU-scoped run one of them finds nothing every time. Three
@@ -950,7 +1332,7 @@
       }
       const body = {
         channel, engine, category: null, subcategory: null, skus,
-        use_llm: $("llm").checked,
+        use_llm: use_llm === null ? $("llm").checked : use_llm,
         workers: Number($("w").value),
         batch_size: Number($("bs").value) || 500,
         reset_failed: false,

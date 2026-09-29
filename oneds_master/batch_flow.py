@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import time
 
 from concurrent.futures import (
     ThreadPoolExecutor,
@@ -764,6 +765,16 @@ def main() -> None:
         # everything that finished -- step 6 only ever pulls PENDING
         # rows. That's the resume mechanism.
         total_processed = 0
+        # Cumulative across groups, unlike the per-group failed_sources list
+        # reset inside the loop below -- a heartbeat mid-run needs the running
+        # total so far, the same figure the final run_record.finish() call
+        # would use if it didn't instead re-derive failed=0 from the source
+        # table (see "ALL GROUPS COMPLETED" below). heartbeat() is a
+        # best-effort progress indicator, not the record of truth that
+        # outcome_for() is -- it only needs to be close enough that the
+        # console's live view stops looking frozen.
+        total_failed = 0
+        last_heartbeat = time.monotonic()
 
         logger.info(
             "=================================================="
@@ -1428,6 +1439,8 @@ def main() -> None:
                                 source
                             )
 
+                            total_failed += 1
+
                             logger.error(
                                 "WORKER FAILED | "
                                 "source_id=%s | SKU=%r | "
@@ -1436,6 +1449,31 @@ def main() -> None:
                                 sku,
                                 exc,
                             )
+
+                        # -----------------------------------------
+                        # Heartbeat: audit.engine_run.processed/failed
+                        # -----------------------------------------
+                        #
+                        # run_record.heartbeat() was defined from the start
+                        # but never called from anywhere in this loop -- the
+                        # row it updates was only ever written once at
+                        # run_record.start() (processed=0) and once at
+                        # run_record.finish() (the final count), so every
+                        # consumer of that row (the console's SSE stream, the
+                        # Runs table, the "stuck run" reconciler) saw a run
+                        # sit frozen at 0 for its entire duration and then
+                        # jump straight to 100%. Throttled to roughly once a
+                        # second -- the same cadence the stream already polls
+                        # at, so writing more often than that would not
+                        # produce anything a viewer could see, only more load
+                        # on the one row every worker in this pool contends
+                        # to update.
+                        now = time.monotonic()
+                        if now - last_heartbeat >= 1.0:
+                            run_record.heartbeat(
+                                conn, run_id, total_processed, total_failed
+                            )
+                            last_heartbeat = now
 
                 # =================================================
                 # PARALLEL PROCESSING SUMMARY
