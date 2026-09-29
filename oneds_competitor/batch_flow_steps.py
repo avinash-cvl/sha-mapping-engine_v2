@@ -182,19 +182,42 @@ def run_lexicon_attributes_and_synonyms(
 
     audit_entries: list[dict] = []
 
+    # Each LLM sub-call is caught on its own, not by one try/except around
+    # this whole function: attribute_fallback and synonyms.expand are two
+    # independent calls, and a permanent failure in one (most often Azure's
+    # content filter rejecting a specific title -- see common.config's
+    # LLM_RETRY_* comment, written after this exact failure killed a
+    # 907-SKU blinkit run) must not also discard whatever the OTHER one, or
+    # the rule-based extraction above, already produced. This SKU still gets
+    # matched on whatever succeeded rather than being dropped to PENDING
+    # over a rejection that a retry cannot fix anyway.
     if use_llm and attributed.sub_brand is None and attributed.variant is None:
-        sub_brand, variant, audit_entry = attribute_fallback.extract(
-            attributed.title, attributed.brand
-        )
-        audit_entry["sku"] = attributed.sku
-        audit_entries.append(audit_entry)
-        attributed = replace(attributed, sub_brand=sub_brand, variant=variant)
+        try:
+            sub_brand, variant, audit_entry = attribute_fallback.extract(
+                attributed.title, attributed.brand
+            )
+            audit_entry["sku"] = attributed.sku
+            audit_entries.append(audit_entry)
+            attributed = replace(attributed, sub_brand=sub_brand, variant=variant)
+        except Exception as exc:
+            logger.warning(
+                "attribute_fallback.extract failed, continuing without it | "
+                "sku=%r | error=%s",
+                attributed.sku, exc,
+            )
 
     synonym_terms: list[str] = []
     if use_llm:
-        synonym_terms, synonym_audit_entry = synonyms.expand(attributed.clean_title)
-        synonym_audit_entry["sku"] = attributed.sku
-        audit_entries.append(synonym_audit_entry)
+        try:
+            synonym_terms, synonym_audit_entry = synonyms.expand(attributed.clean_title)
+            synonym_audit_entry["sku"] = attributed.sku
+            audit_entries.append(synonym_audit_entry)
+        except Exception as exc:
+            logger.warning(
+                "synonyms.expand failed, continuing without synonym terms | "
+                "sku=%r | error=%s",
+                attributed.sku, exc,
+            )
 
     return attributed, synonym_terms, audit_entries
 
@@ -1492,6 +1515,7 @@ def step_7b_prepare_source_products(
     synonym_terms: dict = {}
     audit_entries: list[dict] = []
 
+    failed_ids: list = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         ids = list(built.keys())
         futures = {
@@ -1502,15 +1526,32 @@ def step_7b_prepare_source_products(
         }
         for future in futures:
             sid = futures[future]
-            attributed, terms, entries = future.result()
+            try:
+                attributed, terms, entries = future.result()
+            except Exception as exc:
+                # Last-resort backstop -- run_lexicon_attributes_and_synonyms
+                # now catches its own LLM sub-call failures (attribute
+                # fallback, synonym expansion) internally, so this should
+                # only fire on something truly unexpected. Skipping just
+                # this id means step 8+ never sees it this pass -- it stays
+                # PENDING, same as any other per-SKU worker failure.
+                sku = getattr(built[sid], "sku", None)
+                logger.error(
+                    "STEP 7B FAILED FOR ONE SOURCE -- skipped, stays PENDING | "
+                    "source_id=%s | sku=%r | error=%s",
+                    sid, sku, exc,
+                )
+                failed_ids.append(sid)
+                continue
             source_products[sid] = attributed
             synonym_terms[sid] = terms
             audit_entries.extend(entries)
 
     logger.info(
-        "STEP 7B COMPLETED - %d products | %d LLM calls",
+        "STEP 7B COMPLETED - %d products | %d LLM calls%s",
         len(source_products),
         len(audit_entries),
+        f" | {len(failed_ids)} skipped (see STEP 7B FAILED lines above)" if failed_ids else "",
     )
 
     return source_products, synonym_terms, audit_entries

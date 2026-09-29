@@ -175,6 +175,16 @@
               source table, so a SKU has no meaning without one.</p>
           </div>
 
+          <div class="field" id="batch-launch-field" hidden>
+            <div class="actions" style="margin-top:0">
+              <button class="btn" type="button" id="batch-launch-btn">Run entire channel</button>
+              <span class="stale" id="batch-launch-note"></span>
+            </div>
+            <p class="hint" style="margin:6px 0 0">Launches every category/sub-category with
+              PENDING SKUs for the engine above, a few at a time — instead of picking one
+              scope below and clicking Run repeatedly.</p>
+          </div>
+
           <div class="field">
             <label>Scope by</label>
             <div class="seg seg-row">
@@ -252,6 +262,15 @@
             <span style="margin-left:auto"><span class="live" id="liveTag"><i></i>Streaming</span></span>
             <button class="btn sm" id="queue-refresh" type="button" title="Refresh now" style="margin-left:8px">Refresh</button></div>
           <div class="panel-b">
+            <div class="note info" id="batch-banner" hidden style="margin-bottom:14px">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 8v5M12 16.5v.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.8"/></svg>
+              <div>
+                <b id="batch-banner-text"></b>
+                <div class="actions" style="margin-top:8px">
+                  <button class="btn sm" id="batch-cancel-btn">Stop launching new scopes</button>
+                </div>
+              </div>
+            </div>
             <div class="q" id="queue-rows"></div>
             <div class="stages" id="stages" style="margin-top:18px"></div>
             <div class="prog-top">

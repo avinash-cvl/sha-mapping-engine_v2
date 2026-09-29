@@ -15,6 +15,7 @@ means the log file on disk is the same artefact either way.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import logging
 import os
@@ -158,6 +159,103 @@ class Run:
 RUNS: dict[str, Run] = {}
 
 
+# The server's own asyncio event loop, captured once at startup so a SYNC
+# route handler (launch_batch, below) can schedule a background task onto
+# it. FastAPI runs a plain `def` endpoint in a worker thread, not on the
+# event loop -- asyncio.create_task() from there raises "no running event
+# loop" (a 500) because that thread has none of its own. This is the loop
+# uvicorn actually runs the app on; run_coroutine_threadsafe() is the
+# documented way to hand a coroutine to a loop running on a different
+# thread than the caller.
+_EVENT_LOOP: asyncio.AbstractEventLoop | None = None
+
+
+@router.on_event("startup")
+async def _capture_event_loop() -> None:
+    global _EVENT_LOOP
+    _EVENT_LOOP = asyncio.get_running_loop()
+
+
+# --------------------------------------------------- batch launch registry
+@dataclass
+class BatchJob:
+    """One "run entire channel" request -- a list of scopes to launch, a
+    concurrency cap, and which have started/finished so far.
+
+    Each scope still goes through _spawn() exactly as a single-scope launch
+    from /runs does: same same-scope lock check, same Run/RUNS tracking, same
+    heartbeat, same batch-loop fix in the engine itself. This registry only
+    adds throttling -- deciding WHEN each scope's _spawn() call happens, not
+    how a launch works. A restarted API loses this registry the same way it
+    loses RUNS: the in-flight subprocesses keep running (they are independent
+    OS processes), but nothing queued-and-not-yet-started survives a restart.
+    That mirrors RUNS' own tradeoff rather than inventing a new one.
+    """
+    batch_id: str
+    channel: str
+    engine: str
+    concurrency: int
+    triggered_by: str
+    pending: list[dict] = field(default_factory=list)   # scopes not yet launched
+    launched: list[str] = field(default_factory=list)    # run_ids, in launch order
+    cancelled: bool = False
+
+
+BATCHES: dict[str, BatchJob] = {}
+# concurrent.futures.Future, not asyncio.Task: run_coroutine_threadsafe()
+# (launch_batch is a sync route, see _EVENT_LOOP's comment) returns the
+# threading-flavoured Future, not the asyncio one. Only ever used here as a
+# presence check (is this batch still running), never awaited or
+# .cancel()ed, so the distinction doesn't matter operationally -- it matters
+# for not being surprised if you go looking for .cancel() and find the
+# wrong one.
+BATCH_PUMPS: dict[str, concurrent.futures.Future] = {}
+
+
+def _batch_active_count(job: BatchJob) -> int:
+    """How many of THIS batch's own launched runs are still alive -- not
+    every run on the server, only ones this job started, so one batch's
+    concurrency cap never gets confused by an unrelated manual launch."""
+    return sum(
+        1 for run_id in job.launched
+        if (r := RUNS.get(run_id)) and r.proc and r.proc.poll() is None
+    )
+
+
+async def _pump_batch(batch_id: str, spawn_one) -> None:
+    """Background task: while the job has scopes left and isn't cancelled,
+    launch more whenever fewer than `concurrency` of this batch's own runs
+    are still alive. Polls every 2s -- frequent enough that a finished scope's
+    slot gets reused promptly, cheap enough to leave running for the minutes
+    to hours a real batch takes.
+
+    `spawn_one` is passed in rather than calling _spawn directly so this
+    function stays a pure scheduler: it does not know what a RunRequest
+    looks like or how overrides/reset_failed are validated, only when to ask
+    for the next one.
+    """
+    try:
+        job = BATCHES.get(batch_id)
+        if job is None:
+            return
+        while job.pending and not job.cancelled:
+            if _batch_active_count(job) < job.concurrency:
+                scope_dict = job.pending.pop(0)
+                try:
+                    run_id = spawn_one(job, scope_dict)
+                    job.launched.append(run_id)
+                except Exception:
+                    logger.exception(
+                        "batch %s: failed to launch %s/%s/%s, skipping it",
+                        batch_id, job.channel, scope_dict.get("category"),
+                        scope_dict.get("subcategory"),
+                    )
+            else:
+                await asyncio.sleep(2.0)
+    finally:
+        BATCH_PUMPS.pop(batch_id, None)
+
+
 
 
 def get_conn():
@@ -262,6 +360,44 @@ def pending_summary(conn: db.Connection = Depends(get_conn)) -> dict:
             by_channel.append({"channel": ch, "himalaya": h, "competitor": c, "total": h + c})
         total += h + c
     return {"total": total, "by_channel": by_channel}
+
+
+@router.get("/runs/batch/preview")
+def batch_preview(
+    channel: str, engine: str, conn: db.Connection = Depends(get_conn),
+) -> dict:
+    """Every category/subcategory in this channel+engine with PENDING rows
+    right now, and how many -- what "Run entire channel" would actually
+    launch, one scope per row, before anything is queued.
+
+    Same PENDING definition as pending_summary(): literal mapping_status =
+    'PENDING', the exact clause step_6_get_source_batch selects on.
+    """
+    _validate(channel, engine)
+    source = db_models.get_table(conn.engine, "staging", f"{channel}_products")
+    if not hasattr(source.c, "mapping_status"):
+        return {"channel": channel, "engine": engine, "total": 0, "scopes": []}
+
+    pending_clause = sa.func.upper(
+        sa.func.ltrim(sa.func.rtrim(source.c.mapping_status))
+    ) == "PENDING"
+    rows = conn.execute(
+        sa.select(source.c.category, source.c.subcategory, sa.func.count())
+        .where(pending_clause, scope._brand_clause(source, engine))
+        .group_by(source.c.category, source.c.subcategory)
+        .order_by(sa.func.count().desc())
+    ).all()
+
+    scopes = [
+        {"category": cat, "subcategory": sub, "to_run": int(n)}
+        for cat, sub, n in rows if cat and n
+    ]
+    return {
+        "channel": channel,
+        "engine": engine,
+        "total": sum(s["to_run"] for s in scopes),
+        "scopes": scopes,
+    }
 
 
 # ---------------------------------------------------------------- reads
@@ -872,6 +1008,149 @@ def launch(req: RunRequest, user: auth.User = Depends(auth.current_user), conn: 
         "parallel": len(launched) > 1,
         "overrides": overrides,
     }
+
+
+class BatchLaunchRequest(BaseModel):
+    channel: str
+    engine: str                          # exactly one -- "both" makes the
+                                          # per-scope same-scope lock ambiguous
+                                          # about which engine a slot belongs to
+    concurrency: int = Field(default=3, ge=1, le=8)
+    workers: int = Field(default=4, ge=1, le=16)
+    use_llm: bool = True
+    overrides: dict[str, str] = Field(default_factory=dict)
+
+
+@router.post("/runs/batch")
+def launch_batch(
+    req: BatchLaunchRequest,
+    user: auth.User = Depends(auth.current_user),
+    conn: db.Connection = Depends(get_conn),
+) -> dict:
+    """Launch every category/subcategory in this channel+engine that has
+    PENDING rows, throttled to `concurrency` scopes running at once instead
+    of the operator clicking "Run" once per scope.
+
+    Each scope is still launched through the exact same _spawn() a single
+    manual run uses -- same same-scope lock, same Run/RUNS tracking, same
+    audit.engine_run row, same batch-loop and per-SKU error isolation inside
+    the engine itself. This endpoint only decides WHEN each _spawn() call
+    happens: a background task (_pump_batch) launches the next queued scope
+    whenever fewer than `concurrency` of THIS BATCH's own runs are still
+    alive, so a channel with 20 backlogged scopes does not fire 20
+    subprocesses -- and 20 x max_workers LLM calls -- all in the same second.
+    """
+    _validate(req.channel, req.engine)
+    overrides = _validate_overrides(req.overrides)
+    logger.info(
+        "batch launch requested | channel=%s engine=%s use_llm=%s concurrency=%s workers=%s by=%s",
+        req.channel, req.engine, req.use_llm, req.concurrency, req.workers, user.email,
+    )
+
+    source = db_models.get_table(conn.engine, "staging", f"{req.channel}_products")
+    if not hasattr(source.c, "mapping_status"):
+        raise HTTPException(400, f"{req.channel} has no mapping_status column")
+    pending_clause = sa.func.upper(
+        sa.func.ltrim(sa.func.rtrim(source.c.mapping_status))
+    ) == "PENDING"
+    rows = conn.execute(
+        sa.select(source.c.category, source.c.subcategory, sa.func.count())
+        .where(pending_clause, scope._brand_clause(source, req.engine))
+        .group_by(source.c.category, source.c.subcategory)
+        .order_by(sa.func.count().desc())
+    ).all()
+    scopes = [
+        {"category": cat, "subcategory": sub, "to_run": int(n)}
+        for cat, sub, n in rows if cat and n
+    ]
+    if not scopes:
+        raise HTTPException(400, f"nothing is PENDING for {req.channel}/{req.engine}")
+
+    batch_id = str(uuid.uuid4())
+    job = BatchJob(
+        batch_id=batch_id, channel=req.channel, engine=req.engine,
+        concurrency=req.concurrency, triggered_by=user.email,
+        pending=scopes,
+    )
+    BATCHES[batch_id] = job
+
+    def spawn_one(job: BatchJob, scope_dict: dict) -> str:
+        run_req = RunRequest(
+            channel=job.channel, engine=job.engine,
+            category=scope_dict["category"], subcategory=scope_dict["subcategory"],
+            workers=req.workers, use_llm=req.use_llm,
+            triggered_by=job.triggered_by,
+        )
+        # Same guard launch() applies to a single manual run -- a scope this
+        # batch is about to start might already be running from an earlier
+        # manual launch or a second batch on the same channel. Skipped, not
+        # fatal to the whole batch: the rest of the scopes still have real
+        # work to do.
+        for existing in RUNS.values():
+            if (existing.proc and existing.proc.poll() is None
+                    and existing.channel == run_req.channel
+                    and existing.engine == run_req.engine
+                    and existing.category == run_req.category
+                    and existing.subcategory == run_req.subcategory):
+                raise HTTPException(409, "already running")
+        r = _spawn(run_req, job.engine, overrides)
+        return r.run_id
+
+    if _EVENT_LOOP is None:
+        # Startup hook did not run (a test harness, or a server that never
+        # fired the "startup" event) -- fail loudly rather than silently
+        # accept scopes that will never actually launch.
+        del BATCHES[batch_id]
+        raise HTTPException(500, "batch launcher unavailable: no event loop captured at startup")
+    future = asyncio.run_coroutine_threadsafe(_pump_batch(batch_id, spawn_one), _EVENT_LOOP)
+    BATCH_PUMPS[batch_id] = future
+
+    return {
+        "batch_id": batch_id,
+        "channel": req.channel,
+        "engine": req.engine,
+        "concurrency": req.concurrency,
+        "scope_count": len(scopes),
+        "total_to_run": sum(s["to_run"] for s in scopes),
+    }
+
+
+@router.get("/runs/batch/{batch_id}")
+def batch_status(batch_id: str) -> dict:
+    """Where a batch stands: how many scopes are done, running, or still
+    queued, and the run_id for each launched scope -- the console's Queue
+    panel already knows how to stream progress for a run_id, so this only
+    needs to hand over the list, not duplicate that stream."""
+    job = BATCHES.get(batch_id)
+    if job is None:
+        raise HTTPException(404, "batch not found")
+    active = _batch_active_count(job)
+    return {
+        "batch_id": job.batch_id,
+        "channel": job.channel,
+        "engine": job.engine,
+        "concurrency": job.concurrency,
+        "cancelled": job.cancelled,
+        "running": active,
+        "queued": len(job.pending),
+        "launched": list(job.launched),
+        "done": job.batch_id not in BATCH_PUMPS,
+    }
+
+
+@router.post("/runs/batch/{batch_id}/cancel")
+def cancel_batch(batch_id: str) -> dict:
+    """Stops LAUNCHING further queued scopes. Does not touch scopes already
+    running -- cancel those individually via POST /runs/{run_id}/cancel, the
+    same as any other run, so a batch cancel cannot silently kill work that
+    was already most of the way through an expensive LLM pass."""
+    job = BATCHES.get(batch_id)
+    if job is None:
+        raise HTTPException(404, "batch not found")
+    job.cancelled = True
+    skipped = len(job.pending)
+    job.pending = []
+    return {"batch_id": batch_id, "cancelled": True, "scopes_not_launched": skipped}
 
 
 @router.post("/runs/{run_id}/cancel")

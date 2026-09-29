@@ -467,6 +467,21 @@ AZURE_OPENAI_API_VERSION = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-12-0
 AZURE_LLM_DEPLOYMENT = os.environ.get("AZURE_LLM_DEPLOYMENT", "gpt-5-nano")
 AZURE_EMBEDDING_DEPLOYMENT = os.environ.get("AZURE_EMBEDDING_DEPLOYMENT", "text-embedding-3-small")
 
+# Retry/backoff around every LLM call (agents/llm_client.py's invoke_and_audit,
+# the one choke point every agent -- judge, synonyms, attribute_fallback --
+# calls through). Added after a single Azure content-filter rejection on one
+# product title in a 907-SKU blinkit run raised straight out of a thread-pool
+# future with no handling anywhere above it, killing the entire run rather
+# than just that one SKU. Only errors that can plausibly succeed on a retry
+# (rate limits, timeouts, connection resets, Azure 5xx) are retried --
+# content-filter and other 4xx BadRequestErrors are NOT (see
+# _RETRYABLE_EXCEPTIONS in llm_client.py): retrying an identical prompt
+# against the same policy produces the same rejection every time, so the
+# right move there is failing that one call fast, not spending the run's
+# time re-asking a question that cannot change its own answer.
+LLM_RETRY_ATTEMPTS = int(os.environ.get("LLM_RETRY_ATTEMPTS", "3"))
+LLM_RETRY_BASE_DELAY_SECONDS = float(os.environ.get("LLM_RETRY_BASE_DELAY_SECONDS", "2"))
+
 # attribute_fallback/thin_margin_judge calls for one flow run are independent
 # per-SKU requests (each gets its own get_chat_model() client, so no shared
 # state across threads) -- run them concurrently instead of one at a time.

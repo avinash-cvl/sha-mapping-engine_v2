@@ -316,6 +316,183 @@
     scheduleResolve();
   }
 
+  /* ------------------------------------------------------ batch launch
+   * "Run entire channel": launches every category/sub-category with PENDING
+   * rows for the current channel+engine, throttled server-side (see
+   * routers/engine.py's _pump_batch) instead of the operator clicking Run
+   * once per scope. A channel can have 20+ such scopes -- built after an
+   * 18k-record backlog made "click Run, wait, click Run again" the real
+   * bottleneck, not any per-run limit.
+   *
+   * Deliberately its own button and its own confirm dialog, not a third
+   * "Scope by" mode alongside Category/SKU list: those two feed the single-
+   * scope preview/confirm/launch path this page already had, and wedging a
+   * many-scope action through the same $("go") button risked breaking that
+   * path for a change nothing asked to touch. A batch's launched runs still
+   * show up in the same Queue panel below, through the same attachRuns()/
+   * syncQueue() every other run already goes through.
+   */
+  let ACTIVE_BATCH = null;   // {batch_id, pollTimer} while one is running
+  let batchLaunchInFlight = false;
+  const ENGINE_LABEL_BATCH = { himalaya: "Himalaya", competitor: "Competitor" };
+
+  function updateBatchButton() {
+    const field = $("batch-launch-field");
+    const ch = $("ch").value;
+    if (!ch || scopeMode() === "skus" || ACTIVE_BATCH) {
+      field.hidden = true;
+      return;
+    }
+    field.hidden = false;
+    $("batch-launch-btn").disabled = batchLaunchInFlight;
+  }
+
+  async function openBatchConfirm() {
+    const channel = $("ch").value;
+    const engine = currentEngine();
+    if (!channel) return;
+
+    let preview;
+    try {
+      preview = await api(`/runs/batch/preview?channel=${encodeURIComponent(channel)}&engine=${encodeURIComponent(engine)}`);
+    } catch (e) {
+      showError($("errors"), e.message);
+      return;
+    }
+    if (!preview.scopes.length) {
+      showError($("errors"), `Nothing is PENDING for ${ENGINE_LABEL_BATCH[engine]} on ${channel}.`);
+      return;
+    }
+
+    $("confirm-title").innerHTML =
+      `<svg width="19" height="19" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 8.5v4.5M12 16.5v.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M10.3 3.9 2.6 17.2A2 2 0 0 0 4.3 20.2h15.4a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" stroke="currentColor" stroke-width="1.7"/></svg>
+       Run every scope with PENDING SKUs`;
+    $("confirm-lede").textContent =
+      `Launches ${fmt(preview.scopes.length)} separate runs for ${esc(channel)}, `
+      + `${fmt(3)} at a time, until all of them have been through the engine.`;
+    $("confirm-body").innerHTML =
+      `<div class="m-sec">
+         <h3>What will run</h3>
+         <dl class="kv">
+           <dt>Channel</dt><dd>${esc(channel)}</dd>
+           <dt>Engine</dt><dd>${esc(ENGINE_LABEL_BATCH[engine])} only</dd>
+           <dt>Scopes</dt><dd class="big">${fmt(preview.scopes.length)}</dd>
+           <dt>Total SKUs</dt><dd class="big">${fmt(preview.total)}</dd>
+           <dt>Running at once</dt><dd>3 scopes</dd>
+         </dl>
+       </div>
+       <div class="m-sec">
+         <h3>How it will run</h3>
+         <dl class="kv">
+           <dt>LLM judge</dt><dd style="display:flex;align-items:center;gap:8px">
+             <input type="checkbox" id="batch-llm" checked style="width:16px;height:16px;margin:0">
+             <label for="batch-llm" style="margin:0;font-weight:400">Use the LLM judge for this batch</label></dd>
+           <dt>Workers per scope</dt><dd>${esc($("w").value)}</dd>
+         </dl>
+       </div>
+       <div class="m-sec">
+         <h3>Largest scopes first</h3>
+         <div class="m-cmd">${preview.scopes.slice(0, 10).map((s) =>
+           `${esc(s.category)} / ${esc(s.subcategory)} — ${fmt(s.to_run)} SKUs`).join("\n")}${
+           preview.scopes.length > 10 ? `\n… and ${fmt(preview.scopes.length - 10)} more scopes` : ""}</div>
+       </div>
+       <div class="m-sec">
+         <label class="m-ack"><input type="checkbox" id="batch-ack">
+           I understand this launches ${fmt(preview.scopes.length)} separate runs, a few at a time,
+           against ${fmt(preview.total)} SKUs total.</label>
+       </div>`;
+    $("confirm-go").textContent = "Start batch";
+    $("confirm-go").disabled = true;
+    $("batch-ack").addEventListener("change", (e) => { $("confirm-go").disabled = !e.target.checked; });
+
+    window.ConfirmDialog.open(async () => {
+      const useLlm = $("batch-llm").checked;
+      // Temporary: confirms what the browser actually sends, since the
+      // server-side chain (BatchLaunchRequest -> spawn_one -> RunRequest ->
+      // _build_command) tested correct in isolation for both true and
+      // false -- if every launched scope still comes back use_llm=true
+      // despite this logging useLlm===false, the bug is between the click
+      // and this line, not below it.
+      console.log("[batch launch] use_llm being sent:", useLlm);
+      batchLaunchInFlight = true;
+      updateBatchButton();
+      try {
+        const res = await api("/runs/batch", {
+          method: "POST",
+          body: JSON.stringify({
+            channel, engine, concurrency: 3,
+            workers: Number($("w").value), use_llm: useLlm,
+          }),
+        });
+        startBatchTracking(res.batch_id, res.scope_count, res.total_to_run);
+      } finally {
+        batchLaunchInFlight = false;
+        updateBatchButton();
+      }
+    });
+  }
+
+  function startBatchTracking(batchId, scopeCount, totalToRun) {
+    if (ACTIVE_BATCH?.pollTimer) clearInterval(ACTIVE_BATCH.pollTimer);
+    ACTIVE_BATCH = { batch_id: batchId, scopeCount, totalToRun };
+    updateBatchButton();
+    $("batch-banner").hidden = false;
+    renderBatchBanner({ running: 0, queued: scopeCount, done: false });
+
+    const poll = async () => {
+      let status;
+      try {
+        status = await api(`/runs/batch/${batchId}`);
+      } catch {
+        return;   // transient fetch failure -- try again next tick
+      }
+      renderBatchBanner(status);
+      // New scopes this batch has started since the last poll need their
+      // own entries in QUEUE -- attachRuns() merges by run_id, so calling
+      // it with the full launched list every tick is safe and idempotent
+      // for ones already tracked, and picks up ones the pump just started.
+      const known = new Set(QUEUE.map((q) => q.run_id));
+      const fresh = status.launched.filter((id) => !known.has(id));
+      if (fresh.length) {
+        attachRuns(fresh.map((run_id) => ({
+          run_id, engine: status.engine, log: null, channel: status.channel,
+        })));
+      }
+      if (status.done && status.queued === 0) {
+        clearInterval(ACTIVE_BATCH.pollTimer);
+        ACTIVE_BATCH = null;
+        updateBatchButton();
+      }
+    };
+    poll();
+    ACTIVE_BATCH.pollTimer = setInterval(poll, 3000);
+  }
+
+  function renderBatchBanner(status) {
+    const el = $("batch-banner-text");
+    if (status.done && status.queued === 0 && status.running === 0) {
+      el.textContent = "Batch finished — every scope has been launched and completed.";
+      $("batch-cancel-btn").hidden = true;
+      return;
+    }
+    el.textContent = `Batch running: ${fmt(status.running ?? 0)} scope${
+      (status.running ?? 0) === 1 ? "" : "s"} in progress, `
+      + `${fmt(status.queued ?? 0)} still queued.`;
+    $("batch-cancel-btn").hidden = (status.queued ?? 0) === 0;
+  }
+
+  $("batch-launch-btn").addEventListener("click", () => openBatchConfirm().catch((e) =>
+    showError($("errors"), e.message)));
+  $("batch-cancel-btn").addEventListener("click", async () => {
+    if (!ACTIVE_BATCH) return;
+    if (!confirm("Stop launching new scopes? Scopes already running keep going — cancel those individually if needed.")) return;
+    try {
+      await api(`/runs/batch/${ACTIVE_BATCH.batch_id}/cancel`, { method: "POST" });
+    } catch (e) {
+      showError($("errors"), e.message);
+    }
+  });
+
   /* Resolve is debounced because every control change triggers it and the
      query counts rows across a 151k-row table. */
   let resolveTimer = null;
@@ -1174,17 +1351,18 @@
     loadResults().catch(() => {});
   };
 
-  $("ch").addEventListener("change", () => { fillCategories(); scheduleResolve(); rescope(); });
+  $("ch").addEventListener("change", () => { fillCategories(); scheduleResolve(); rescope(); updateBatchButton(); });
   $("cat").addEventListener("change", () => { fillSubcategories(); scheduleResolve(); rescope(); });
   $("sub").addEventListener("change", () => { scheduleResolve(); rescope(); });
   $("skus").addEventListener("input", scheduleResolve);
   document.querySelectorAll('input[name="sb"]').forEach((r) =>
-    r.addEventListener("change", applyScopeMode));
+    r.addEventListener("change", () => { applyScopeMode(); updateBatchButton(); }));
   $("llm").addEventListener("change", () => {
     if (PREVIEW) renderPreview(); else renderOverview();
   });
   document.querySelectorAll('input[name="t"]').forEach((r) =>
     r.addEventListener("change", () => {
+      updateBatchButton();
       if (PREVIEW) renderPreview();
       /* Results has its own engine filter, independent of the composer's --
          left alone, picking Competitor to run still showed Himalaya rows
@@ -1273,6 +1451,7 @@
       // and silently doing nothing.
       bindLlmToggle("llm", { isRunning: () => QUEUE.some(
         (q) => q.state === "running" || q.state === "starting") });
+      updateBatchButton();
       await syncQueue().catch(() => {});
       scheduleQueueSync();
       await resolve();

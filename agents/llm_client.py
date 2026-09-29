@@ -10,12 +10,16 @@ a decorator into every agent file.
 """
 from __future__ import annotations
 
+import logging
+import random
 import time
 
 import common.config as C
 import os
 import sys
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 # sha_observability_sdk lives outside this repo and is not pip-installable
 # (no pyproject of its own), so it has to be found on the filesystem. The
@@ -69,6 +73,46 @@ def get_chat_model() -> BaseChatModel:
     raise ValueError(f"unknown LLM_PROVIDER: {provider!r} (expected 'anthropic', 'openai', or 'azure')")
 
 
+def _retryable_exception_types() -> tuple[type[BaseException], ...]:
+    """Errors worth retrying: transient conditions where an identical retry
+    can plausibly get a different result (capacity freed up, network blip
+    resolved). Built lazily from whichever provider package is actually
+    installed rather than imported unconditionally at module load -- this
+    file is shared by all three providers (azure/openai/anthropic), and only
+    one's SDK is guaranteed to be present in a given environment.
+
+    Deliberately NOT included: openai.BadRequestError (400) and its
+    Anthropic/other-provider equivalents. A content-filter rejection,
+    a malformed-request error, or any other 4xx is the API correctly
+    rejecting THIS prompt -- retrying sends the identical prompt again and
+    gets the identical rejection. See common.config's LLM_RETRY_* comment
+    for the incident that made this distinction matter: one such rejection,
+    unretried and unhandled above this function, killed a 907-SKU run.
+    """
+    types: list[type[BaseException]] = []
+    try:
+        import openai
+        types += [
+            openai.RateLimitError,
+            openai.APITimeoutError,
+            openai.APIConnectionError,
+            openai.InternalServerError,  # 5xx -- Azure's own fault, not the prompt's
+        ]
+    except ImportError:
+        pass
+    try:
+        import anthropic
+        types += [
+            anthropic.RateLimitError,
+            anthropic.APITimeoutError,
+            anthropic.APIConnectionError,
+            anthropic.InternalServerError,
+        ]
+    except ImportError:
+        pass
+    return tuple(types)
+
+
 @sh_observe(as_type="generation", model=C.LLM_MODEL or "unknown")
 def invoke_and_audit(
     model: BaseChatModel,
@@ -81,11 +125,54 @@ def invoke_and_audit(
     when it built this dict by hand. success stays True here (the call
     completed); callers flip it to False themselves if response parsing
     fails, same as before.
+
+    Retries a transient failure (rate limit, timeout, connection reset,
+    Azure 5xx) up to LLM_RETRY_ATTEMPTS times with exponential backoff and
+    jitter -- the jitter matters when many worker threads hit a rate limit
+    at once, so they do not all retry on the exact same schedule and
+    re-collide. A non-retryable error (content filter, bad request) is
+    re-raised immediately on the first attempt: retrying it cannot help,
+    and every second spent doing so is a second this run's operator has no
+    visibility into.
     """
     system_prompt = next((content for role, content in messages if role == "system"), None)
     request_text = "\n".join(content for role, content in messages if role != "system")
+    retryable = _retryable_exception_types()
+
     started = time.monotonic()
-    response = model.invoke(messages)
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            response = model.invoke(messages)
+            break
+        except retryable as exc:
+            if attempt >= C.LLM_RETRY_ATTEMPTS:
+                logger.error(
+                    "LLM call failed after %d attempt(s), giving up | "
+                    "call_type=%s | error=%s",
+                    attempt, call_type, exc,
+                )
+                raise
+            delay = C.LLM_RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1))
+            delay += random.uniform(0, delay * 0.25)
+            logger.warning(
+                "LLM call failed, retrying in %.1fs (attempt %d/%d) | "
+                "call_type=%s | error=%s",
+                delay, attempt, C.LLM_RETRY_ATTEMPTS, call_type, exc,
+            )
+            time.sleep(delay)
+        except Exception as exc:
+            # Not in the retryable set -- a content-filter rejection or any
+            # other permanent error. Fail this one call now rather than
+            # retrying something that cannot change its own answer.
+            logger.error(
+                "LLM call failed with a non-retryable error | "
+                "call_type=%s | error=%s",
+                call_type, exc,
+            )
+            raise
+
     capture_generation_response(response)
     latency_ms = int((time.monotonic() - started) * 1000)
 
