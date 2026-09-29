@@ -1032,512 +1032,526 @@ def main() -> None:
 
                     continue
 
-                logger.info(
-                    "=================================================="
-                )
-
-                logger.info(
-                    "PROCESSING GROUP"
-                )
-
-                logger.info(
-                    "group_key=%s",
-                    group_key,
-                )
-
-                logger.info(
-                    "category=%s | subcategory=%s",
-                    group_info["category"],
-                    group_info["subcategory"],
-                )
-
-                logger.info(
-                    "=================================================="
-                )
-
-                # =================================================
-                # STEP 6
-                # Get up to batch_size PENDING source records
-                # =================================================
-
-                batch = step_6_get_source_batch(
-                    conn=conn,
-                    source_table=args.source_table,
-                    category=group_info["category"],
-                    subcategory=group_info["subcategory"],
-                    batch_size=args.batch_size,
-                    skus=args.sku,
-                )
-
-                logger.info(
-                    "STEP 6 COMPLETED | "
-                    "category=%s | subcategory=%s | "
-                    "batch_size=%d",
-                    group_info["category"],
-                    group_info["subcategory"],
-                    len(batch),
-                )
-
-                if not batch:
+                while True:
+                    logger.info(
+                        "=================================================="
+                    )
 
                     logger.info(
-                        "No PENDING source records for group=%s",
+                        "PROCESSING GROUP"
+                    )
+
+                    logger.info(
+                        "group_key=%s",
                         group_key,
                     )
 
-                    continue
-
-                # =================================================
-                # STEP 6B
-                # Deterministic crosswalk short-circuit -- SKUs
-                # already approved/auto_approved at match_rank=1 in
-                # any active channel's crosswalk skip retrieval,
-                # scoring, and the LLM judge entirely.
-                # =================================================
-
-                crosswalk_resolved, batch = step_6b_apply_crosswalk_shortcircuit(
-                    conn=conn,
-                    source_table=args.source_table,
-                    master_by_code=master_by_code,
-                    batch=batch,
-                )
-
-                if crosswalk_resolved:
-
-                    # A crosswalk-approved match is authoritative: its
-                    # ensemble_score is whatever was recorded when a steward
-                    # confirmed it, not a fresh score to re-judge, so
-                    # determine_mapping_status()'s thresholds do not apply.
-                    #
-                    # This block used to count these rows and stop there. Its
-                    # comment said "just the status flip" and then, two lines
-                    # later, "the status is deliberately NOT rewritten" -- and
-                    # the code did neither. A short-circuited row was removed
-                    # from the batch, never scored, never written to
-                    # <channel>_product_mapping, and left at PENDING, while
-                    # total_processed counted it as done. Same bug as
-                    # oneds_master, same fix -- see that file's history for
-                    # the four rows it lost on 24 Sep.
-                    #
-                    # The fix writes the crosswalk's own answer through the
-                    # same persist_sku_disposition() the scored path uses, so
-                    # the mapping rows, the status and the audit rows land in
-                    # one transaction. What it does NOT do is re-derive the
-                    # status: "Approved" is carried across as-is, because
-                    # stamping an engine tier over a governed decision is the
-                    # one thing a run must never do.
-                    resolved_count = len(crosswalk_resolved)
-
-                    persisted = step_6b_persist_crosswalk_resolved(
-                        conn=conn,
-                        source_table=args.source_table,
-                        run_id=run_id,
-                        resolved=crosswalk_resolved,
+                    logger.info(
+                        "category=%s | subcategory=%s",
+                        group_info["category"],
+                        group_info["subcategory"],
                     )
 
-                    total_processed += resolved_count
+                    logger.info(
+                        "=================================================="
+                    )
+
+                    # =================================================
+                    # STEP 6
+                    # Get up to batch_size PENDING source records
+                    # =================================================
+
+                    batch = step_6_get_source_batch(
+                        conn=conn,
+                        source_table=args.source_table,
+                        category=group_info["category"],
+                        subcategory=group_info["subcategory"],
+                        batch_size=args.batch_size,
+                        skus=args.sku,
+                    )
+
+                    # A fetch shorter than batch_size means the group's
+                    # PENDING rows are exhausted -- nothing more to pull on a
+                    # next pass. A full-size fetch means there MAY be more
+                    # still PENDING behind it, so the group is revisited
+                    # rather than assumed done after one pass. Same fix as
+                    # oneds_master/batch_flow.py, for the same reason -- see
+                    # that file's history for the "556 to_run, 500 processed"
+                    # runs this was written after.
+                    group_exhausted = len(batch) < args.batch_size
 
                     logger.info(
-                        "STEP 6B COMPLETED | crosswalk_resolved=%d | "
-                        "persisted=%d | remaining=%d",
-                        len(crosswalk_resolved),
-                        persisted,
+                        "STEP 6 COMPLETED | "
+                        "category=%s | subcategory=%s | "
+                        "batch_size=%d",
+                        group_info["category"],
+                        group_info["subcategory"],
                         len(batch),
                     )
 
-                if not batch:
+                    if not batch:
 
-                    logger.info(
-                        "All source records in group=%s resolved via "
-                        "crosswalk short-circuit",
-                        group_key,
-                    )
+                        logger.info(
+                            "No PENDING source records for group=%s",
+                            group_key,
+                        )
 
-                    continue
+                        break
 
-                # =================================================
-                # STEP 6C
-                # Category terminal short-circuit -- rows the V2
-                # resolver confidently closes (NO MASTER EQUIVALENT /
-                # UNCLASSIFIED) never get embedded, retrieved, scored
-                # or judged. Sits here, alongside 6B, for the same
-                # reason: before any per-SKU work is spawned.
-                #
-                # UNRESOLVED rows are NOT closed here -- that state
-                # means "the rules could not decide", not "there is
-                # nothing here", and dropping them would silently lose
-                # recall. They flow on through the normal engine.
-                # =================================================
+                    # =================================================
+                    # STEP 6B
+                    # Deterministic crosswalk short-circuit -- SKUs
+                    # already approved/auto_approved at match_rank=1 in
+                    # any active channel's crosswalk skip retrieval,
+                    # scoring, and the LLM judge entirely.
+                    # =================================================
 
-                category_resolved, batch = step_6c_apply_category_shortcircuit(
-                    source_table=args.source_table,
-                    batch=batch,
-                )
-
-                if category_resolved:
-
-                    # Status flip only -- no mapping rows. These rows have
-                    # no candidate, and staging.*_product_mapping declares
-                    # product_code NOT NULL, so a candidate-less mapping
-                    # row cannot be written at all. That is also the
-                    # existing convention for every other no-candidate
-                    # path here (the empty-eligible-group branch above and
-                    # the crosswalk short-circuit), so this follows it
-                    # rather than inventing a second one.
-                    #
-                    # The trade-off: the resolver's evidence is logged (at
-                    # DEBUG, per SKU, in step 6C) but is not visible to a
-                    # steward in the mapping table. Giving it a home there
-                    # needs either a nullable product_code or a separate
-                    # findings table -- a schema decision, out of scope
-                    # for this change.
-                    closed_count = step_16_mark_completed(
+                    crosswalk_resolved, batch = step_6b_apply_crosswalk_shortcircuit(
                         conn=conn,
                         source_table=args.source_table,
-                        batch=[r.source for r in category_resolved.values()],
-                        status="NoHimalayaEquivalent",
-                    )
-
-                    total_processed += closed_count
-
-                    logger.info(
-                        "STEP 6C COMPLETED | category_closed=%d | "
-                        "remaining=%d",
-                        len(category_resolved),
-                        len(batch),
-                    )
-
-                if not batch:
-
-                    logger.info(
-                        "All source records in group=%s closed by the "
-                        "category short-circuit",
-                        group_key,
-                    )
-
-                    continue
-
-                # =================================================
-                # STEP 7B
-                # Lexicon expansion + attribute extraction + synonym
-                # expansion -- run once for the whole group's
-                # remaining batch (one thread pool), not per SKU.
-                # No cross-SKU cache: clean_title is effectively
-                # unique per SKU in this data, so every SKU still
-                # gets its own synonyms.expand() call either way --
-                # this just avoids spinning up a second thread pool.
-                # =================================================
-
-                source_products, synonym_terms, pre_audit_entries = (
-                    step_7b_prepare_source_products(
+                        master_by_code=master_by_code,
                         batch=batch,
-                        source_table=args.source_table,
-                        use_llm=use_llm,
-                        max_workers=args.max_workers,
                     )
-                )
 
-                pre_audit_by_sku: dict[str, list] = {}
-                for entry in pre_audit_entries:
-                    entry_sku = entry.get("sku")
-                    if entry_sku:
-                        pre_audit_by_sku.setdefault(entry_sku, []).append(entry)
+                    if crosswalk_resolved:
 
-                logger.info(
-                    "STEP 7B COMPLETED | source_products=%d | "
-                    "audit_entries=%d",
-                    len(source_products),
-                    len(pre_audit_entries),
-                )
+                        # A crosswalk-approved match is authoritative: its
+                        # ensemble_score is whatever was recorded when a steward
+                        # confirmed it, not a fresh score to re-judge, so
+                        # determine_mapping_status()'s thresholds do not apply.
+                        #
+                        # This block used to count these rows and stop there. Its
+                        # comment said "just the status flip" and then, two lines
+                        # later, "the status is deliberately NOT rewritten" -- and
+                        # the code did neither. A short-circuited row was removed
+                        # from the batch, never scored, never written to
+                        # <channel>_product_mapping, and left at PENDING, while
+                        # total_processed counted it as done. Same bug as
+                        # oneds_master, same fix -- see that file's history for
+                        # the four rows it lost on 24 Sep.
+                        #
+                        # The fix writes the crosswalk's own answer through the
+                        # same persist_sku_disposition() the scored path uses, so
+                        # the mapping rows, the status and the audit rows land in
+                        # one transaction. What it does NOT do is re-derive the
+                        # status: "Approved" is carried across as-is, because
+                        # stamping an engine tier over a governed decision is the
+                        # one thing a run must never do.
+                        resolved_count = len(crosswalk_resolved)
 
-                # =================================================
-                # STEP 7C
-                # Resolve each row's master category once for the whole
-                # group, following the same pattern as source_products
-                # and synonym_terms: computed here, looked up per SKU
-                # inside the worker.
-                # =================================================
+                        persisted = step_6b_persist_crosswalk_resolved(
+                            conn=conn,
+                            source_table=args.source_table,
+                            run_id=run_id,
+                            resolved=crosswalk_resolved,
+                        )
 
-                category_decisions = resolve_batch(
-                    batch=batch,
-                    source_products=source_products,
-                )
+                        total_processed += resolved_count
 
-                resolved_count = sum(
-                    1 for d in category_decisions.values() if d.resolved
-                )
+                        logger.info(
+                            "STEP 6B COMPLETED | crosswalk_resolved=%d | "
+                            "persisted=%d | remaining=%d",
+                            len(crosswalk_resolved),
+                            persisted,
+                            len(batch),
+                        )
 
-                logger.info(
-                    "STEP 7C COMPLETED | category_decisions=%d | "
-                    "gate-eligible=%d",
-                    len(category_decisions),
-                    resolved_count,
-                )
+                    if not batch:
 
-                # =================================================
-                # STEP 7
-                # Build BM25 ONCE for this group
-                # =================================================
+                        logger.info(
+                            "All source records in group=%s resolved via "
+                            "crosswalk short-circuit",
+                            group_key,
+                        )
 
-                bm25_index = (
-                    step_7_build_bm25_index(
-                        eligible_master=(
+                        continue
+
+                    # =================================================
+                    # STEP 6C
+                    # Category terminal short-circuit -- rows the V2
+                    # resolver confidently closes (NO MASTER EQUIVALENT /
+                    # UNCLASSIFIED) never get embedded, retrieved, scored
+                    # or judged. Sits here, alongside 6B, for the same
+                    # reason: before any per-SKU work is spawned.
+                    #
+                    # UNRESOLVED rows are NOT closed here -- that state
+                    # means "the rules could not decide", not "there is
+                    # nothing here", and dropping them would silently lose
+                    # recall. They flow on through the normal engine.
+                    # =================================================
+
+                    category_resolved, batch = step_6c_apply_category_shortcircuit(
+                        source_table=args.source_table,
+                        batch=batch,
+                    )
+
+                    if category_resolved:
+
+                        # Status flip only -- no mapping rows. These rows have
+                        # no candidate, and staging.*_product_mapping declares
+                        # product_code NOT NULL, so a candidate-less mapping
+                        # row cannot be written at all. That is also the
+                        # existing convention for every other no-candidate
+                        # path here (the empty-eligible-group branch above and
+                        # the crosswalk short-circuit), so this follows it
+                        # rather than inventing a second one.
+                        #
+                        # The trade-off: the resolver's evidence is logged (at
+                        # DEBUG, per SKU, in step 6C) but is not visible to a
+                        # steward in the mapping table. Giving it a home there
+                        # needs either a nullable product_code or a separate
+                        # findings table -- a schema decision, out of scope
+                        # for this change.
+                        closed_count = step_16_mark_completed(
+                            conn=conn,
+                            source_table=args.source_table,
+                            batch=[r.source for r in category_resolved.values()],
+                            status="NoHimalayaEquivalent",
+                        )
+
+                        total_processed += closed_count
+
+                        logger.info(
+                            "STEP 6C COMPLETED | category_closed=%d | "
+                            "remaining=%d",
+                            len(category_resolved),
+                            len(batch),
+                        )
+
+                    if not batch:
+
+                        logger.info(
+                            "All source records in group=%s closed by the "
+                            "category short-circuit",
+                            group_key,
+                        )
+
+                        continue
+
+                    # =================================================
+                    # STEP 7B
+                    # Lexicon expansion + attribute extraction + synonym
+                    # expansion -- run once for the whole group's
+                    # remaining batch (one thread pool), not per SKU.
+                    # No cross-SKU cache: clean_title is effectively
+                    # unique per SKU in this data, so every SKU still
+                    # gets its own synonyms.expand() call either way --
+                    # this just avoids spinning up a second thread pool.
+                    # =================================================
+
+                    source_products, synonym_terms, pre_audit_entries = (
+                        step_7b_prepare_source_products(
+                            batch=batch,
+                            source_table=args.source_table,
+                            use_llm=use_llm,
+                            max_workers=args.max_workers,
+                        )
+                    )
+
+                    pre_audit_by_sku: dict[str, list] = {}
+                    for entry in pre_audit_entries:
+                        entry_sku = entry.get("sku")
+                        if entry_sku:
+                            pre_audit_by_sku.setdefault(entry_sku, []).append(entry)
+
+                    logger.info(
+                        "STEP 7B COMPLETED | source_products=%d | "
+                        "audit_entries=%d",
+                        len(source_products),
+                        len(pre_audit_entries),
+                    )
+
+                    # =================================================
+                    # STEP 7C
+                    # Resolve each row's master category once for the whole
+                    # group, following the same pattern as source_products
+                    # and synonym_terms: computed here, looked up per SKU
+                    # inside the worker.
+                    # =================================================
+
+                    category_decisions = resolve_batch(
+                        batch=batch,
+                        source_products=source_products,
+                    )
+
+                    resolved_count = sum(
+                        1 for d in category_decisions.values() if d.resolved
+                    )
+
+                    logger.info(
+                        "STEP 7C COMPLETED | category_decisions=%d | "
+                        "gate-eligible=%d",
+                        len(category_decisions),
+                        resolved_count,
+                    )
+
+                    # =================================================
+                    # STEP 7
+                    # Build BM25 ONCE for this group
+                    # =================================================
+
+                    bm25_index = (
+                        step_7_build_bm25_index(
+                            eligible_master=(
+                                eligible_master
+                            ),
+                        )
+                    )
+
+                    logger.info(
+                        "STEP 7 COMPLETED | "
+                        "BM25 index created once | "
+                        "eligible_master=%d",
+                        len(
                             eligible_master
                         ),
                     )
-                )
 
-                logger.info(
-                    "STEP 7 COMPLETED | "
-                    "BM25 index created once | "
-                    "eligible_master=%d",
-                    len(
-                        eligible_master
-                    ),
-                )
-
-                # =================================================
-                # STEPS 8-16
-                # PARALLEL SKU PROCESSING
-                # =================================================
-
-                logger.info(
-                    "=================================================="
-                )
-
-                logger.info(
-                    "STARTING PARALLEL SKU PROCESSING"
-                )
-
-                logger.info(
-                    "batch=%d | max_workers=%d",
-                    len(batch),
-                    args.max_workers,
-                )
-
-                logger.info(
-                    "=================================================="
-                )
-
-                all_final_results = {}
-
-                successful_sources = []
-
-                failed_sources = []
-
-                # -------------------------------------------------
-                # ThreadPoolExecutor
-                # -------------------------------------------------
-
-                with ThreadPoolExecutor(
-                    max_workers=args.max_workers
-                ) as executor:
-
-                    futures = {
-                        executor.submit(
-                            process_one_sku,
-                            source,
-                            bm25_index,
-                            eligible_master,
-                            master_by_code,
-                            args.source_table,
-                            run_id,
-                            use_llm,
-                            synonym_terms,
-                            source_products,
-                            pre_audit_by_sku.get(
-                                getattr(source, "sku", None), []
-                            ),
-                            # Positional, and appended LAST -- every
-                            # argument above is positional too, so
-                            # inserting anywhere else silently shifts
-                            # pre_audit_entries into the wrong parameter.
-                            category_decisions,
-                        ): source
-                        for source in batch
-                    }
+                    # =================================================
+                    # STEPS 8-16
+                    # PARALLEL SKU PROCESSING
+                    # =================================================
 
                     logger.info(
-                        "Submitted %d SKU workers",
-                        len(futures),
+                        "=================================================="
                     )
 
+                    logger.info(
+                        "STARTING PARALLEL SKU PROCESSING"
+                    )
+
+                    logger.info(
+                        "batch=%d | max_workers=%d",
+                        len(batch),
+                        args.max_workers,
+                    )
+
+                    logger.info(
+                        "=================================================="
+                    )
+
+                    all_final_results = {}
+
+                    successful_sources = []
+
+                    failed_sources = []
+
                     # -------------------------------------------------
-                    # Collect completed workers
+                    # ThreadPoolExecutor
                     # -------------------------------------------------
 
-                    for future in as_completed(
-                        futures
-                    ):
+                    with ThreadPoolExecutor(
+                        max_workers=args.max_workers
+                    ) as executor:
 
-                        source = futures[
-                            future
-                        ]
-
-                        source_id = getattr(
-                            source,
-                            "id",
-                            None,
-                        )
-
-                        sku = getattr(
-                            source,
-                            "sku",
-                            None,
-                        )
-
-                        try:
-
-                            worker_output = (
-                                future.result()
-                            )
-
-                            worker_results = (
-                                worker_output[
-                                    "results"
-                                ]
-                            )
-
-                            # -----------------------------------------
-                            # Merge this SKU's results
-                            # -----------------------------------------
-
-                            all_final_results.update(
-                                worker_results
-                            )
-
-                            successful_sources.append(
-                                source
-                            )
-
-                            total_processed += 1
-
-                            logger.debug(
-                                "WORKER SUCCESS | "
-                                "source_id=%s | SKU=%r | "
-                                "completed=%d/%d",
-                                source_id,
-                                sku,
-                                len(
-                                    successful_sources
+                        futures = {
+                            executor.submit(
+                                process_one_sku,
+                                source,
+                                bm25_index,
+                                eligible_master,
+                                master_by_code,
+                                args.source_table,
+                                run_id,
+                                use_llm,
+                                synonym_terms,
+                                source_products,
+                                pre_audit_by_sku.get(
+                                    getattr(source, "sku", None), []
                                 ),
-                                len(batch),
-                            )
+                                # Positional, and appended LAST -- every
+                                # argument above is positional too, so
+                                # inserting anywhere else silently shifts
+                                # pre_audit_entries into the wrong parameter.
+                                category_decisions,
+                            ): source
+                            for source in batch
+                        }
 
-                        except Exception as exc:
+                        logger.info(
+                            "Submitted %d SKU workers",
+                            len(futures),
+                        )
 
-                            failed_sources.append(
-                                source
-                            )
+                        # -------------------------------------------------
+                        # Collect completed workers
+                        # -------------------------------------------------
 
-                            total_failed += 1
+                        for future in as_completed(
+                            futures
+                        ):
 
-                            logger.error(
-                                "WORKER FAILED | "
-                                "source_id=%s | SKU=%r | "
-                                "error=%s",
-                                source_id,
-                                sku,
-                                exc,
-                            )
+                            source = futures[
+                                future
+                            ]
 
-                        # Heartbeat -- see oneds_master/batch_flow.py's
-                        # identical block for why this exists and why it's
-                        # throttled to roughly once a second.
-                        now = time.monotonic()
-                        if now - last_heartbeat >= 1.0:
-                            run_record.heartbeat(
-                                conn, run_id, total_processed, total_failed
-                            )
-                            last_heartbeat = now
-
-                # =================================================
-                # PARALLEL PROCESSING SUMMARY
-                # =================================================
-
-                logger.info(
-                    "=================================================="
-                )
-
-                logger.info(
-                    "PARALLEL PROCESSING COMPLETED"
-                )
-
-                logger.info(
-                    "Total submitted : %d",
-                    len(batch),
-                )
-
-                logger.info(
-                    "Successful      : %d",
-                    len(
-                        successful_sources
-                    ),
-                )
-
-                logger.info(
-                    "Failed          : %d",
-                    len(
-                        failed_sources
-                    ),
-                )
-
-                logger.info(
-                    "Final results   : %d",
-                    len(
-                        all_final_results
-                    ),
-                )
-
-                logger.info(
-                    "=================================================="
-                )
-
-                # =================================================
-                # STEPS 15-16
-                # PERSIST + MARK COMPLETED
-                # =================================================
-                # These steps now execute inside each ThreadPoolExecutor
-                # worker using that worker's dedicated DB connection.
-                # =================================================
-
-                logger.info(
-                    "STEPS 15-16 COMPLETED INSIDE THREADPOOL | "
-                    "successful=%d | failed=%d",
-                    len(successful_sources),
-                    len(failed_sources),
-                )
-
-                # =================================================
-                # Failed SKU information
-                # =================================================
-
-                if failed_sources:
-
-                    logger.warning(
-                        "Some SKUs failed and remain PENDING"
-                    )
-
-                    for source in failed_sources:
-
-                        logger.warning(
-                            "FAILED SKU | id=%s | sku=%s",
-                            getattr(
+                            source_id = getattr(
                                 source,
                                 "id",
                                 None,
-                            ),
-                            getattr(
+                            )
+
+                            sku = getattr(
                                 source,
                                 "sku",
                                 None,
-                            ),
+                            )
+
+                            try:
+
+                                worker_output = (
+                                    future.result()
+                                )
+
+                                worker_results = (
+                                    worker_output[
+                                        "results"
+                                    ]
+                                )
+
+                                # -----------------------------------------
+                                # Merge this SKU's results
+                                # -----------------------------------------
+
+                                all_final_results.update(
+                                    worker_results
+                                )
+
+                                successful_sources.append(
+                                    source
+                                )
+
+                                total_processed += 1
+
+                                logger.debug(
+                                    "WORKER SUCCESS | "
+                                    "source_id=%s | SKU=%r | "
+                                    "completed=%d/%d",
+                                    source_id,
+                                    sku,
+                                    len(
+                                        successful_sources
+                                    ),
+                                    len(batch),
+                                )
+
+                            except Exception as exc:
+
+                                failed_sources.append(
+                                    source
+                                )
+
+                                total_failed += 1
+
+                                logger.error(
+                                    "WORKER FAILED | "
+                                    "source_id=%s | SKU=%r | "
+                                    "error=%s",
+                                    source_id,
+                                    sku,
+                                    exc,
+                                )
+
+                            # Heartbeat -- see oneds_master/batch_flow.py's
+                            # identical block for why this exists and why it's
+                            # throttled to roughly once a second.
+                            now = time.monotonic()
+                            if now - last_heartbeat >= 1.0:
+                                run_record.heartbeat(
+                                    conn, run_id, total_processed, total_failed
+                                )
+                                last_heartbeat = now
+
+                    # =================================================
+                    # PARALLEL PROCESSING SUMMARY
+                    # =================================================
+
+                    logger.info(
+                        "=================================================="
+                    )
+
+                    logger.info(
+                        "PARALLEL PROCESSING COMPLETED"
+                    )
+
+                    logger.info(
+                        "Total submitted : %d",
+                        len(batch),
+                    )
+
+                    logger.info(
+                        "Successful      : %d",
+                        len(
+                            successful_sources
+                        ),
+                    )
+
+                    logger.info(
+                        "Failed          : %d",
+                        len(
+                            failed_sources
+                        ),
+                    )
+
+                    logger.info(
+                        "Final results   : %d",
+                        len(
+                            all_final_results
+                        ),
+                    )
+
+                    logger.info(
+                        "=================================================="
+                    )
+
+                    # =================================================
+                    # STEPS 15-16
+                    # PERSIST + MARK COMPLETED
+                    # =================================================
+                    # These steps now execute inside each ThreadPoolExecutor
+                    # worker using that worker's dedicated DB connection.
+                    # =================================================
+
+                    logger.info(
+                        "STEPS 15-16 COMPLETED INSIDE THREADPOOL | "
+                        "successful=%d | failed=%d",
+                        len(successful_sources),
+                        len(failed_sources),
+                    )
+
+                    # =================================================
+                    # Failed SKU information
+                    # =================================================
+
+                    if failed_sources:
+
+                        logger.warning(
+                            "Some SKUs failed and remain PENDING"
                         )
 
-                logger.info(
-                    "GROUP COMPLETED | %s",
-                    group_key,
-                )
+                        for source in failed_sources:
+
+                            logger.warning(
+                                "FAILED SKU | id=%s | sku=%s",
+                                getattr(
+                                    source,
+                                    "id",
+                                    None,
+                                ),
+                                getattr(
+                                    source,
+                                    "sku",
+                                    None,
+                                ),
+                            )
+
+                    logger.info(
+                        "GROUP COMPLETED | %s",
+                        group_key,
+                    )
+
+                    if group_exhausted:
+                        break
 
             # =====================================================
             # ALL GROUPS COMPLETED
