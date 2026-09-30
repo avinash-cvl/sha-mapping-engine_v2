@@ -1,15 +1,20 @@
 # ==============================================================================
 # Dockerfile for sha-mapping-engine_v2
-# Base: Python 3.12 on Debian 12 (Bookworm) with Microsoft ODBC Driver 18
+# Base: Python 3.12 (Debian Bookworm) + uv + Microsoft ODBC Driver 18
 # ==============================================================================
 FROM python:3.12-slim-bookworm
 
+# Install uv directly from the official image
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
 WORKDIR /app
 
+# Configure Python, uv virtualenv, and runtime settings
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
     PYTHONPATH=/app \
+    PATH="/app/.venv/bin:$PATH" \
+    UV_COMPILE_BYTECODE=1 \
     CONSOLE_HOST=0.0.0.0 \
     CONSOLE_PORT=8099 \
     CONSOLE_RELOAD=false
@@ -37,11 +42,10 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # ------------------------------------------------------------------------------
-# Install Python dependencies
+# Install Python dependencies using uv (exact, locked via uv.lock)
 # ------------------------------------------------------------------------------
-COPY requirements.txt ./
-RUN pip install --upgrade pip && \
-    pip install -r requirements.txt
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-install-project
 
 # ------------------------------------------------------------------------------
 # Copy application code
