@@ -19,7 +19,7 @@ pipeline {
         CONTAINER_PORT = "8099"
 
         // Branches permitted to trigger automatic deployment to the container
-        DEPLOY_BRANCHES = "main,master,develop,dev,qa"
+        DEPLOY_BRANCHES = "prod"
     }
 
     stages {
@@ -45,9 +45,9 @@ pipeline {
                 script {
                     echo "Building Docker image: ${IMAGE_NAME}:${IMAGE_TAG}"
                     
-                    // On main/master, also tag as latest
+                    // On main/master/prod, also tag as latest
                     def latestTagArg = ""
-                    if (env.BRANCH_NAME == 'main' || env.BRANCH_NAME == 'master') {
+                    if (env.BRANCH_NAME == 'main' || env.BRANCH_NAME == 'master' || env.BRANCH_NAME == 'prod') {
                         latestTagArg = "-t ${IMAGE_NAME}:latest"
                     }
 
