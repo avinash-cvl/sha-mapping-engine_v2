@@ -81,6 +81,12 @@ pipeline {
 
                     if [ -f .env ]; then
                         ENV_ARG="--env-file .env"
+                    elif [ -f /var/jenkins_home/.env.engine ]; then
+                        echo "Found /var/jenkins_home/.env.engine, using it"
+                        ENV_ARG="--env-file /var/jenkins_home/.env.engine"
+                    elif [ -f ../.env.engine ]; then
+                        echo "Found ../.env.engine, using it"
+                        ENV_ARG="--env-file ../.env.engine"
                     else
                         echo "Warning: .env file not found, starting without --env-file"
                         ENV_ARG=""
