@@ -109,14 +109,14 @@ pipeline {
             }
             steps {
                 sh '''
-                    echo "Validating service liveness on port ${HOST_PORT}..."
+                    echo "Validating container health via docker exec..."
                     for i in $(seq 1 12); do
-                        if curl -sf "http://localhost:${HOST_PORT}/health" > /dev/null; then
-                            echo "Container is healthy and responding!"
+                        if docker exec ${CONTAINER_NAME} curl -sf "http://localhost:${CONTAINER_PORT}/health" > /dev/null; then
+                            echo "Container ${CONTAINER_NAME} is healthy and responding with 200 OK!"
                             exit 0
                         fi
                         echo "Waiting for service to become ready ($i/12)..."
-                        sleep 5
+                        sleep 3
                     done
 
                     echo "Health check failed! Container logs:"
