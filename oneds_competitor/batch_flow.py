@@ -1240,11 +1240,16 @@ def main() -> None:
                     # =================================================
 
                     source_products, synonym_terms, pre_audit_entries = (
+                        # LLM_MAX_WORKERS, not args.max_workers -- see
+                        # oneds_master/batch_flow.py's identical comment.
+                        # This stage makes zero DB writes (pure LLM calls),
+                        # so the deadlock-driven 4-worker write ceiling has
+                        # no reason to apply here.
                         step_7b_prepare_source_products(
                             batch=batch,
                             source_table=args.source_table,
                             use_llm=use_llm,
-                            max_workers=args.max_workers,
+                            max_workers=C.LLM_MAX_WORKERS,
                         )
                     )
 

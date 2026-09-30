@@ -1248,12 +1248,26 @@ def main() -> None:
                     # this just avoids spinning up a second thread pool.
                     # =================================================
 
+                    # LLM_MAX_WORKERS, not args.max_workers: this stage makes
+                    # zero DB writes (attribute_fallback + synonyms.expand are
+                    # pure LLM calls, nothing persisted until step 8+), so the
+                    # deadlock-driven 4-worker ceiling that exists for
+                    # concurrent WRITES to staging.<channel>_product_mapping
+                    # has no reason to apply here. It was inherited from
+                    # args.max_workers only because both stages happened to
+                    # take the same parameter name, not because 4 was ever a
+                    # deliberate limit for this one -- flow.py's equivalent
+                    # calls already use LLM_MAX_WORKERS (default 12) for
+                    # exactly this reason. Applying it here means the
+                    # attribute/synonym pass for a full batch_size batch no
+                    # longer takes 3x longer than the DB-bound work it
+                    # precedes.
                     source_products, synonym_terms, pre_audit_entries = (
                         step_7b_prepare_source_products(
                             batch=batch,
                             source_table=args.source_table,
                             use_llm=use_llm,
-                            max_workers=args.max_workers,
+                            max_workers=C.LLM_MAX_WORKERS,
                         )
                     )
 
