@@ -1,7 +1,4 @@
-# secrets -- live SQL Server DSN + Azure OpenAI key
-.env
-.env.*
-!.env.example
+
 
 # python
 __pycache__/
