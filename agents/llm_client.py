@@ -40,7 +40,18 @@ for _candidate in _sdk_candidates:
             sys.path.append(str(_candidate))
         break
 
-from sha_observability_sdk import observe as sh_observe, capture_generation_response
+try:
+    from sha_observability_sdk import observe as sh_observe, capture_generation_response
+except ImportError:
+    # Graceful fallback when running in Docker or Azure Ubuntu where external SDK is not present
+    def sh_observe(*args, **kwargs):
+        def decorator(fn):
+            return fn
+        return decorator
+
+    def capture_generation_response(response):
+        pass
+
 from langchain_core.language_models.chat_models import BaseChatModel
 
 

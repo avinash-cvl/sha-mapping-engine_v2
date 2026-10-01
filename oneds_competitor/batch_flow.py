@@ -69,6 +69,8 @@ def build_run_log_path(base_log_file: str, run_id: str) -> str:
     each run gets its own file instead of every run appending to/
     overwriting the same one, so a log file maps 1:1 to a row in
     audit.pipeline_execution_log (matched by run_id)."""
+    if run_id in base_log_file:
+        return base_log_file
     if "." in base_log_file:
         stem, ext = base_log_file.rsplit(".", 1)
         return f"{stem}_{run_id}.{ext}"

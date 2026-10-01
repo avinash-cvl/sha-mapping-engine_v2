@@ -632,10 +632,12 @@ def _spawn(req: RunRequest, engine: str, overrides: dict[str, str]) -> Run:
         # values were overridden rather than inherited.
         "ENGINE_CONFIG_OVERRIDES": ",".join(sorted(overrides)),
     }
-    proc = subprocess.Popen(
-        cmd, cwd=REPO_ROOT, env=env,
-        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
-    )
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    with open(log_path, "a", encoding="utf-8") as log_file:
+        proc = subprocess.Popen(
+            cmd, cwd=REPO_ROOT, env=env,
+            stdout=log_file, stderr=subprocess.STDOUT, text=True,
+        )
     r = Run(run_id=run_id, channel=req.channel, engine=engine,
             category=req.category, subcategory=req.subcategory,
             proc=proc, log_path=log_path)
